@@ -2182,6 +2182,74 @@ bool IsCheckDoneForMapDisplay(RandomizerCheck rc) {
     return status == RCSHOW_COLLECTED || status == RCSHOW_SAVED;
 }
 
+struct MapTabVisualSummary {
+    bool hasVisibleChecks = false;
+    bool hasAvailableChecks = false;
+    bool hasUnavailableChecks = false;
+    bool hasDoneChecks = false;
+};
+
+MapTabVisualSummary BuildMapTabVisualSummary(const MapTabData& tab, bool mqSpoilers) {
+    MapTabVisualSummary summary;
+
+    for (const auto& marker : tab.markers) {
+        if (!IsVisibleInCheckTracker(marker.check)) {
+            continue;
+        }
+
+        if (IsCheckHidden(marker.check)) {
+            continue;
+        }
+
+        auto* location = Rando::StaticData::GetLocation(marker.check);
+        if (location == nullptr) {
+            continue;
+        }
+
+        if (!(IsAreaSpoiled(location->GetArea()) || mqSpoilers)) {
+            continue;
+        }
+
+        auto* itemLocation = OTRGlobals::Instance->gRandoContext->GetItemLocation(marker.check);
+        if (itemLocation == nullptr) {
+            continue;
+        }
+
+        summary.hasVisibleChecks = true;
+        bool isDone = IsCheckDoneForMapDisplay(marker.check);
+        if (isDone) {
+            summary.hasDoneChecks = true;
+            continue;
+        }
+
+        if (itemLocation->IsAvailable()) {
+            summary.hasAvailableChecks = true;
+        } else {
+            summary.hasUnavailableChecks = true;
+        }
+    }
+
+    return summary;
+}
+
+ImVec4 ScaleMapTabColor(const ImVec4& color, float rgbScale, float alphaScale = 1.0f) {
+    return ImVec4(std::clamp(color.x * rgbScale, 0.0f, 1.0f), std::clamp(color.y * rgbScale, 0.0f, 1.0f),
+                  std::clamp(color.z * rgbScale, 0.0f, 1.0f), std::clamp(color.w * alphaScale, 0.0f, 1.0f));
+}
+
+ImVec4 GetMapTabBaseColor(const MapTabVisualSummary& summary) {
+    if (summary.hasAvailableChecks) {
+        return ImGui::ColorConvertU32ToFloat4(CHECK_TRACKER_MAP_COLOR_AVAILABLE);
+    }
+
+    bool allVisibleChecksAreDone = summary.hasVisibleChecks && summary.hasDoneChecks && !summary.hasUnavailableChecks;
+    if (allVisibleChecksAreDone || !summary.hasVisibleChecks) {
+        return ImGui::ColorConvertU32ToFloat4(CHECK_TRACKER_MAP_COLOR_DONE);
+    }
+
+    return ImGui::ColorConvertU32ToFloat4(CHECK_TRACKER_MAP_COLOR_UNAVAILABLE);
+}
+
 void DrawMapIssueList(const std::vector<MapIssueEntry>& issues, const char* emptyText) {
     if (issues.empty()) {
         ImGui::TextUnformatted(emptyText);
@@ -2253,15 +2321,28 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
     }
 
     ImVec2 availableSize = ImGui::GetContentRegionAvail();
-    float widthScale = (availableSize.x > 0.0f && tab.textureSize.x > 0.0f) ? (availableSize.x / tab.textureSize.x) : 1.0f;
-    float heightScale =
-        (availableSize.y > 0.0f && tab.textureSize.y > 0.0f) ? (availableSize.y / tab.textureSize.y) : widthScale;
+    // In a scrollable table cell, available Y can grow with scroll offset. Clamp to a stable visible height so
+    // map scaling does not increase while scrolling.
+    float visibleRegionHeight = ImGui::GetWindowContentRegionMax().y - ImGui::GetWindowContentRegionMin().y;
+    if (visibleRegionHeight > 0.0f) {
+        availableSize.y = std::clamp(availableSize.y, 1.0f, visibleRegionHeight);
+    }
+    const float fitPaddingX = 10.0f;
+    const float fitPaddingY = ImGui::GetStyle().ItemSpacing.y + 8.0f;
+    ImVec2 fitSize = availableSize;
+    fitSize.x = std::max(1.0f, fitSize.x - (fitPaddingX * 2.0f));
+    fitSize.y = std::max(1.0f, fitSize.y - fitPaddingY);
+
+    float widthScale = (fitSize.x > 0.0f && tab.textureSize.x > 0.0f) ? (fitSize.x / tab.textureSize.x) : 1.0f;
+    float heightScale = (fitSize.y > 0.0f && tab.textureSize.y > 0.0f) ? (fitSize.y / tab.textureSize.y) : widthScale;
     float imageScale = std::min(widthScale, heightScale);
     imageScale = std::clamp(imageScale, 0.05f, 1.0f);
 
     ImVec2 drawSize(tab.textureSize.x * imageScale, tab.textureSize.y * imageScale);
     float horizontalPadding = std::max(0.0f, (availableSize.x - drawSize.x) * 0.5f);
-    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + horizontalPadding);
+    float verticalPadding = std::max(0.0f, (availableSize.y - drawSize.y) * 0.5f);
+    ImVec2 mapCursorPos = ImGui::GetCursorPos();
+    ImGui::SetCursorPos(ImVec2(mapCursorPos.x + horizontalPadding, mapCursorPos.y + verticalPadding));
     ImVec2 imageStartPos = ImGui::GetCursorScreenPos();
     ImDrawList* drawList = ImGui::GetWindowDrawList();
 
@@ -2619,10 +2700,15 @@ void DrawMapTrackerContent() {
     mapTrackerState.selectedTabIndex = std::clamp(mapTrackerState.selectedTabIndex, 0, issuesTabIndex);
 
     ImVec4 selectedTabColor = ImGui::ColorConvertU32ToFloat4(THEME_COLOR);
+    std::vector<MapTabVisualSummary> tabVisualSummaries(mapTrackerState.tabs.size());
+    for (size_t tabIndex = 0; tabIndex < mapTrackerState.tabs.size(); tabIndex++) {
+        tabVisualSummaries[tabIndex] = BuildMapTabVisualSummary(mapTrackerState.tabs[tabIndex], mqSpoilers);
+    }
+
     float tabsRowStartX = ImGui::GetCursorPosX();
     float tabsRowMaxX = tabsRowStartX + ImGui::GetContentRegionAvail().x;
     bool hasPreviousTabButton = false;
-    auto drawTabButton = [&](const std::string& label, int tabIndex) {
+    auto drawTabButton = [&](const std::string& label, int tabIndex, const std::optional<ImVec4>& baseColor) {
         ImVec2 textSize = ImGui::CalcTextSize(label.c_str());
         float buttonWidth = textSize.x + (ImGui::GetStyle().FramePadding.x * 2.0f) + 12.0f;
         buttonWidth = std::min(buttonWidth, std::max(1.0f, tabsRowMaxX - tabsRowStartX));
@@ -2633,7 +2719,14 @@ void DrawMapTrackerContent() {
             }
         }
         bool isSelected = (mapTrackerState.selectedTabIndex == tabIndex);
-        if (isSelected) {
+        if (baseColor.has_value()) {
+            ImVec4 buttonColor = *baseColor;
+            ImGui::PushStyleColor(ImGuiCol_Button, buttonColor);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ScaleMapTabColor(buttonColor, 1.08f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ScaleMapTabColor(buttonColor, 0.9f));
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
+            ImGui::PushStyleColor(ImGuiCol_Border, isSelected ? selectedTabColor : ScaleMapTabColor(buttonColor, 0.72f));
+        } else if (isSelected) {
             ImGui::PushStyleColor(ImGuiCol_Button, selectedTabColor);
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, selectedTabColor);
             ImGui::PushStyleColor(ImGuiCol_ButtonActive, selectedTabColor);
@@ -2641,25 +2734,40 @@ void DrawMapTrackerContent() {
         if (ImGui::Button(label.c_str(), ImVec2(buttonWidth, 0.0f))) {
             mapTrackerState.selectedTabIndex = tabIndex;
         }
-        if (isSelected) {
+        if (baseColor.has_value()) {
+            ImGui::PopStyleColor(4);
+            ImGui::PopStyleVar();
+        } else if (isSelected) {
             ImGui::PopStyleColor(3);
         }
         hasPreviousTabButton = true;
     };
 
     for (size_t tabIndex = 0; tabIndex < mapTrackerState.tabs.size(); tabIndex++) {
-        drawTabButton(mapTrackerState.tabs[tabIndex].mapName, static_cast<int>(tabIndex));
+        ImVec4 mapTabColor = GetMapTabBaseColor(tabVisualSummaries[tabIndex]);
+        drawTabButton(mapTrackerState.tabs[tabIndex].mapName, static_cast<int>(tabIndex), mapTabColor);
     }
-    drawTabButton("Unlinked / Issues", issuesTabIndex);
+    drawTabButton("Unlinked / Issues", issuesTabIndex, std::nullopt);
 
     ImGui::Separator();
-    if (mapTrackerState.selectedTabIndex == issuesTabIndex) {
-        DrawMapTrackerIssuesTab();
-    } else if (!mapTrackerState.tabs.empty() &&
-               mapTrackerState.selectedTabIndex >= 0 &&
-               mapTrackerState.selectedTabIndex < static_cast<int>(mapTrackerState.tabs.size())) {
-        DrawMapTabContent(mapTrackerState.tabs[mapTrackerState.selectedTabIndex], mqSpoilers);
+    ImVec2 mapBodySize = ImGui::GetContentRegionAvail();
+    mapBodySize.y = std::max(1.0f, mapBodySize.y - ImGui::GetStyle().ItemSpacing.y);
+
+    ImGuiWindowFlags mapBodyFlags = ImGuiWindowFlags_None;
+    if (mapTrackerState.selectedTabIndex != issuesTabIndex) {
+        mapBodyFlags |= ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
     }
+
+    if (ImGui::BeginChild("CheckTrackerMapBody", mapBodySize, false, mapBodyFlags)) {
+        if (mapTrackerState.selectedTabIndex == issuesTabIndex) {
+            DrawMapTrackerIssuesTab();
+        } else if (!mapTrackerState.tabs.empty() &&
+                   mapTrackerState.selectedTabIndex >= 0 &&
+                   mapTrackerState.selectedTabIndex < static_cast<int>(mapTrackerState.tabs.size())) {
+            DrawMapTabContent(mapTrackerState.tabs[mapTrackerState.selectedTabIndex], mqSpoilers);
+        }
+    }
+    ImGui::EndChild();
 }
 
 void TrySetAreas() {
