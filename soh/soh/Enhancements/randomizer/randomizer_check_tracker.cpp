@@ -6,6 +6,7 @@
 #include "soh/cvar_prefixes.h"
 #include "soh/SaveManager.h"
 #include "soh/ResourceManagerHelpers.h"
+#include "soh/util.h"
 #include "soh/SohGui/UIWidgets.hpp"
 #include "soh/SohGui/SohGui.hpp"
 #include "soh/SohGui/SohMenu.h"
@@ -15,12 +16,23 @@
 #include "3drando/fill.hpp"
 #include "soh/Enhancements/debugger/performanceTimer.h"
 
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <chrono>
+#include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <limits>
+#include <optional>
 #include <string>
 #include <sstream>
+#include <unordered_set>
 #include <vector>
 #include <set>
 #include <libultraship/libultraship.h>
 #include <libultraship/controller/controldeck/ControlDeck.h>
+#include <stb_image.h>
 #include "location.h"
 #include "item_location.h"
 #include "soh/Enhancements/game-interactor/GameInteractor.h"
@@ -177,17 +189,30 @@ std::unordered_map<RandomizerCheck, std::string> checkNameOverrides;
 
 bool ShouldShowCheck(RandomizerCheck rc);
 bool UpdateFilters();
-void BeginFloatWindows(std::string UniqueName, bool& open, ImGuiWindowFlags flags = 0);
 bool CompareChecks(RandomizerCheck, RandomizerCheck);
 bool CheckByArea(RandomizerCheckArea);
+bool IsCheckHidden(RandomizerCheck rc);
 void DrawLocation(RandomizerCheck);
-void EndFloatWindows();
+void DrawMapTrackerContent();
 void LoadSettings();
 void RainbowTick();
 void UpdateAreas(RandomizerCheckArea area);
 void UpdateInventoryChecks();
 void UpdateOrdering(RandomizerCheckArea);
+bool CanToggleSkippedStateForCheck(RandomizerCheck rc);
+bool ToggleSkippedStateForCheck(RandomizerCheck rc);
+std::string GetCheckDisplayName(RandomizerCheck rc);
+std::string GetCheckExtraInfoText(RandomizerCheck rc);
+std::string GetCheckLogicString(RandomizerCheck rc);
+Color_RGBA8 GetLegacyCheckExtraColor(RandomizerCheck rc);
+std::string BuildCanonicalAliasKey(const std::string& input);
 int sectionId;
+
+namespace Trackers {
+bool BeginFloatWindows(const char* uniqueName, bool& open, const Color_RGBA8& backgroundColor,
+                       TrackerWindowType windowType, bool draggable, ImGuiWindowFlags flags);
+void EndFloatWindows();
+} // namespace Trackers
 
 bool hideUnchecked = false;
 bool hideScummed = false;
@@ -198,8 +223,9 @@ bool hideCollected = false;
 bool showHidden = true;
 bool mystery = false;
 bool showLogicTooltip = false;
-bool enableAvailableChecks = false;
+bool enableAvailableChecks = true;
 bool onlyShowAvailable = false;
+bool showMapDebugDetails = false;
 
 SceneID DungeonSceneLookupByArea(RandomizerCheckArea area) {
     switch (area) {
@@ -232,18 +258,18 @@ SceneID DungeonSceneLookupByArea(RandomizerCheckArea area) {
     }
 }
 
-Color_RGBA8 Color_Bg_Default = { 0, 0, 0, 255 };                          // Black
-Color_RGBA8 Color_Main_Default = { 255, 255, 255, 255 };                  // White
-Color_RGBA8 Color_Area_Incomplete_Extra_Default = { 255, 255, 255, 255 }; // White
-Color_RGBA8 Color_Area_Complete_Extra_Default = { 255, 255, 255, 255 };   // White
-Color_RGBA8 Color_Unchecked_Extra_Default = { 255, 255, 255, 255 };       // White
-Color_RGBA8 Color_Skipped_Main_Default = { 160, 160, 160, 255 };          // Grey
-Color_RGBA8 Color_Skipped_Extra_Default = { 160, 160, 160, 255 };         // Grey
-Color_RGBA8 Color_Seen_Extra_Default = { 255, 255, 255, 255 };            // TODO
-Color_RGBA8 Color_Hinted_Extra_Default = { 255, 255, 255, 255 };          // TODO
-Color_RGBA8 Color_Collected_Extra_Default = { 242, 101, 34, 255 };        // Orange
-Color_RGBA8 Color_Scummed_Extra_Default = { 0, 174, 239, 255 };           // Blue
-Color_RGBA8 Color_Saved_Extra_Default = { 0, 185, 0, 255 };               // Green
+Color_RGBA8 Color_Bg_Default = { 0, 0, 0, 255 };                                 // Black
+const Color_RGBA8 Color_Main_Default = { 255, 255, 255, 255 };                  // White
+const Color_RGBA8 Color_Area_Incomplete_Extra_Default = { 255, 255, 255, 255 }; // White
+const Color_RGBA8 Color_Area_Complete_Extra_Default = { 255, 255, 255, 255 };   // White
+const Color_RGBA8 Color_Unchecked_Extra_Default = { 255, 255, 255, 255 };       // White
+const Color_RGBA8 Color_Skipped_Main_Default = { 160, 160, 160, 255 };          // Grey
+const Color_RGBA8 Color_Skipped_Extra_Default = { 160, 160, 160, 255 };         // Grey
+const Color_RGBA8 Color_Seen_Extra_Default = { 255, 255, 255, 255 };            // TODO
+const Color_RGBA8 Color_Hinted_Extra_Default = { 255, 255, 255, 255 };          // TODO
+const Color_RGBA8 Color_Collected_Extra_Default = { 242, 101, 34, 255 };        // Orange
+const Color_RGBA8 Color_Scummed_Extra_Default = { 0, 174, 239, 255 };           // Blue
+const Color_RGBA8 Color_Saved_Extra_Default = { 0, 185, 0, 255 };               // Green
 
 Color_RGBA8 Color_Background = { 0, 0, 0, 255 };
 
@@ -270,8 +296,2371 @@ std::vector<uint32_t> buttons = { BTN_A, BTN_B, BTN_CUP,   BTN_CDOWN, BTN_CLEFT,
                                   BTN_Z, BTN_R, BTN_START, BTN_DUP,   BTN_DDOWN, BTN_DLEFT,  BTN_DRIGHT };
 static ImGuiTextFilter checkSearch;
 static bool recalculateAvailable = false;
+static RandomizerRegion availableChecksStartingRegion = RR_ROOT;
+static int16_t previousEntrance = 0;
 std::array<bool, RCAREA_INVALID> filterAreasHidden = { 0 };
 std::array<bool, RC_MAX> filterChecksHidden = { 0 };
+
+constexpr const char* CHECK_TRACKER_MAP_MODE_CVAR = CVAR_TRACKER_CHECK("MapMode");
+constexpr const char* CHECK_TRACKER_MAP_DEBUG_CVAR = CVAR_TRACKER_CHECK("MapDebugInfo");
+constexpr const char* CHECK_TRACKER_MAP_ASSETS_ROOT = "mods/check_tracker_map_pack";
+constexpr const char* CHECK_TRACKER_MAPS_JSON = "maps/maps.jsonc";
+constexpr const char* CHECK_TRACKER_LOCATIONS_DIR = "locations";
+constexpr float CHECK_TRACKER_MAP_SCORE_THRESHOLD = 0.38f;
+constexpr float CHECK_TRACKER_MAP_LOW_CONFIDENCE_THRESHOLD = 0.62f;
+constexpr float CHECK_TRACKER_MAP_CLOSE_SCORE_DELTA = 0.08f;
+constexpr float CHECK_TRACKER_MAP_CONFLICT_DUPLICATE_THRESHOLD = 0.74f;
+constexpr float CHECK_TRACKER_MAP_CONFLICT_DUPLICATE_MAX_SCORE_GAP = 0.14f;
+constexpr float CHECK_TRACKER_MAP_ZERO_SCORE_EPSILON = 0.0001f;
+constexpr ImU32 CHECK_TRACKER_MAP_COLOR_DONE = IM_COL32(130, 130, 130, 220);
+constexpr ImU32 CHECK_TRACKER_MAP_COLOR_AVAILABLE = IM_COL32(55, 185, 85, 220);
+constexpr ImU32 CHECK_TRACKER_MAP_COLOR_UNAVAILABLE = IM_COL32(200, 65, 65, 220);
+constexpr ImU32 CHECK_TRACKER_MAP_COLOR_BORDER = IM_COL32(255, 255, 255, 245);
+constexpr ImU32 CHECK_TRACKER_MAP_COLOR_LOW_CONFIDENCE_BORDER = IM_COL32(255, 210, 90, 255);
+
+struct MapPlacement {
+    std::string mapName;
+    float x = 0.0f;
+    float y = 0.0f;
+    float size = 22.0f;
+};
+
+struct MapMarkerSource {
+    std::string sourceFile;
+    std::string displayPath;
+    std::vector<std::string> visibilityKeys;
+    MapPlacement placement;
+    bool isFromHintNamedNode = false;
+};
+
+struct CheckDescriptor {
+    RandomizerCheck check = RC_UNKNOWN_CHECK;
+    RandomizerCheckArea area = RCAREA_INVALID;
+    RandomizerCheckQuest quest = RCQUEST_BOTH;
+    std::string checkDisplayName;
+    std::vector<std::string> aliases;
+    std::vector<std::string> normalizedAliases;
+    std::vector<std::vector<std::string>> aliasTokens;
+};
+
+struct RankedCheckCandidate {
+    RandomizerCheck check = RC_UNKNOWN_CHECK;
+    float score = 0.0f;
+    std::string reason;
+};
+
+struct SourceMatchInfo {
+    MapMarkerSource source;
+    std::vector<RankedCheckCandidate> rankedCandidates;
+};
+
+struct MapMarker {
+    RandomizerCheck check = RC_UNKNOWN_CHECK;
+    std::string mapName;
+    std::string displayPath;
+    std::string sourceFile;
+    std::string visibilityKey;
+    std::string confidenceReason;
+    float confidence = 0.0f;
+    float x = 0.0f;
+    float y = 0.0f;
+    float size = 22.0f;
+    bool lowConfidence = false;
+};
+
+struct MapTabData {
+    std::string mapName;
+    std::string imageRelativePath;
+    std::string imageResourcePath;
+    std::filesystem::path imageAbsolutePath;
+    std::string textureName;
+    ImTextureID texture = 0;
+    ImVec2 textureSize = { 0.0f, 0.0f };
+    bool imageLoaded = false;
+    std::string imageError;
+    std::vector<MapMarker> markers;
+};
+
+struct MapIssueEntry {
+    std::string summary;
+    std::string details;
+};
+
+struct MapTrackerState {
+    bool attemptedLoad = false;
+    bool loaded = false;
+    std::filesystem::path assetsRoot;
+    std::filesystem::path assetsArchiveMountRoot;
+    std::string resourcePathPrefix;
+    std::vector<std::string> fatalErrors;
+    std::vector<MapIssueEntry> warnings;
+    std::vector<MapIssueEntry> zeroScoreUnresolvedLinks;
+    std::vector<MapIssueEntry> unresolvedLinks;
+    std::vector<MapIssueEntry> lowConfidenceLinks;
+    std::vector<RandomizerCheck> unassignedCheckIds;
+    std::vector<MapTabData> tabs;
+    std::unordered_map<std::string, size_t> tabIndexByName;
+    std::unordered_set<RandomizerCheck> linkedChecks;
+    std::string requestedTabName;
+    int selectedTabIndex = 0;
+    RandomizerCheckArea lastFocusedArea = RCAREA_INVALID;
+};
+
+static MapTrackerState mapTrackerState;
+
+std::string TrimCopy(const std::string& value) {
+    size_t start = value.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) {
+        return "";
+    }
+    size_t end = value.find_last_not_of(" \t\r\n");
+    return value.substr(start, end - start + 1);
+}
+
+std::string StripHintSuffix(const std::string& value) {
+    std::string trimmed = TrimCopy(value);
+    const std::string hintSuffix = " - hint";
+    if (trimmed.length() >= hintSuffix.length() &&
+        trimmed.rfind(hintSuffix) == (trimmed.length() - hintSuffix.length())) {
+        trimmed.erase(trimmed.length() - hintSuffix.length());
+    }
+    return trimmed;
+}
+
+bool HasHintSuffix(const std::string& value) {
+    std::string trimmed = TrimCopy(value);
+    const std::string hintSuffix = " - hint";
+    return trimmed.length() >= hintSuffix.length() &&
+           trimmed.rfind(hintSuffix) == (trimmed.length() - hintSuffix.length());
+}
+
+std::string NormalizeMapNameForMapTracker(const std::string& rawMapName) {
+    std::string normalizedName = TrimCopy(StripHintSuffix(rawMapName));
+    std::string normalizedKey;
+    normalizedKey.reserve(normalizedName.size());
+    bool previousWasUnderscore = false;
+    for (char ch : normalizedName) {
+        unsigned char uch = static_cast<unsigned char>(ch);
+        if (std::isalnum(uch)) {
+            normalizedKey.push_back(static_cast<char>(std::tolower(uch)));
+            previousWasUnderscore = false;
+        } else if (!previousWasUnderscore) {
+            normalizedKey.push_back('_');
+            previousWasUnderscore = true;
+        }
+    }
+    while (!normalizedKey.empty() && normalizedKey.front() == '_') {
+        normalizedKey.erase(normalizedKey.begin());
+    }
+    while (!normalizedKey.empty() && normalizedKey.back() == '_') {
+        normalizedKey.pop_back();
+    }
+    if (normalizedKey.rfind("mq_", 0) == 0 || normalizedKey == "mq") {
+        size_t splitPos = normalizedName.find_first_of(" _-");
+        if (splitPos != std::string::npos) {
+            normalizedName = TrimCopy(normalizedName.substr(splitPos + 1));
+        } else {
+            normalizedName.clear();
+        }
+    }
+    return normalizedName;
+}
+
+std::string NormalizeForMatching(const std::string& input) {
+    std::string normalized;
+    normalized.reserve(input.size());
+    bool previousWasUnderscore = false;
+    for (char ch : input) {
+        unsigned char uch = static_cast<unsigned char>(ch);
+        if (std::isalnum(uch)) {
+            normalized.push_back(static_cast<char>(std::tolower(uch)));
+            previousWasUnderscore = false;
+        } else if (!previousWasUnderscore) {
+            normalized.push_back('_');
+            previousWasUnderscore = true;
+        }
+    }
+    while (!normalized.empty() && normalized.front() == '_') {
+        normalized.erase(normalized.begin());
+    }
+    while (!normalized.empty() && normalized.back() == '_') {
+        normalized.pop_back();
+    }
+    return normalized;
+}
+
+std::string GetGameCheckTag(RandomizerCheck rc) {
+    static std::unordered_map<RandomizerCheck, std::string> tagCacheByCheck;
+
+    auto cacheIt = tagCacheByCheck.find(rc);
+    if (cacheIt != tagCacheByCheck.end()) {
+        return cacheIt->second;
+    }
+
+    std::string tag = fmt::format("rc_{}", static_cast<int>(rc));
+    auto* location = Rando::StaticData::GetLocation(rc);
+    if (location != nullptr) {
+        std::string areaPrefix = SohUtils::GetRandomizerCheckAreaPrefix(location->GetArea());
+        std::string prefixedShortNameTag = BuildCanonicalAliasKey(areaPrefix + " " + location->GetShortName());
+        std::string prefixedLongNameTag = BuildCanonicalAliasKey(areaPrefix + " " + location->GetName());
+        std::string shortNameTag = BuildCanonicalAliasKey(location->GetShortName());
+        std::string longNameTag = BuildCanonicalAliasKey(location->GetName());
+
+        if (!prefixedShortNameTag.empty()) {
+            tag = prefixedShortNameTag;
+        } else if (!prefixedLongNameTag.empty()) {
+            tag = prefixedLongNameTag;
+        } else if (!shortNameTag.empty()) {
+            tag = shortNameTag;
+        } else if (!longNameTag.empty()) {
+            tag = longNameTag;
+        }
+    }
+
+    tagCacheByCheck[rc] = tag;
+    return tag;
+}
+
+bool EndsWith(const std::string& value, const std::string& suffix) {
+    if (value.length() < suffix.length()) {
+        return false;
+    }
+    return value.compare(value.length() - suffix.length(), suffix.length(), suffix) == 0;
+}
+
+std::string JoinWithComma(const std::vector<std::string>& values) {
+    std::string output;
+    for (size_t i = 0; i < values.size(); i++) {
+        if (i > 0) {
+            output += ", ";
+        }
+        output += values[i];
+    }
+    return output;
+}
+
+std::string JoinWithCommaLimited(const std::vector<std::string>& values, size_t maxValues) {
+    if (values.empty() || maxValues == 0) {
+        return "";
+    }
+
+    size_t shownCount = std::min(values.size(), maxValues);
+    std::vector<std::string> shownValues(values.begin(), values.begin() + shownCount);
+    std::string joined = JoinWithComma(shownValues);
+    if (values.size() > shownCount) {
+        joined += fmt::format(" (+{} more)", values.size() - shownCount);
+    }
+    return joined;
+}
+
+double GetElapsedMilliseconds(const std::chrono::steady_clock::time_point& startTime) {
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - startTime).count();
+}
+
+std::string CanonicalizeToken(const std::string& token) {
+    if (token == "midos") {
+        return "mido";
+    }
+    if (token == "dodongos") {
+        return "dodongo";
+    }
+    if (token == "jabus") {
+        return "jabu";
+    }
+    if (token == "zoras") {
+        return "zora";
+    }
+    if (token == "ganons") {
+        return "ganon";
+    }
+    if (token == "familys") {
+        return "family";
+    }
+    if (token == "poh") {
+        return "heartpiece";
+    }
+    return token;
+}
+
+std::vector<std::string> TokenizeForMatching(const std::string& input) {
+    std::vector<std::string> tokens;
+    std::string normalized = NormalizeForMatching(input);
+    if (normalized.empty()) {
+        return tokens;
+    }
+
+    std::stringstream ss(normalized);
+    std::string token;
+    while (std::getline(ss, token, '_')) {
+        if (!token.empty()) {
+            tokens.emplace_back(CanonicalizeToken(token));
+        }
+    }
+    return tokens;
+}
+
+std::string BuildCanonicalAliasKey(const std::string& input) {
+    std::vector<std::string> tokens = TokenizeForMatching(input);
+    if (tokens.empty()) {
+        return "";
+    }
+
+    std::string key;
+    for (size_t tokenIndex = 0; tokenIndex < tokens.size(); tokenIndex++) {
+        if (tokenIndex > 0) {
+            key += "_";
+        }
+        key += tokens[tokenIndex];
+    }
+    return key;
+}
+
+bool IsNumericToken(const std::string& token) {
+    if (token.empty()) {
+        return false;
+    }
+    return std::all_of(token.begin(), token.end(), [](char ch) {
+        return std::isdigit(static_cast<unsigned char>(ch)) != 0;
+    });
+}
+
+float ScoreTokenVectors(const std::vector<std::string>& left, const std::vector<std::string>& right) {
+    if (left.empty() || right.empty()) {
+        return 0.0f;
+    }
+
+    std::unordered_set<std::string> leftSet(left.begin(), left.end());
+    std::unordered_set<std::string> rightSet(right.begin(), right.end());
+    size_t intersection = 0;
+    for (const auto& token : leftSet) {
+        if (rightSet.contains(token)) {
+            intersection++;
+        }
+    }
+    size_t unionCount = leftSet.size() + rightSet.size() - intersection;
+    float jaccard = unionCount == 0 ? 0.0f : static_cast<float>(intersection) / static_cast<float>(unionCount);
+
+    size_t sequenceMatches = 0;
+    size_t limit = std::min(left.size(), right.size());
+    for (size_t i = 0; i < limit; i++) {
+        if (left[i] == right[i]) {
+            sequenceMatches++;
+        }
+    }
+    float orderScore = limit == 0 ? 0.0f : static_cast<float>(sequenceMatches) / static_cast<float>(limit);
+
+    float prefixScore = 0.0f;
+    if (!left.empty() && !right.empty() && left[0] == right[0]) {
+        prefixScore = 1.0f;
+    }
+
+    bool leftHasNumeric = false;
+    bool rightHasNumeric = false;
+    bool numericOverlap = false;
+    for (const auto& token : leftSet) {
+        if (IsNumericToken(token)) {
+            leftHasNumeric = true;
+            if (rightSet.contains(token)) {
+                numericOverlap = true;
+            }
+        }
+    }
+    for (const auto& token : rightSet) {
+        if (IsNumericToken(token)) {
+            rightHasNumeric = true;
+        }
+    }
+
+    float numericScore = 0.0f;
+    if (leftHasNumeric && rightHasNumeric) {
+        numericScore = numericOverlap ? 0.20f : -0.24f;
+    }
+
+    float score = (0.72f * jaccard) + (0.20f * orderScore) + (0.08f * prefixScore) + numericScore;
+    return std::clamp(score, 0.0f, 1.0f);
+}
+
+std::string JoinPathComponents(const std::vector<std::string>& parts) {
+    std::string result;
+    for (size_t i = 0; i < parts.size(); i++) {
+        if (parts[i].empty()) {
+            continue;
+        }
+        if (!result.empty()) {
+            result += " / ";
+        }
+        result += parts[i];
+    }
+    return result;
+}
+
+bool TryReadFloat(const json& value, float& outValue) {
+    if (value.is_number_float()) {
+        outValue = value.get<float>();
+        return true;
+    }
+    if (value.is_number_integer()) {
+        outValue = static_cast<float>(value.get<int>());
+        return true;
+    }
+    if (value.is_string()) {
+        std::string str = TrimCopy(value.get<std::string>());
+        if (str.empty()) {
+            return false;
+        }
+        try {
+            outValue = std::stof(str);
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+    return false;
+}
+
+bool LoadJsonWithComments(const std::filesystem::path& filePath, json& outJson, std::string& outError) {
+    std::ifstream inputFile(filePath);
+    if (!inputFile.is_open()) {
+        outError = "Could not open file";
+        return false;
+    }
+
+    std::stringstream buffer;
+    buffer << inputFile.rdbuf();
+    try {
+        outJson = json::parse(buffer.str(), nullptr, true, true);
+    } catch (const std::exception& exception) {
+        outError = exception.what();
+        return false;
+    }
+
+    return true;
+}
+
+std::vector<std::filesystem::path> BuildMapTrackerAssetsRootCandidates() {
+    std::vector<std::filesystem::path> candidates;
+    candidates.emplace_back(Ship::Context::GetPathRelativeToAppDirectory(CHECK_TRACKER_MAP_ASSETS_ROOT));
+    candidates.emplace_back(Ship::Context::GetPathRelativeToAppBundle(CHECK_TRACKER_MAP_ASSETS_ROOT));
+    candidates.emplace_back(std::filesystem::path(CHECK_TRACKER_MAP_ASSETS_ROOT));
+
+    std::error_code ec;
+    const std::filesystem::path currentPath = std::filesystem::current_path(ec);
+    if (!ec) {
+        candidates.emplace_back((currentPath / CHECK_TRACKER_MAP_ASSETS_ROOT).lexically_normal());
+        candidates.emplace_back((currentPath / "build/soh" / CHECK_TRACKER_MAP_ASSETS_ROOT).lexically_normal());
+        candidates.emplace_back((currentPath.parent_path() / "build/soh" / CHECK_TRACKER_MAP_ASSETS_ROOT).lexically_normal());
+    }
+
+    std::vector<std::filesystem::path> uniqueCandidates;
+    std::unordered_set<std::string> seenPaths;
+    uniqueCandidates.reserve(candidates.size());
+    for (const auto& candidate : candidates) {
+        const std::filesystem::path normalized = candidate.lexically_normal();
+        if (normalized.empty()) {
+            continue;
+        }
+        const std::string key = normalized.generic_string();
+        if (seenPaths.insert(key).second) {
+            uniqueCandidates.push_back(normalized);
+        }
+    }
+
+    return uniqueCandidates;
+}
+
+std::string BuildMapTrackerAssetsRootCandidatesSummary() {
+    std::vector<std::string> candidateStrings;
+    const auto candidates = BuildMapTrackerAssetsRootCandidates();
+    candidateStrings.reserve(candidates.size());
+    for (const auto& candidate : candidates) {
+        std::error_code ec;
+        const auto absolutePath = std::filesystem::absolute(candidate, ec);
+        candidateStrings.push_back(ec ? candidate.string() : absolutePath.string());
+    }
+    return JoinWithCommaLimited(candidateStrings, candidateStrings.size());
+}
+
+std::filesystem::path GetMapTrackerAssetsRoot() {
+    std::error_code ec;
+    for (const auto& candidate : BuildMapTrackerAssetsRootCandidates()) {
+        if (std::filesystem::exists(candidate, ec) && std::filesystem::is_directory(candidate, ec)) {
+            return candidate;
+        }
+        ec.clear();
+    }
+
+    const auto fallbackCandidates = BuildMapTrackerAssetsRootCandidates();
+    if (!fallbackCandidates.empty()) {
+        return fallbackCandidates.front();
+    }
+
+    return std::filesystem::path(CHECK_TRACKER_MAP_ASSETS_ROOT);
+}
+
+std::string GetMapTrackerAssetsRootAbsoluteString() {
+    const std::filesystem::path resolvedRoot = GetMapTrackerAssetsRoot();
+    std::error_code ec;
+    std::filesystem::path absolutePath = std::filesystem::absolute(resolvedRoot, ec);
+    if (ec) {
+        return resolvedRoot.string();
+    }
+    return absolutePath.string();
+}
+
+bool EnsureMapTrackerArchiveMounted(const std::filesystem::path& assetsRoot, std::filesystem::path& outArchiveMountRoot,
+                                    std::string& outResourcePathPrefix, std::string& outError) {
+    auto context = Ship::Context::GetInstance();
+    if (context == nullptr || context->GetResourceManager() == nullptr ||
+        context->GetResourceManager()->GetArchiveManager() == nullptr) {
+        outError = "Resource manager is unavailable.";
+        return false;
+    }
+
+    outArchiveMountRoot = assetsRoot.parent_path();
+    if (outArchiveMountRoot.empty() || !std::filesystem::exists(outArchiveMountRoot) ||
+        !std::filesystem::is_directory(outArchiveMountRoot)) {
+        outError = "Invalid archive mount directory: " + outArchiveMountRoot.string();
+        return false;
+    }
+
+    outResourcePathPrefix = assetsRoot.filename().string();
+    if (outResourcePathPrefix.empty()) {
+        outError = "Could not derive resource path prefix from assets root: " + assetsRoot.string();
+        return false;
+    }
+
+    auto archiveManager = context->GetResourceManager()->GetArchiveManager();
+    const std::string mapsProbePath =
+        (std::filesystem::path(outResourcePathPrefix) / CHECK_TRACKER_MAPS_JSON).lexically_normal().generic_string();
+
+    if (!archiveManager->HasFile(mapsProbePath)) {
+        auto archive = archiveManager->AddArchive(outArchiveMountRoot.string());
+        if (archive == nullptr) {
+            outError = "Failed to mount archive folder: " + outArchiveMountRoot.string();
+            return false;
+        }
+    }
+
+    if (!archiveManager->HasFile(mapsProbePath)) {
+        outError = "Map pack is not indexed after mount. Missing virtual file: " + mapsProbePath;
+        return false;
+    }
+
+    return true;
+}
+
+bool ValidateMapImageFile(const std::filesystem::path& imagePath, std::string& outError) {
+    if (!std::filesystem::exists(imagePath)) {
+        outError = "Image file not found: " + imagePath.string();
+        return false;
+    }
+
+    int imageWidth = 0;
+    int imageHeight = 0;
+    int imageChannels = 0;
+    if (!stbi_info(imagePath.string().c_str(), &imageWidth, &imageHeight, &imageChannels) || imageWidth <= 0 ||
+        imageHeight <= 0) {
+        const char* failureReason = stbi_failure_reason();
+        outError = "Image decode failed for " + imagePath.string() +
+                   (failureReason != nullptr ? " (" + std::string(failureReason) + ")" : "");
+        return false;
+    }
+
+    return true;
+}
+
+bool IsMapModeEnabled() {
+    return CVarGetInteger(CHECK_TRACKER_MAP_MODE_CVAR, 0) != 0;
+}
+
+void SetMapModeEnabled(bool enabled) {
+    CVarSetInteger(CHECK_TRACKER_MAP_MODE_CVAR, enabled ? 1 : 0);
+}
+
+void SplitVisibilityRule(const std::string& value, std::vector<std::string>& outKeys) {
+    std::stringstream ss(value);
+    std::string key;
+    while (std::getline(ss, key, ',')) {
+        key = NormalizeForMatching(TrimCopy(key));
+        if (!key.empty()) {
+            outKeys.push_back(key);
+        }
+    }
+}
+
+std::vector<std::string> ExtractSectionVisibilityKeys(const json& section) {
+    std::vector<std::string> keys;
+    if (!section.contains("visibility_rules") || !section["visibility_rules"].is_array()) {
+        return keys;
+    }
+
+    for (const auto& visibilityRule : section["visibility_rules"]) {
+        if (visibilityRule.is_string()) {
+            SplitVisibilityRule(visibilityRule.get<std::string>(), keys);
+        }
+    }
+
+    std::sort(keys.begin(), keys.end());
+    keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+    return keys;
+}
+
+std::vector<MapPlacement> ExtractPlacementsFromNode(const json& node, const std::string& sourceFile,
+                                                    std::vector<MapIssueEntry>& warnings) {
+    std::vector<MapPlacement> placements;
+    if (!node.contains("map_locations") || !node["map_locations"].is_array()) {
+        return placements;
+    }
+
+    for (const auto& mapLoc : node["map_locations"]) {
+        if (!mapLoc.is_object()) {
+            continue;
+        }
+
+        if (!mapLoc.contains("map") || !mapLoc["map"].is_string()) {
+            warnings.push_back({ "Invalid map location in " + sourceFile,
+                                 "One node is missing a valid \"map\" string in map_locations." });
+            continue;
+        }
+
+        MapPlacement placement;
+        placement.mapName = StripHintSuffix(mapLoc["map"].get<std::string>());
+        if (placement.mapName.empty()) {
+            warnings.push_back({ "Invalid map location in " + sourceFile, "A map_locations entry has an empty map name." });
+            continue;
+        }
+
+        bool hasX = mapLoc.contains("x") && TryReadFloat(mapLoc["x"], placement.x);
+        bool hasY = mapLoc.contains("y") && TryReadFloat(mapLoc["y"], placement.y);
+        bool hasSize = true;
+        if (mapLoc.contains("size")) {
+            hasSize = TryReadFloat(mapLoc["size"], placement.size);
+        } else {
+            placement.size = 22.0f;
+        }
+
+        if (!hasX || !hasY || !hasSize) {
+            warnings.push_back(
+                { "Invalid map coordinates in " + sourceFile,
+                  "A map_locations entry has invalid x/y/size values for map \"" + placement.mapName + "\"." });
+            continue;
+        }
+
+        placements.push_back(placement);
+    }
+
+    return placements;
+}
+
+void CollectMarkerSourcesFromNode(const json& node, const std::string& sourceFile, std::vector<std::string> pathStack,
+                                  const std::vector<MapPlacement>& inheritedPlacements,
+                                  std::vector<MapMarkerSource>& outSources, std::vector<MapIssueEntry>& warnings,
+                                  bool inheritedHintNamedNode = false) {
+    if (!node.is_object()) {
+        return;
+    }
+
+    bool nodeIsHintNamed = false;
+    if (node.contains("name") && node["name"].is_string()) {
+        std::string nodeName = node["name"].get<std::string>();
+        nodeIsHintNamed = HasHintSuffix(nodeName);
+        pathStack.push_back(StripHintSuffix(nodeName));
+    }
+    bool currentPathIsHintNamed = inheritedHintNamedNode || nodeIsHintNamed;
+
+    std::vector<MapPlacement> currentPlacements = ExtractPlacementsFromNode(node, sourceFile, warnings);
+    if (currentPlacements.empty()) {
+        currentPlacements = inheritedPlacements;
+    }
+
+    if (node.contains("sections") && node["sections"].is_array()) {
+        for (const auto& section : node["sections"]) {
+            if (!section.is_object()) {
+                continue;
+            }
+
+            std::vector<std::string> sectionPath = pathStack;
+            std::string sectionName = "Unnamed Section";
+            bool sectionIsHintNamed = false;
+            if (section.contains("name") && section["name"].is_string()) {
+                std::string sectionRawName = section["name"].get<std::string>();
+                sectionIsHintNamed = HasHintSuffix(sectionRawName);
+                sectionName = StripHintSuffix(sectionRawName);
+            }
+            sectionPath.push_back(sectionName);
+            std::string joinedPath = JoinPathComponents(sectionPath);
+            std::vector<std::string> visibilityKeys = ExtractSectionVisibilityKeys(section);
+
+            if (currentPlacements.empty()) {
+                warnings.push_back(
+                    { "Missing map placement in " + sourceFile,
+                      "Section \"" + joinedPath + "\" has no map_locations in this node or its parents." });
+                continue;
+            }
+
+            for (const auto& placement : currentPlacements) {
+                MapMarkerSource markerSource;
+                markerSource.sourceFile = sourceFile;
+                markerSource.displayPath = joinedPath;
+                markerSource.visibilityKeys = visibilityKeys;
+                markerSource.placement = placement;
+                markerSource.isFromHintNamedNode = currentPathIsHintNamed || sectionIsHintNamed;
+                outSources.push_back(markerSource);
+            }
+        }
+    }
+
+    if (node.contains("children") && node["children"].is_array()) {
+        for (const auto& child : node["children"]) {
+            CollectMarkerSourcesFromNode(child, sourceFile, pathStack, currentPlacements, outSources, warnings,
+                                         currentPathIsHintNamed);
+        }
+    }
+}
+
+std::optional<RandomizerCheckArea> AreaFromNormalizedMapName(const std::string& normalizedMapName) {
+    static std::unordered_map<std::string, RandomizerCheckArea> mapNameToArea = {
+        { "kokiri_forest", RCAREA_KOKIRI_FOREST },
+        { "kf", RCAREA_KOKIRI_FOREST },
+        { "lost_woods", RCAREA_LOST_WOODS },
+        { "lw", RCAREA_LOST_WOODS },
+        { "sacred_forest_meadow", RCAREA_SACRED_FOREST_MEADOW },
+        { "sfm", RCAREA_SACRED_FOREST_MEADOW },
+        { "hyrule_field", RCAREA_HYRULE_FIELD },
+        { "hyrule_fields", RCAREA_HYRULE_FIELD },
+        { "hf", RCAREA_HYRULE_FIELD },
+        { "lake_hylia", RCAREA_LAKE_HYLIA },
+        { "lh", RCAREA_LAKE_HYLIA },
+        { "gerudo_valley", RCAREA_GERUDO_VALLEY },
+        { "gv", RCAREA_GERUDO_VALLEY },
+        { "gerudo_fortress", RCAREA_GERUDO_FORTRESS },
+        { "hideout", RCAREA_GERUDO_FORTRESS },
+        { "gf", RCAREA_GERUDO_FORTRESS },
+        { "wasteland", RCAREA_WASTELAND },
+        { "haunted_wasteland", RCAREA_WASTELAND },
+        { "desert_colossus", RCAREA_DESERT_COLOSSUS },
+        { "colossus", RCAREA_DESERT_COLOSSUS },
+        { "market", RCAREA_MARKET },
+        { "hyrule_market", RCAREA_MARKET },
+        { "tot", RCAREA_MARKET },
+        { "temple_of_time", RCAREA_MARKET },
+        { "gift_from_sages", RCAREA_MARKET },
+        { "hyrule_castle", RCAREA_HYRULE_CASTLE },
+        { "hc", RCAREA_HYRULE_CASTLE },
+        { "kakariko_village", RCAREA_KAKARIKO_VILLAGE },
+        { "kak", RCAREA_KAKARIKO_VILLAGE },
+        { "graveyard", RCAREA_GRAVEYARD },
+        { "dampe_race", RCAREA_GRAVEYARD },
+        { "death_mountain_trail", RCAREA_DEATH_MOUNTAIN_TRAIL },
+        { "dmt", RCAREA_DEATH_MOUNTAIN_TRAIL },
+        { "goron_city", RCAREA_GORON_CITY },
+        { "gc", RCAREA_GORON_CITY },
+        { "death_mountain_crater", RCAREA_DEATH_MOUNTAIN_CRATER },
+        { "dmc", RCAREA_DEATH_MOUNTAIN_CRATER },
+        { "zora_river", RCAREA_ZORAS_RIVER },
+        { "zorariver", RCAREA_ZORAS_RIVER },
+        { "zr", RCAREA_ZORAS_RIVER },
+        { "zoras_domain", RCAREA_ZORAS_DOMAIN },
+        { "zora_domain", RCAREA_ZORAS_DOMAIN },
+        { "zd", RCAREA_ZORAS_DOMAIN },
+        { "zoras_fountain", RCAREA_ZORAS_FOUNTAIN },
+        { "zora_fountain", RCAREA_ZORAS_FOUNTAIN },
+        { "zf", RCAREA_ZORAS_FOUNTAIN },
+        { "lon_lon_ranch", RCAREA_LON_LON_RANCH },
+        { "llr", RCAREA_LON_LON_RANCH },
+        { "deku_tree", RCAREA_DEKU_TREE },
+        { "dodongos_cavern", RCAREA_DODONGOS_CAVERN },
+        { "jabu_jabus_belly", RCAREA_JABU_JABUS_BELLY },
+        { "forest_temple", RCAREA_FOREST_TEMPLE },
+        { "fire_temple", RCAREA_FIRE_TEMPLE },
+        { "water_temple", RCAREA_WATER_TEMPLE },
+        { "spirit_temple", RCAREA_SPIRIT_TEMPLE },
+        { "shadow_temple", RCAREA_SHADOW_TEMPLE },
+        { "bottom_of_the_well", RCAREA_BOTTOM_OF_THE_WELL },
+        { "ice_cavern", RCAREA_ICE_CAVERN },
+        { "gerudo_training_ground", RCAREA_GERUDO_TRAINING_GROUND },
+        { "gerudo_training_grounds", RCAREA_GERUDO_TRAINING_GROUND },
+        { "ganons_castle", RCAREA_GANONS_CASTLE },
+        { "ganons_tower", RCAREA_GANONS_CASTLE },
+    };
+
+    std::string key = normalizedMapName;
+    if (key.rfind("mq_", 0) == 0) {
+        key = key.substr(3);
+    }
+    if (mapNameToArea.contains(key)) {
+        return mapNameToArea[key];
+    }
+    return std::nullopt;
+}
+
+void AddUniqueIndex(std::vector<size_t>& indices, size_t index) {
+    if (std::find(indices.begin(), indices.end(), index) == indices.end()) {
+        indices.push_back(index);
+    }
+}
+
+std::optional<RandomizerCheckArea> DetermineSourceArea(const MapMarkerSource& source) {
+    std::optional<RandomizerCheckArea> area = AreaFromNormalizedMapName(NormalizeForMatching(source.placement.mapName));
+    if (area.has_value()) {
+        return area;
+    }
+
+    std::string sourceStem = NormalizeForMatching(std::filesystem::path(source.sourceFile).stem().string());
+    area = AreaFromNormalizedMapName(sourceStem);
+    if (area.has_value()) {
+        return area;
+    }
+
+    for (const auto& key : source.visibilityKeys) {
+        std::string normalizedKey = NormalizeForMatching(key);
+        size_t separatorPos = normalizedKey.find('_');
+        std::string prefix = separatorPos == std::string::npos ? normalizedKey : normalizedKey.substr(0, separatorPos);
+        if (prefix.empty()) {
+            continue;
+        }
+        area = AreaFromNormalizedMapName(prefix);
+        if (area.has_value()) {
+            return area;
+        }
+    }
+
+    return std::nullopt;
+}
+
+std::vector<std::string> BuildMapImageLookupKeys(const std::string& mapName) {
+    std::vector<std::string> keys;
+    std::string normalized = NormalizeForMatching(mapName);
+    if (!normalized.empty()) {
+        keys.push_back(normalized);
+    }
+
+    if (normalized.rfind("mq_", 0) == 0) {
+        keys.push_back(normalized.substr(3));
+    }
+
+    if (normalized == "colossus") {
+        keys.push_back("desert_colossus");
+    } else if (normalized == "desert_colossus") {
+        keys.push_back("colossus");
+    } else if (normalized == "tot") {
+        keys.push_back("temple_of_time");
+    } else if (normalized == "temple_of_time") {
+        keys.push_back("tot");
+    } else if (normalized == "hideout") {
+        keys.push_back("gerudo_fortress");
+    } else if (normalized == "gift_from_sages") {
+        keys.push_back("overworld");
+    }
+
+    std::sort(keys.begin(), keys.end());
+    keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+    return keys;
+}
+
+std::vector<std::string> BuildSourceAliases(const MapMarkerSource& source) {
+    std::vector<std::string> aliases;
+    aliases.push_back(source.displayPath);
+    aliases.push_back(source.placement.mapName + " " + source.displayPath);
+
+    std::string canonicalDisplayPath = BuildCanonicalAliasKey(source.displayPath);
+    if (!canonicalDisplayPath.empty() && canonicalDisplayPath != NormalizeForMatching(source.displayPath)) {
+        aliases.push_back(canonicalDisplayPath);
+        aliases.push_back(source.placement.mapName + " " + canonicalDisplayPath);
+    }
+
+    std::filesystem::path sourcePath(source.sourceFile);
+    std::string sourceStem = sourcePath.stem().string();
+    aliases.push_back(sourceStem + " " + source.displayPath);
+
+    std::string canonicalSourceStem = BuildCanonicalAliasKey(sourceStem);
+    if (!canonicalSourceStem.empty()) {
+        aliases.push_back(canonicalSourceStem + " " + source.displayPath);
+        if (!canonicalDisplayPath.empty()) {
+            aliases.push_back(canonicalSourceStem + " " + canonicalDisplayPath);
+        }
+    }
+
+    for (const auto& visibilityKey : source.visibilityKeys) {
+        aliases.push_back(visibilityKey);
+        aliases.push_back(source.placement.mapName + " " + visibilityKey);
+
+        std::string asWords = visibilityKey;
+        std::replace(asWords.begin(), asWords.end(), '_', ' ' );
+        aliases.push_back(asWords);
+        aliases.push_back(source.placement.mapName + " " + asWords);
+
+        std::string canonicalVisibilityKey = BuildCanonicalAliasKey(visibilityKey);
+        if (!canonicalVisibilityKey.empty() && canonicalVisibilityKey != visibilityKey) {
+            aliases.push_back(canonicalVisibilityKey);
+            aliases.push_back(source.placement.mapName + " " + canonicalVisibilityKey);
+        }
+    }
+
+    std::sort(aliases.begin(), aliases.end());
+    aliases.erase(std::unique(aliases.begin(), aliases.end()), aliases.end());
+    return aliases;
+}
+
+bool StringContainsMq(const std::string& value) {
+    std::string normalized = NormalizeForMatching(value);
+    return normalized.find("mq") != std::string::npos;
+}
+
+bool StringContainsHintToken(const std::string& value) {
+    std::vector<std::string> tokens = TokenizeForMatching(value);
+    for (const auto& token : tokens) {
+        if (token == "hint" || token == "hints" || token == "gossip") {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool IsSourceMqRelated(const MapMarkerSource& source) {
+    if (StringContainsMq(source.sourceFile) || StringContainsMq(source.displayPath) ||
+        StringContainsMq(source.placement.mapName)) {
+        return true;
+    }
+    for (const auto& key : source.visibilityKeys) {
+        if (StringContainsMq(key)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool IsSourceHintRelated(const MapMarkerSource& source) {
+    if (source.isFromHintNamedNode) {
+        return true;
+    }
+    if (StringContainsHintToken(source.sourceFile) || StringContainsHintToken(source.displayPath) ||
+        StringContainsHintToken(source.placement.mapName)) {
+        return true;
+    }
+    for (const auto& key : source.visibilityKeys) {
+        if (StringContainsHintToken(key)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+struct SourceScoringContext {
+    std::vector<std::vector<std::string>> aliasTokens;
+    std::vector<std::string> normalizedVisibilityKeys;
+    std::optional<RandomizerCheckArea> sourceArea;
+    bool sourceAppearsMq = false;
+};
+
+SourceScoringContext BuildSourceScoringContext(const MapMarkerSource& source) {
+    SourceScoringContext context;
+
+    std::vector<std::string> sourceAliases = BuildSourceAliases(source);
+    context.aliasTokens.reserve(sourceAliases.size());
+    for (const auto& sourceAlias : sourceAliases) {
+        context.aliasTokens.push_back(TokenizeForMatching(sourceAlias));
+    }
+
+    context.normalizedVisibilityKeys.reserve(source.visibilityKeys.size() * 2);
+    for (const auto& key : source.visibilityKeys) {
+        std::string normalizedKey = NormalizeForMatching(key);
+        if (!normalizedKey.empty()) {
+            context.normalizedVisibilityKeys.push_back(normalizedKey);
+
+            std::string canonicalKey = BuildCanonicalAliasKey(normalizedKey);
+            if (!canonicalKey.empty() && canonicalKey != normalizedKey) {
+                context.normalizedVisibilityKeys.push_back(canonicalKey);
+            }
+        }
+        if (StringContainsMq(key)) {
+            context.sourceAppearsMq = true;
+        }
+    }
+    std::sort(context.normalizedVisibilityKeys.begin(), context.normalizedVisibilityKeys.end());
+    context.normalizedVisibilityKeys.erase(
+        std::unique(context.normalizedVisibilityKeys.begin(), context.normalizedVisibilityKeys.end()),
+        context.normalizedVisibilityKeys.end());
+
+    context.sourceArea = DetermineSourceArea(source);
+    context.sourceAppearsMq =
+        context.sourceAppearsMq || StringContainsMq(source.displayPath) || StringContainsMq(source.placement.mapName);
+    return context;
+}
+
+std::vector<CheckDescriptor> BuildVisibleCheckDescriptors() {
+    std::vector<CheckDescriptor> descriptors;
+    std::unordered_set<RandomizerCheck> seenChecks;
+
+    for (auto& [rcArea, checks] : checksByArea) {
+        for (auto rc : checks) {
+            if (seenChecks.contains(rc) || !IsVisibleInCheckTracker(rc)) {
+                continue;
+            }
+            seenChecks.insert(rc);
+
+            auto* location = Rando::StaticData::GetLocation(rc);
+            CheckDescriptor descriptor;
+            descriptor.check = rc;
+            descriptor.area = location->GetArea();
+            descriptor.quest = location->GetQuest();
+            descriptor.checkDisplayName = GetCheckDisplayName(rc);
+
+            bool isHintCheckType = location->GetRCType() == RCTYPE_GOSSIP_STONE || location->GetRCType() == RCTYPE_STATIC_HINT;
+            bool isHintNamedCheck = StringContainsHintToken(location->GetShortName()) ||
+                                    StringContainsHintToken(location->GetName()) ||
+                                    StringContainsHintToken(descriptor.checkDisplayName);
+            if (isHintCheckType || isHintNamedCheck) {
+                continue;
+            }
+
+            if (descriptor.quest == RCQUEST_MQ || StringContainsMq(location->GetShortName()) ||
+                StringContainsMq(location->GetName()) || StringContainsMq(descriptor.checkDisplayName)) {
+                continue;
+            }
+
+            std::string areaName = RandomizerCheckObjects::GetRCAreaName(location->GetArea());
+            std::string areaPrefix = SohUtils::GetRandomizerCheckAreaPrefix(location->GetArea());
+            descriptor.aliases.push_back(location->GetShortName());
+            descriptor.aliases.push_back(location->GetName());
+            descriptor.aliases.push_back(descriptor.checkDisplayName);
+            descriptor.aliases.push_back(areaName + " " + location->GetShortName());
+            descriptor.aliases.push_back(areaPrefix + " " + location->GetShortName());
+            descriptor.aliases.push_back(areaPrefix + " " + location->GetName());
+
+            if (location->GetArea() == RCAREA_MARKET) {
+                descriptor.aliases.push_back("Temple of Time " + location->GetShortName());
+                descriptor.aliases.push_back("ToT " + location->GetShortName());
+            }
+            if (location->GetArea() == RCAREA_GERUDO_FORTRESS) {
+                descriptor.aliases.push_back("Hideout " + location->GetShortName());
+            }
+            if (location->GetArea() == RCAREA_DESERT_COLOSSUS) {
+                descriptor.aliases.push_back("Colossus " + location->GetShortName());
+            }
+            if (location->GetArea() == RCAREA_GANONS_CASTLE) {
+                descriptor.aliases.push_back("Ganons Tower " + location->GetShortName());
+            }
+
+            std::string gameCheckTag = GetGameCheckTag(rc);
+            if (!gameCheckTag.empty()) {
+                descriptor.aliases.push_back(gameCheckTag);
+            }
+
+            std::string canonicalShortName = BuildCanonicalAliasKey(location->GetShortName());
+            std::string canonicalLongName = BuildCanonicalAliasKey(location->GetName());
+            std::string canonicalPrefixedShortName = BuildCanonicalAliasKey(areaPrefix + " " + location->GetShortName());
+            std::string canonicalPrefixedLongName = BuildCanonicalAliasKey(areaPrefix + " " + location->GetName());
+
+            if (!canonicalShortName.empty()) {
+                descriptor.aliases.push_back(canonicalShortName);
+            }
+            if (!canonicalLongName.empty()) {
+                descriptor.aliases.push_back(canonicalLongName);
+            }
+            if (!canonicalPrefixedShortName.empty()) {
+                descriptor.aliases.push_back(canonicalPrefixedShortName);
+            }
+            if (!canonicalPrefixedLongName.empty()) {
+                descriptor.aliases.push_back(canonicalPrefixedLongName);
+            }
+
+            std::sort(descriptor.aliases.begin(), descriptor.aliases.end());
+            descriptor.aliases.erase(std::unique(descriptor.aliases.begin(), descriptor.aliases.end()),
+                                     descriptor.aliases.end());
+
+            std::unordered_set<std::string> seenNormalizedAliases;
+            auto addAliasVariant = [&](const std::string& aliasVariant) {
+                if (aliasVariant.empty()) {
+                    return;
+                }
+                if (!seenNormalizedAliases.insert(aliasVariant).second) {
+                    return;
+                }
+                descriptor.normalizedAliases.push_back(aliasVariant);
+                descriptor.aliasTokens.push_back(TokenizeForMatching(aliasVariant));
+            };
+
+            for (const auto& alias : descriptor.aliases) {
+                std::string normalizedAlias = NormalizeForMatching(alias);
+                addAliasVariant(normalizedAlias);
+
+                std::string canonicalAlias = BuildCanonicalAliasKey(normalizedAlias);
+                if (!canonicalAlias.empty() && canonicalAlias != normalizedAlias) {
+                    addAliasVariant(canonicalAlias);
+                }
+            }
+
+            descriptors.push_back(std::move(descriptor));
+        }
+    }
+
+    return descriptors;
+}
+
+RankedCheckCandidate ScoreSourceAgainstCheck(const SourceScoringContext& sourceContext, const CheckDescriptor& descriptor) {
+    RankedCheckCandidate result;
+    result.check = descriptor.check;
+
+    float bestAliasScore = 0.0f;
+    for (const auto& sourceTokens : sourceContext.aliasTokens) {
+        for (const auto& descriptorAliasTokens : descriptor.aliasTokens) {
+            float aliasScore = ScoreTokenVectors(sourceTokens, descriptorAliasTokens);
+            if (aliasScore > bestAliasScore) {
+                bestAliasScore = aliasScore;
+            }
+        }
+    }
+
+    float score = bestAliasScore;
+
+    if (sourceContext.sourceArea.has_value()) {
+        if (sourceContext.sourceArea.value() == descriptor.area) {
+            score += 0.12f;
+        } else {
+            score -= 0.08f;
+        }
+    }
+
+    bool descriptorIsMq = descriptor.quest == RCQUEST_MQ || StringContainsMq(descriptor.checkDisplayName);
+    if (sourceContext.sourceAppearsMq == descriptorIsMq) {
+        score += 0.07f;
+    } else if (sourceContext.sourceAppearsMq != descriptorIsMq) {
+        score -= 0.07f;
+    }
+
+    for (const auto& normalizedKey : sourceContext.normalizedVisibilityKeys) {
+        for (const auto& normalizedAlias : descriptor.normalizedAliases) {
+            if (normalizedKey == normalizedAlias) {
+                score += 0.25f;
+            } else if ((!normalizedAlias.empty() && EndsWith(normalizedKey, normalizedAlias)) ||
+                       (!normalizedKey.empty() && EndsWith(normalizedAlias, normalizedKey))) {
+                score += 0.08f;
+            }
+        }
+    }
+
+    result.score = std::clamp(score, 0.0f, 1.0f);
+    result.reason = fmt::format("Score {:.2f}", result.score);
+    return result;
+}
+
+SourceMatchInfo BuildMatchInfo(
+    const MapMarkerSource& source, const std::vector<CheckDescriptor>& descriptors,
+    const std::unordered_map<std::string, std::vector<size_t>>& descriptorIndicesByAlias,
+    const std::unordered_map<RandomizerCheckArea, std::vector<size_t>>& descriptorIndicesByArea,
+    const std::unordered_map<RandomizerCheck, size_t>& descriptorIndexByCheck) {
+    SourceMatchInfo matchInfo;
+    matchInfo.source = source;
+    SourceScoringContext sourceScoringContext = BuildSourceScoringContext(source);
+    if (sourceScoringContext.sourceAppearsMq) {
+        return matchInfo;
+    }
+
+    std::unordered_map<RandomizerCheck, RankedCheckCandidate> candidateByCheck;
+    auto addAliasMatches = [&](const std::string& aliasKey, float baseScore, const char* reason) {
+        if (aliasKey.empty()) {
+            return;
+        }
+        auto aliasIt = descriptorIndicesByAlias.find(aliasKey);
+        if (aliasIt == descriptorIndicesByAlias.end()) {
+            return;
+        }
+        for (size_t descriptorIndex : aliasIt->second) {
+            RandomizerCheck candidateCheck = descriptors[descriptorIndex].check;
+            auto existingIt = candidateByCheck.find(candidateCheck);
+            if (existingIt == candidateByCheck.end() || baseScore > existingIt->second.score) {
+                RankedCheckCandidate candidate;
+                candidate.check = candidateCheck;
+                candidate.score = baseScore;
+                candidate.reason = reason;
+                candidateByCheck[candidateCheck] = std::move(candidate);
+            }
+        }
+    };
+
+    for (const auto& key : source.visibilityKeys) {
+        std::string normalizedKey = NormalizeForMatching(key);
+        addAliasMatches(normalizedKey, 0.99f, "Exact visibility_rules match");
+
+        std::string canonicalKey = BuildCanonicalAliasKey(normalizedKey);
+        if (!canonicalKey.empty() && canonicalKey != normalizedKey) {
+            addAliasMatches(canonicalKey, 0.99f, "Canonical visibility_rules match");
+        }
+    }
+
+    std::string normalizedMapPathAlias = NormalizeForMatching(source.placement.mapName + " " + source.displayPath);
+    addAliasMatches(normalizedMapPathAlias, 0.90f, "Exact map+path alias");
+    std::string canonicalMapPathAlias = BuildCanonicalAliasKey(normalizedMapPathAlias);
+    if (!canonicalMapPathAlias.empty() && canonicalMapPathAlias != normalizedMapPathAlias) {
+        addAliasMatches(canonicalMapPathAlias, 0.88f, "Canonical map+path alias");
+    }
+
+    std::string normalizedPathAlias = NormalizeForMatching(source.displayPath);
+    addAliasMatches(normalizedPathAlias, 0.82f, "Exact path alias");
+    std::string canonicalPathAlias = BuildCanonicalAliasKey(normalizedPathAlias);
+    if (!canonicalPathAlias.empty() && canonicalPathAlias != normalizedPathAlias) {
+        addAliasMatches(canonicalPathAlias, 0.80f, "Canonical path alias");
+    }
+
+    if (candidateByCheck.empty() && sourceScoringContext.sourceArea.has_value()) {
+        auto areaIt = descriptorIndicesByArea.find(sourceScoringContext.sourceArea.value());
+        if (areaIt != descriptorIndicesByArea.end()) {
+            std::string normalizedPath = NormalizeForMatching(source.displayPath);
+            for (size_t descriptorIndex : areaIt->second) {
+                const auto& descriptor = descriptors[descriptorIndex];
+                for (const auto& alias : descriptor.normalizedAliases) {
+                    if (alias == normalizedPath || (!alias.empty() && EndsWith(alias, normalizedPath)) ||
+                        (!normalizedPath.empty() && EndsWith(normalizedPath, alias))) {
+                        RankedCheckCandidate candidate;
+                        candidate.check = descriptor.check;
+                        candidate.score = 0.55f;
+                        candidate.reason = "Area-local path fallback";
+                        candidateByCheck[candidate.check] = std::move(candidate);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    matchInfo.rankedCandidates.reserve(candidateByCheck.size());
+    for (auto& [check, candidate] : candidateByCheck) {
+        auto descriptorIndexIt = descriptorIndexByCheck.find(candidate.check);
+        if (descriptorIndexIt != descriptorIndexByCheck.end()) {
+            float rescoredValue =
+                ScoreSourceAgainstCheck(sourceScoringContext, descriptors[descriptorIndexIt->second]).score;
+            candidate.score = std::clamp((candidate.score * 0.45f) + (rescoredValue * 0.75f), 0.0f, 1.0f);
+        }
+
+        if (sourceScoringContext.sourceArea.has_value()) {
+            const auto* location = Rando::StaticData::GetLocation(candidate.check);
+            if (location->GetArea() != sourceScoringContext.sourceArea.value()) {
+                candidate.score = std::max(0.0f, candidate.score - 0.18f);
+            }
+        }
+        if (candidate.score > 0.01f) {
+            matchInfo.rankedCandidates.push_back(std::move(candidate));
+        }
+    }
+
+    std::sort(matchInfo.rankedCandidates.begin(), matchInfo.rankedCandidates.end(),
+              [](const RankedCheckCandidate& left, const RankedCheckCandidate& right) {
+                  if (left.score == right.score) {
+                      return left.check < right.check;
+                  }
+                  return left.score > right.score;
+              });
+    if (matchInfo.rankedCandidates.size() > 8) {
+        matchInfo.rankedCandidates.resize(8);
+    }
+    return matchInfo;
+}
+
+void ResetMapTrackerState(bool unloadTextures) {
+    if (unloadTextures) {
+        auto gui = Ship::Context::GetInstance()->GetWindow()->GetGui();
+        if (gui != nullptr) {
+            for (const auto& tab : mapTrackerState.tabs) {
+                if (!tab.textureName.empty() && gui->HasTextureByName(tab.textureName)) {
+                    gui->UnloadTexture(tab.textureName);
+                }
+            }
+        }
+    }
+    mapTrackerState = {};
+}
+
+std::string ResolveMapImagePath(const std::string& mapName,
+                                const std::unordered_map<std::string, std::string>& mapImagePathsByName,
+                                std::string& outResolutionInfo) {
+    std::vector<std::string> lookupKeys = BuildMapImageLookupKeys(mapName);
+    for (const auto& key : lookupKeys) {
+        auto findIt = mapImagePathsByName.find(key);
+        if (findIt != mapImagePathsByName.end()) {
+            if (key != NormalizeForMatching(mapName)) {
+                outResolutionInfo = "Using image mapping alias \"" + key + "\" for map \"" + mapName + "\".";
+            }
+            return findIt->second;
+        }
+    }
+    return "";
+}
+
+std::string BuildIssueDetailsForSource(const MapMarkerSource& source, const std::string& reason) {
+    return "Map: " + source.placement.mapName + " | Path: " + source.displayPath + " | File: " + source.sourceFile + " | " +
+           reason;
+}
+
+void UpdateRequestedMapTabFromCurrentArea(bool force) {
+    if (!force && currentArea == mapTrackerState.lastFocusedArea) {
+        return;
+    }
+    mapTrackerState.lastFocusedArea = currentArea;
+
+    std::vector<std::string> preferredNames;
+    switch (currentArea) {
+        case RCAREA_KOKIRI_FOREST:
+            preferredNames = { "Kokiri Forest", "KF" };
+            break;
+        case RCAREA_LOST_WOODS:
+            preferredNames = { "Lost Woods", "LW" };
+            break;
+        case RCAREA_SACRED_FOREST_MEADOW:
+            preferredNames = { "SFM", "Sacred Forest Meadow" };
+            break;
+        case RCAREA_HYRULE_FIELD:
+            preferredNames = { "Hyrule Fields", "HF", "Overworld" };
+            break;
+        case RCAREA_LAKE_HYLIA:
+            preferredNames = { "Lake Hylia", "LH", "Overworld" };
+            break;
+        case RCAREA_GERUDO_VALLEY:
+            preferredNames = { "Gerudo Valley", "GV", "Overworld" };
+            break;
+        case RCAREA_GERUDO_FORTRESS:
+            preferredNames = { "Gerudo Fortress", "Hideout", "GF", "Overworld" };
+            break;
+        case RCAREA_WASTELAND:
+            preferredNames = { "Wasteland", "Overworld" };
+            break;
+        case RCAREA_DESERT_COLOSSUS:
+            preferredNames = { "Colossus", "Desert Colossus", "Overworld" };
+            break;
+        case RCAREA_MARKET:
+            preferredNames = { "Market", "ToT", "Temple of Time", "Overworld" };
+            break;
+        case RCAREA_HYRULE_CASTLE:
+            preferredNames = { "Hyrule Castle", "HC", "Overworld" };
+            break;
+        case RCAREA_KAKARIKO_VILLAGE:
+            preferredNames = { "Kakariko Village", "Kak", "Overworld" };
+            break;
+        case RCAREA_GRAVEYARD:
+            preferredNames = { "Graveyard", "Overworld" };
+            break;
+        case RCAREA_DEATH_MOUNTAIN_TRAIL:
+            preferredNames = { "DMT", "Death Mountain Trail", "Overworld" };
+            break;
+        case RCAREA_GORON_CITY:
+            preferredNames = { "Goron City", "GC", "Overworld" };
+            break;
+        case RCAREA_DEATH_MOUNTAIN_CRATER:
+            preferredNames = { "DMC", "Death Mountain Crater", "Overworld" };
+            break;
+        case RCAREA_ZORAS_RIVER:
+            preferredNames = { "Zora River", "ZR", "Overworld" };
+            break;
+        case RCAREA_ZORAS_DOMAIN:
+            preferredNames = { "Zoras Domain", "ZD", "Overworld" };
+            break;
+        case RCAREA_ZORAS_FOUNTAIN:
+            preferredNames = { "Zoras Fountain", "ZF", "Overworld" };
+            break;
+        case RCAREA_LON_LON_RANCH:
+            preferredNames = { "Lon Lon Ranch", "LLR", "Overworld" };
+            break;
+        case RCAREA_DEKU_TREE:
+            preferredNames = { "Deku Tree" };
+            break;
+        case RCAREA_DODONGOS_CAVERN:
+            preferredNames = { "Dodongos Cavern" };
+            break;
+        case RCAREA_JABU_JABUS_BELLY:
+            preferredNames = { "Jabu Jabus Belly" };
+            break;
+        case RCAREA_FOREST_TEMPLE:
+            preferredNames = { "Forest Temple" };
+            break;
+        case RCAREA_FIRE_TEMPLE:
+            preferredNames = { "Fire Temple" };
+            break;
+        case RCAREA_WATER_TEMPLE:
+            preferredNames = { "Water Temple" };
+            break;
+        case RCAREA_SPIRIT_TEMPLE:
+            preferredNames = { "Spirit Temple" };
+            break;
+        case RCAREA_SHADOW_TEMPLE:
+            preferredNames = { "Shadow Temple" };
+            break;
+        case RCAREA_BOTTOM_OF_THE_WELL:
+            preferredNames = { "Bottom of the Well" };
+            break;
+        case RCAREA_ICE_CAVERN:
+            preferredNames = { "Ice Cavern" };
+            break;
+        case RCAREA_GERUDO_TRAINING_GROUND:
+            preferredNames = { "Gerudo Training Ground" };
+            break;
+        case RCAREA_GANONS_CASTLE:
+            preferredNames = { "Ganons Castle", "Ganons Tower" };
+            break;
+        default:
+            break;
+    }
+
+    for (const auto& preferredName : preferredNames) {
+        std::string normalized = NormalizeForMatching(preferredName);
+        if (mapTrackerState.tabIndexByName.contains(normalized)) {
+            mapTrackerState.requestedTabName = normalized;
+            return;
+        }
+    }
+}
+
+void LoadMapTrackerData() {
+    const auto loadStartTime = std::chrono::steady_clock::now();
+    ResetMapTrackerState(true);
+    mapTrackerState.attemptedLoad = true;
+    mapTrackerState.assetsRoot = GetMapTrackerAssetsRoot();
+    SPDLOG_INFO("[CheckTrackerMapDiag] Load start. assetsRoot='{}' candidates='{}'", mapTrackerState.assetsRoot.string(),
+                BuildMapTrackerAssetsRootCandidatesSummary());
+
+    std::filesystem::path mapsJsonPath = mapTrackerState.assetsRoot / CHECK_TRACKER_MAPS_JSON;
+    std::filesystem::path locationsDirPath = mapTrackerState.assetsRoot / CHECK_TRACKER_LOCATIONS_DIR;
+
+    if (!std::filesystem::exists(mapTrackerState.assetsRoot)) {
+        mapTrackerState.fatalErrors.push_back(
+            "Map assets folder not found. Expected folder: " + GetMapTrackerAssetsRootAbsoluteString());
+        mapTrackerState.fatalErrors.push_back("Tried these candidate roots: " + BuildMapTrackerAssetsRootCandidatesSummary());
+        mapTrackerState.fatalErrors.push_back(
+            "Extract the pack so these paths exist: " + (mapTrackerState.assetsRoot / "maps/maps.jsonc").string() + " and " +
+            (mapTrackerState.assetsRoot / "locations").string() + ".");
+        SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: assets root missing '{}'.", mapTrackerState.assetsRoot.string());
+        return;
+    }
+
+    std::string archiveMountError;
+    if (!EnsureMapTrackerArchiveMounted(mapTrackerState.assetsRoot, mapTrackerState.assetsArchiveMountRoot,
+                                        mapTrackerState.resourcePathPrefix, archiveMountError)) {
+        mapTrackerState.fatalErrors.push_back("Failed to mount map asset archive: " + archiveMountError);
+        SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: failed to mount map archive. assetsRoot='{}' error='{}'",
+                     mapTrackerState.assetsRoot.string(), archiveMountError);
+        return;
+    }
+    SPDLOG_INFO("[CheckTrackerMapDiag] Archive mounted. mountRoot='{}' resourcePrefix='{}'", mapTrackerState.assetsArchiveMountRoot.string(),
+                mapTrackerState.resourcePathPrefix);
+
+    if (!std::filesystem::exists(mapsJsonPath)) {
+        mapTrackerState.fatalErrors.push_back("Missing map metadata file: " + mapsJsonPath.string());
+    }
+    if (!std::filesystem::exists(locationsDirPath) || !std::filesystem::is_directory(locationsDirPath)) {
+        mapTrackerState.fatalErrors.push_back("Missing locations directory: " + locationsDirPath.string());
+    }
+    if (!mapTrackerState.fatalErrors.empty()) {
+        SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: required files missing. maps='{}' locations='{}'",
+                     mapsJsonPath.string(), locationsDirPath.string());
+        return;
+    }
+
+    json mapsJson;
+    std::string parseError;
+    if (!LoadJsonWithComments(mapsJsonPath, mapsJson, parseError)) {
+        mapTrackerState.fatalErrors.push_back("Could not parse " + mapsJsonPath.string() + ": " + parseError);
+        SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: failed to parse maps metadata '{}': {}",
+                     mapsJsonPath.string(), parseError);
+        return;
+    }
+
+    std::unordered_map<std::string, std::string> mapImagePathsByName;
+    std::vector<std::string> orderedMapNames;
+    if (!mapsJson.is_array()) {
+        mapTrackerState.fatalErrors.push_back("Expected an array in " + mapsJsonPath.string());
+        SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: maps metadata root is not an array: '{}'.", mapsJsonPath.string());
+        return;
+    }
+
+    for (const auto& mapEntry : mapsJson) {
+        if (!mapEntry.is_object() || !mapEntry.contains("name") || !mapEntry["name"].is_string()) {
+            continue;
+        }
+        std::string mapName = NormalizeMapNameForMapTracker(mapEntry["name"].get<std::string>());
+        if (mapName.empty()) {
+            continue;
+        }
+
+        std::string normalizedMapName = NormalizeForMatching(mapName);
+        if (!mapImagePathsByName.contains(normalizedMapName)) {
+            orderedMapNames.push_back(mapName);
+        }
+
+        if (mapEntry.contains("img") && mapEntry["img"].is_string()) {
+            mapImagePathsByName[normalizedMapName] = mapEntry["img"].get<std::string>();
+        } else {
+            mapTrackerState.warnings.push_back({ "Missing image path for map " + mapName,
+                                                 "The map entry in maps/maps.jsonc is missing an \"img\" value." });
+        }
+    }
+    SPDLOG_INFO("[CheckTrackerMapDiag] Parsed maps metadata. rawEntries={} uniqueMaps={} warnings={}",
+                mapsJson.size(), orderedMapNames.size(), mapTrackerState.warnings.size());
+
+    std::vector<MapMarkerSource> markerSources;
+    size_t parsedLocationFileCount = 0;
+    size_t parsedLocationRootCount = 0;
+    for (const auto& directoryEntry : std::filesystem::directory_iterator(locationsDirPath)) {
+        if (!directoryEntry.is_regular_file() || directoryEntry.path().extension() != ".jsonc") {
+            continue;
+        }
+
+        json locationJson;
+        if (!LoadJsonWithComments(directoryEntry.path(), locationJson, parseError)) {
+            mapTrackerState.warnings.push_back(
+                { "Failed to parse location file " + directoryEntry.path().filename().string(),
+                  "Parse error: " + parseError + " | File: " + directoryEntry.path().string() });
+            continue;
+        }
+
+        if (!locationJson.is_array()) {
+            mapTrackerState.warnings.push_back(
+                { "Invalid location root in " + directoryEntry.path().filename().string(),
+                  "Expected a top-level array of nodes in " + directoryEntry.path().string() + "." });
+            continue;
+        }
+
+        parsedLocationFileCount++;
+        for (const auto& rootNode : locationJson) {
+            parsedLocationRootCount++;
+            CollectMarkerSourcesFromNode(rootNode, directoryEntry.path().filename().string(), {}, {}, markerSources,
+                                         mapTrackerState.warnings);
+        }
+    }
+    SPDLOG_INFO("[CheckTrackerMapDiag] Parsed location files. files={} roots={} markerSources={} warnings={}",
+                parsedLocationFileCount, parsedLocationRootCount, markerSources.size(), mapTrackerState.warnings.size());
+
+    size_t mqSourceDiscardCount = 0;
+    size_t hintSourceDiscardCount = 0;
+    std::vector<MapMarkerSource> filteredMarkerSources;
+    filteredMarkerSources.reserve(markerSources.size());
+    for (const auto& source : markerSources) {
+        if (IsSourceMqRelated(source)) {
+            mqSourceDiscardCount++;
+            continue;
+        }
+        if (IsSourceHintRelated(source)) {
+            hintSourceDiscardCount++;
+            continue;
+        }
+        filteredMarkerSources.push_back(source);
+    }
+    markerSources = std::move(filteredMarkerSources);
+    if (mqSourceDiscardCount > 0 || hintSourceDiscardCount > 0) {
+        SPDLOG_INFO("[CheckTrackerMapDiag] Discarded marker sources. mq={} hint={} remaining={}", mqSourceDiscardCount,
+                    hintSourceDiscardCount, markerSources.size());
+    }
+
+    if (markerSources.empty()) {
+        mapTrackerState.fatalErrors.push_back("No usable map markers were found in " + locationsDirPath.string() +
+                                              ". The pack may be incomplete or only contain MQ/hint markers.");
+        SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: no usable marker sources found in '{}'.", locationsDirPath.string());
+        return;
+    }
+
+    std::vector<CheckDescriptor> descriptors = BuildVisibleCheckDescriptors();
+    if (descriptors.empty()) {
+        mapTrackerState.fatalErrors.push_back("No visible checks available to map. Load a randomizer save first.");
+        SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: no visible check descriptors available.");
+        return;
+    }
+    SPDLOG_INFO("[CheckTrackerMapDiag] Built descriptors. count={}", descriptors.size());
+
+    std::unordered_map<std::string, std::vector<size_t>> descriptorIndicesByAlias;
+    std::unordered_map<RandomizerCheckArea, std::vector<size_t>> descriptorIndicesByArea;
+    std::unordered_map<RandomizerCheck, size_t> descriptorIndexByCheck;
+    descriptorIndexByCheck.reserve(descriptors.size());
+    for (size_t descriptorIndex = 0; descriptorIndex < descriptors.size(); descriptorIndex++) {
+        const auto& descriptor = descriptors[descriptorIndex];
+        descriptorIndexByCheck[descriptor.check] = descriptorIndex;
+        descriptorIndicesByArea[descriptor.area].push_back(descriptorIndex);
+        for (const auto& alias : descriptor.normalizedAliases) {
+            if (!alias.empty()) {
+                AddUniqueIndex(descriptorIndicesByAlias[alias], descriptorIndex);
+            }
+        }
+    }
+    SPDLOG_INFO("[CheckTrackerMapDiag] Built fast indices. aliases={} areas={} checks={}", descriptorIndicesByAlias.size(),
+                descriptorIndicesByArea.size(), descriptorIndexByCheck.size());
+
+    std::vector<SourceMatchInfo> matchInfos;
+    matchInfos.reserve(markerSources.size());
+    for (size_t markerSourceIndex = 0; markerSourceIndex < markerSources.size(); markerSourceIndex++) {
+        const auto& markerSource = markerSources[markerSourceIndex];
+        const auto sourceStartTime = std::chrono::steady_clock::now();
+        matchInfos.push_back(BuildMatchInfo(markerSource, descriptors, descriptorIndicesByAlias, descriptorIndicesByArea,
+                                            descriptorIndexByCheck));
+        const double sourceElapsedMs = GetElapsedMilliseconds(sourceStartTime);
+
+        if (sourceElapsedMs > 25.0) {
+            SPDLOG_INFO("[CheckTrackerMapDiag] Slow source match: {} ms | path='{}' file='{}'",
+                        sourceElapsedMs, markerSource.displayPath, markerSource.sourceFile);
+        }
+
+        if (((markerSourceIndex + 1) % 250) == 0 || markerSourceIndex + 1 == markerSources.size()) {
+            const double totalElapsedMs = GetElapsedMilliseconds(loadStartTime);
+            const double averageMsPerSource = totalElapsedMs / static_cast<double>(markerSourceIndex + 1);
+            SPDLOG_INFO("[CheckTrackerMapDiag] Match progress {}/{} ({:.1f}%). elapsed={} ms avgPerSource={} ms",
+                        markerSourceIndex + 1, markerSources.size(),
+                        100.0 * static_cast<double>(markerSourceIndex + 1) / static_cast<double>(markerSources.size()),
+                        totalElapsedMs, averageMsPerSource);
+        }
+    }
+
+    std::sort(matchInfos.begin(), matchInfos.end(), [](const SourceMatchInfo& left, const SourceMatchInfo& right) {
+        float leftScore = left.rankedCandidates.empty() ? 0.0f : left.rankedCandidates.front().score;
+        float rightScore = right.rankedCandidates.empty() ? 0.0f : right.rankedCandidates.front().score;
+        return leftScore > rightScore;
+    });
+    SPDLOG_INFO("[CheckTrackerMapDiag] Match sorting complete. sources={}", matchInfos.size());
+
+    std::vector<MapMarker> mappedMarkers;
+    std::unordered_set<RandomizerCheck> assignedChecks;
+    std::unordered_map<RandomizerCheck, std::string> assignedPathByCheck;
+    std::unordered_map<RandomizerCheck, float> assignedScoreByCheck;
+    for (const auto& matchInfo : matchInfos) {
+        if (matchInfo.rankedCandidates.empty()) {
+            mapTrackerState.zeroScoreUnresolvedLinks.push_back(
+                { "Score 0 for " + matchInfo.source.displayPath,
+                  BuildIssueDetailsForSource(matchInfo.source, "No matching check candidates found.") });
+            continue;
+        }
+
+        float topScore = matchInfo.rankedCandidates.front().score;
+        float secondScore = matchInfo.rankedCandidates.size() > 1 ? matchInfo.rankedCandidates[1].score : 0.0f;
+        if (topScore < CHECK_TRACKER_MAP_SCORE_THRESHOLD) {
+            if (topScore <= CHECK_TRACKER_MAP_ZERO_SCORE_EPSILON) {
+                mapTrackerState.zeroScoreUnresolvedLinks.push_back(
+                    { "Score 0 for " + matchInfo.source.displayPath,
+                      BuildIssueDetailsForSource(matchInfo.source, fmt::format("Best score was {:.2f}.", topScore)) });
+            } else {
+                mapTrackerState.unresolvedLinks.push_back(
+                    { "Low score for " + matchInfo.source.displayPath,
+                      BuildIssueDetailsForSource(matchInfo.source, fmt::format("Best score was {:.2f}.", topScore)) });
+            }
+            continue;
+        }
+
+        auto buildMappedMarker = [&](const RankedCheckCandidate& candidate, const std::string& confidenceReason) {
+            MapMarker marker;
+            marker.check = candidate.check;
+            marker.mapName = NormalizeMapNameForMapTracker(matchInfo.source.placement.mapName);
+            marker.displayPath = matchInfo.source.displayPath;
+            marker.sourceFile = matchInfo.source.sourceFile;
+            marker.visibilityKey = matchInfo.source.visibilityKeys.empty() ? "" : matchInfo.source.visibilityKeys.front();
+            marker.confidence = candidate.score;
+            marker.confidenceReason = confidenceReason;
+            marker.x = matchInfo.source.placement.x;
+            marker.y = matchInfo.source.placement.y;
+            marker.size = matchInfo.source.placement.size;
+            marker.lowConfidence = (candidate.score < CHECK_TRACKER_MAP_LOW_CONFIDENCE_THRESHOLD) ||
+                                   ((topScore - secondScore) < CHECK_TRACKER_MAP_CLOSE_SCORE_DELTA);
+            return marker;
+        };
+
+        bool assigned = false;
+        std::vector<std::string> blockedByAssignedCandidates;
+        std::optional<RankedCheckCandidate> bestBlockedCandidate;
+        float bestBlockedAssignedScore = 0.0f;
+        for (const auto& candidate : matchInfo.rankedCandidates) {
+            if (candidate.score < CHECK_TRACKER_MAP_SCORE_THRESHOLD) {
+                break;
+            }
+            if (assignedChecks.contains(candidate.check)) {
+                std::string assignedPath = "(unknown)";
+                auto assignedPathIt = assignedPathByCheck.find(candidate.check);
+                if (assignedPathIt != assignedPathByCheck.end()) {
+                    assignedPath = assignedPathIt->second;
+                }
+
+                float assignedScore = 0.0f;
+                auto assignedScoreIt = assignedScoreByCheck.find(candidate.check);
+                if (assignedScoreIt != assignedScoreByCheck.end()) {
+                    assignedScore = assignedScoreIt->second;
+                }
+
+                blockedByAssignedCandidates.push_back(fmt::format(
+                    "{} already assigned to \"{}\" (score {:.2f})", GetCheckDisplayName(candidate.check), assignedPath,
+                    assignedScore));
+
+                if (!bestBlockedCandidate.has_value() || candidate.score > bestBlockedCandidate->score) {
+                    bestBlockedCandidate = candidate;
+                    bestBlockedAssignedScore = assignedScore;
+                }
+                continue;
+            }
+
+            MapMarker marker = buildMappedMarker(candidate, fmt::format("Top {:.2f} / Next {:.2f}", topScore, secondScore));
+            mappedMarkers.push_back(marker);
+            assignedChecks.insert(candidate.check);
+            assignedPathByCheck[candidate.check] = matchInfo.source.displayPath;
+            assignedScoreByCheck[candidate.check] = candidate.score;
+            mapTrackerState.linkedChecks.insert(candidate.check);
+            assigned = true;
+
+            if (marker.lowConfidence) {
+                mapTrackerState.lowConfidenceLinks.push_back(
+                    { "Low-confidence link for " + marker.displayPath,
+                      BuildIssueDetailsForSource(matchInfo.source,
+                                                 "Mapped to " + GetCheckDisplayName(marker.check) + " (" +
+                                                     marker.confidenceReason + ").") });
+            }
+            break;
+        }
+
+        if (!assigned && bestBlockedCandidate.has_value()) {
+            bool scoreHighEnough = bestBlockedCandidate->score >= CHECK_TRACKER_MAP_CONFLICT_DUPLICATE_THRESHOLD;
+            bool closeToExistingAssignment =
+                (bestBlockedCandidate->score + CHECK_TRACKER_MAP_CONFLICT_DUPLICATE_MAX_SCORE_GAP) >= bestBlockedAssignedScore;
+            if (scoreHighEnough && closeToExistingAssignment) {
+                MapMarker marker = buildMappedMarker(
+                    bestBlockedCandidate.value(), fmt::format("Conflict duplicate assignment ({:.2f})", bestBlockedCandidate->score));
+                mappedMarkers.push_back(marker);
+                mapTrackerState.linkedChecks.insert(marker.check);
+                assigned = true;
+
+                if (marker.lowConfidence) {
+                    mapTrackerState.lowConfidenceLinks.push_back(
+                        { "Low-confidence duplicate link for " + marker.displayPath,
+                          BuildIssueDetailsForSource(matchInfo.source,
+                                                     "Mapped to " + GetCheckDisplayName(marker.check) + " (" +
+                                                         marker.confidenceReason + ").") });
+                }
+            }
+        }
+
+        if (!assigned) {
+            std::string blockedDetails = blockedByAssignedCandidates.empty()
+                                             ? "All candidate checks were already assigned to stronger matches."
+                                             : "Blocked candidates: " + JoinWithCommaLimited(blockedByAssignedCandidates, 3);
+            mapTrackerState.unresolvedLinks.push_back(
+                { "Conflict for " + matchInfo.source.displayPath,
+                  BuildIssueDetailsForSource(matchInfo.source, blockedDetails) });
+        }
+    }
+
+    for (const auto& descriptor : descriptors) {
+        if (!mapTrackerState.linkedChecks.contains(descriptor.check)) {
+            mapTrackerState.unassignedCheckIds.push_back(descriptor.check);
+            mapTrackerState.unresolvedLinks.push_back(
+                { "Unlinked in-game check: " + descriptor.checkDisplayName,
+                  "No marker could be linked to this visible check in the pack. Area: " +
+                      RandomizerCheckObjects::GetRCAreaName(descriptor.area) });
+        }
+    }
+    std::sort(mapTrackerState.unassignedCheckIds.begin(), mapTrackerState.unassignedCheckIds.end(),
+              [](RandomizerCheck left, RandomizerCheck right) {
+                  return static_cast<int>(left) < static_cast<int>(right);
+              });
+    mapTrackerState.unassignedCheckIds.erase(
+        std::unique(mapTrackerState.unassignedCheckIds.begin(), mapTrackerState.unassignedCheckIds.end()),
+        mapTrackerState.unassignedCheckIds.end());
+
+    SPDLOG_INFO(
+        "[CheckTrackerMapDiag] Linking summary. mappedMarkers={} linkedChecks={} lowConfidence={} unresolved={} zeroScore={} unassigned={}",
+        mappedMarkers.size(), mapTrackerState.linkedChecks.size(), mapTrackerState.lowConfidenceLinks.size(),
+        mapTrackerState.unresolvedLinks.size(), mapTrackerState.zeroScoreUnresolvedLinks.size(),
+        mapTrackerState.unassignedCheckIds.size());
+
+    std::vector<std::string> mapNamesForTabs = orderedMapNames;
+    for (const auto& marker : mappedMarkers) {
+        std::string markerMapName = NormalizeMapNameForMapTracker(marker.mapName);
+        if (std::find(mapNamesForTabs.begin(), mapNamesForTabs.end(), markerMapName) == mapNamesForTabs.end()) {
+            mapNamesForTabs.push_back(markerMapName);
+        }
+    }
+
+    for (const auto& mapName : mapNamesForTabs) {
+        MapTabData tab;
+        tab.mapName = mapName;
+
+        std::string resolutionInfo;
+        tab.imageRelativePath = ResolveMapImagePath(mapName, mapImagePathsByName, resolutionInfo);
+        if (!resolutionInfo.empty()) {
+            mapTrackerState.warnings.push_back({ "Map alias used", resolutionInfo });
+        }
+
+        if (!tab.imageRelativePath.empty()) {
+            tab.imageAbsolutePath = mapTrackerState.assetsRoot / tab.imageRelativePath;
+            tab.imageResourcePath =
+                (std::filesystem::path(mapTrackerState.resourcePathPrefix) / tab.imageRelativePath).lexically_normal().generic_string();
+            if (!std::filesystem::exists(tab.imageAbsolutePath)) {
+                tab.imageError = "Image file not found: " + tab.imageAbsolutePath.string();
+            }
+        } else {
+            tab.imageError = "No image entry found in maps/maps.jsonc for map \"" + mapName + "\".";
+        }
+
+        std::string normalizedMapName = NormalizeForMatching(mapName);
+        mapTrackerState.tabIndexByName[normalizedMapName] = mapTrackerState.tabs.size();
+        mapTrackerState.tabs.push_back(std::move(tab));
+    }
+
+    for (const auto& marker : mappedMarkers) {
+        std::string tabKey = NormalizeForMatching(marker.mapName);
+        if (!mapTrackerState.tabIndexByName.contains(tabKey)) {
+            mapTrackerState.unresolvedLinks.push_back(
+                { "Missing map tab for linked marker",
+                  "Could not create/find a tab for map \"" + marker.mapName + "\" while linking " +
+                      GetCheckDisplayName(marker.check) + "." });
+            continue;
+        }
+        mapTrackerState.tabs[mapTrackerState.tabIndexByName[tabKey]].markers.push_back(marker);
+    }
+
+    auto gui = Ship::Context::GetInstance()->GetWindow()->GetGui();
+    if (gui == nullptr) {
+        mapTrackerState.fatalErrors.push_back("Could not access GUI texture loader.");
+        SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: GUI texture loader was null.");
+        return;
+    }
+
+    auto context = Ship::Context::GetInstance();
+    if (context == nullptr || context->GetResourceManager() == nullptr ||
+        context->GetResourceManager()->GetArchiveManager() == nullptr) {
+        mapTrackerState.fatalErrors.push_back("Could not access archive manager for map texture resources.");
+        SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: archive manager unavailable.");
+        return;
+    }
+    auto archiveManager = context->GetResourceManager()->GetArchiveManager();
+
+    for (auto& tab : mapTrackerState.tabs) {
+        std::sort(tab.markers.begin(), tab.markers.end(), [](const MapMarker& left, const MapMarker& right) {
+            if (left.check == right.check) {
+                return left.displayPath < right.displayPath;
+            }
+            return left.check < right.check;
+        });
+
+        if (!tab.imageError.empty()) {
+            continue;
+        }
+
+        std::string imageValidationError;
+        if (!ValidateMapImageFile(tab.imageAbsolutePath, imageValidationError)) {
+            tab.imageError = imageValidationError;
+            continue;
+        }
+
+        if (!archiveManager->HasFile(tab.imageResourcePath)) {
+            tab.imageError = "Image resource not indexed in archive: " + tab.imageResourcePath +
+                             " | Archive mount root: " + mapTrackerState.assetsArchiveMountRoot.string();
+            continue;
+        }
+
+        tab.textureName = "CHECK_TRACKER_MAP_" + NormalizeForMatching(tab.mapName);
+        if (gui->HasTextureByName(tab.textureName)) {
+            gui->UnloadTexture(tab.textureName);
+        }
+
+        try {
+            gui->LoadTextureFromRawImage(tab.textureName, tab.imageResourcePath);
+            tab.texture = gui->GetTextureByName(tab.textureName);
+            tab.textureSize = gui->GetTextureSize(tab.textureName);
+            tab.imageLoaded = tab.texture != 0 && tab.textureSize.x > 0.0f && tab.textureSize.y > 0.0f;
+            if (!tab.imageLoaded) {
+                tab.imageError = "Failed to load map texture from: " + tab.imageAbsolutePath.string() +
+                                 " | Resource path: " + tab.imageResourcePath;
+            }
+        } catch (...) {
+            tab.imageError = "Failed to load map texture from: " + tab.imageAbsolutePath.string() +
+                             " | Resource path: " + tab.imageResourcePath;
+        }
+    }
+
+    mapTrackerState.loaded = true;
+    SPDLOG_INFO("[CheckTrackerMapDiag] Load completed in {} ms. tabs={} warnings={} fatalErrors={}",
+                GetElapsedMilliseconds(loadStartTime), mapTrackerState.tabs.size(), mapTrackerState.warnings.size(),
+                mapTrackerState.fatalErrors.size());
+}
+
+bool IsCheckDoneForMapDisplay(RandomizerCheck rc) {
+    auto* itemLocation = OTRGlobals::Instance->gRandoContext->GetItemLocation(rc);
+    if (itemLocation->GetIsSkipped() || itemLocation->HasObtained()) {
+        return true;
+    }
+
+    RandomizerCheckStatus status = itemLocation->GetCheckStatus();
+    return status == RCSHOW_COLLECTED || status == RCSHOW_SAVED;
+}
+
+void DrawMapIssueList(const std::vector<MapIssueEntry>& issues, const char* emptyText) {
+    if (issues.empty()) {
+        ImGui::TextUnformatted(emptyText);
+        return;
+    }
+
+    for (size_t issueIndex = 0; issueIndex < issues.size(); issueIndex++) {
+        const auto& issue = issues[issueIndex];
+        std::string nodeLabel = fmt::format("{}##Issue_{}", issue.summary, issueIndex);
+        ImGuiTreeNodeFlags nodeFlags = ImGuiTreeNodeFlags_SpanAvailWidth;
+        if (issue.details.empty()) {
+            nodeFlags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+        }
+
+        bool open = ImGui::TreeNodeEx(nodeLabel.c_str(), nodeFlags);
+        if (!issue.details.empty() && open) {
+            ImGui::TextWrapped("%s", issue.details.c_str());
+            ImGui::TreePop();
+        }
+    }
+}
+
+void DrawMapTrackerIssuesTab() {
+    ImGui::TextWrapped("Assets folder: %s", GetMapTrackerAssetsRootAbsoluteString().c_str());
+    ImGui::Separator();
+
+    if (!mapTrackerState.fatalErrors.empty()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "Fatal setup errors:");
+        for (const auto& error : mapTrackerState.fatalErrors) {
+            ImGui::TextWrapped("- %s", error.c_str());
+        }
+        return;
+    }
+
+    auto drawIssueCategory = [](const char* categoryName, const std::vector<MapIssueEntry>& issues, const char* emptyText,
+                                const ImVec4& color) {
+        std::string headerLabel = fmt::format("{} ({})", categoryName, issues.size());
+        ImGui::PushStyleColor(ImGuiCol_Text, color);
+        bool open = ImGui::CollapsingHeader(headerLabel.c_str());
+        ImGui::PopStyleColor();
+
+        if (open) {
+            DrawMapIssueList(issues, emptyText);
+        }
+    };
+
+    drawIssueCategory("Warnings", mapTrackerState.warnings, "No warnings.", ImVec4(1.0f, 0.85f, 0.45f, 1.0f));
+    drawIssueCategory("Low-confidence links", mapTrackerState.lowConfidenceLinks, "No low-confidence links.",
+                      ImVec4(1.0f, 0.75f, 0.35f, 1.0f));
+    drawIssueCategory("Unlinked checks (Score 0)", mapTrackerState.zeroScoreUnresolvedLinks, "No score-0 unlinked checks.",
+                      ImVec4(1.0f, 0.65f, 0.5f, 1.0f));
+    drawIssueCategory("Unlinked checks", mapTrackerState.unresolvedLinks, "No unlinked checks.",
+                      ImVec4(1.0f, 0.5f, 0.5f, 1.0f));
+
+    if (mapTrackerState.warnings.empty() && mapTrackerState.lowConfidenceLinks.empty() &&
+        mapTrackerState.zeroScoreUnresolvedLinks.empty() && mapTrackerState.unresolvedLinks.empty()) {
+        ImGui::Separator();
+        ImGui::TextUnformatted("No issues found.");
+    }
+}
+
+void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
+    if (!tab.imageLoaded) {
+        ImGui::TextWrapped("Could not render map image for \"%s\".", tab.mapName.c_str());
+        if (!tab.imageError.empty()) {
+            ImGui::TextWrapped("%s", tab.imageError.c_str());
+        }
+        return;
+    }
+
+    ImVec2 availableSize = ImGui::GetContentRegionAvail();
+    float widthScale = (availableSize.x > 0.0f && tab.textureSize.x > 0.0f) ? (availableSize.x / tab.textureSize.x) : 1.0f;
+    float heightScale =
+        (availableSize.y > 0.0f && tab.textureSize.y > 0.0f) ? (availableSize.y / tab.textureSize.y) : widthScale;
+    float imageScale = std::min(widthScale, heightScale);
+    imageScale = std::clamp(imageScale, 0.05f, 1.0f);
+
+    ImVec2 drawSize(tab.textureSize.x * imageScale, tab.textureSize.y * imageScale);
+    float horizontalPadding = std::max(0.0f, (availableSize.x - drawSize.x) * 0.5f);
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + horizontalPadding);
+    ImVec2 imageStartPos = ImGui::GetCursorScreenPos();
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+
+    ImGui::Image(tab.texture, drawSize);
+
+    struct RenderableMarker {
+        const MapMarker* marker = nullptr;
+        bool isDone = false;
+        bool isAvailable = false;
+        ImU32 fillColor = CHECK_TRACKER_MAP_COLOR_UNAVAILABLE;
+    };
+
+    struct ClusterPopupState {
+        bool open = false;
+        std::string tabName;
+        std::string stackKey;
+        ImVec2 popupPosition = { 0.0f, 0.0f };
+        double keepAliveUntil = 0.0;
+    };
+    static ClusterPopupState clusterPopupState;
+
+    if (clusterPopupState.tabName != tab.mapName) {
+        clusterPopupState.open = false;
+        clusterPopupState.tabName = tab.mapName;
+        clusterPopupState.stackKey.clear();
+        clusterPopupState.keepAliveUntil = 0.0;
+    }
+
+    auto shouldRenderMarker = [&](const MapMarker& marker) {
+        if (!IsVisibleInCheckTracker(marker.check)) {
+            return false;
+        }
+
+        auto* itemLocation = OTRGlobals::Instance->gRandoContext->GetItemLocation(marker.check);
+        if (enableAvailableChecks && onlyShowAvailable && !itemLocation->IsAvailable()) {
+            return false;
+        }
+
+        if (IsCheckHidden(marker.check)) {
+            return false;
+        }
+
+        auto* location = Rando::StaticData::GetLocation(marker.check);
+        return IsAreaSpoiled(location->GetArea()) || mqSpoilers;
+    };
+
+    auto buildStackKey = [](const MapMarker& marker) {
+        int xQuantized = static_cast<int>(std::lround(marker.x * 100.0f));
+        int yQuantized = static_cast<int>(std::lround(marker.y * 100.0f));
+        return fmt::format("{}:{}", xQuantized, yQuantized);
+    };
+
+    std::vector<std::string> stackOrder;
+    std::unordered_map<std::string, std::vector<RenderableMarker>> renderableMarkersByStackKey;
+    for (const auto& marker : tab.markers) {
+        if (!shouldRenderMarker(marker)) {
+            continue;
+        }
+
+        auto* itemLocation = OTRGlobals::Instance->gRandoContext->GetItemLocation(marker.check);
+        bool isDone = IsCheckDoneForMapDisplay(marker.check);
+        bool isAvailable = itemLocation->IsAvailable();
+
+        ImU32 fillColor = CHECK_TRACKER_MAP_COLOR_UNAVAILABLE;
+        if (isDone) {
+            fillColor = CHECK_TRACKER_MAP_COLOR_DONE;
+        } else if (isAvailable) {
+            fillColor = CHECK_TRACKER_MAP_COLOR_AVAILABLE;
+        }
+
+        std::string stackKey = buildStackKey(marker);
+        if (!renderableMarkersByStackKey.contains(stackKey)) {
+            stackOrder.push_back(stackKey);
+        }
+        renderableMarkersByStackKey[stackKey].push_back({ &marker, isDone, isAvailable, fillColor });
+    }
+
+    auto drawSingleMarkerTooltip = [&](const RenderableMarker& renderableMarker) {
+        ImGui::BeginTooltip();
+        ImGui::TextUnformatted(GetCheckDisplayName(renderableMarker.marker->check).c_str());
+        bool hasTooltipDetails = false;
+
+        std::string extraText = GetCheckExtraInfoText(renderableMarker.marker->check);
+        if (!extraText.empty()) {
+            Color_RGBA8 legacyExtraColor = GetLegacyCheckExtraColor(renderableMarker.marker->check);
+            ImGui::PushStyleColor(
+                ImGuiCol_Text,
+                ImVec4(legacyExtraColor.r / 255.0f, legacyExtraColor.g / 255.0f, legacyExtraColor.b / 255.0f,
+                       legacyExtraColor.a / 255.0f));
+            ImGui::TextWrapped("(%s)", extraText.c_str());
+            ImGui::PopStyleColor();
+            hasTooltipDetails = true;
+        }
+
+        if (showLogicTooltip) {
+            std::string logicString = GetCheckLogicString(renderableMarker.marker->check);
+            if (!logicString.empty()) {
+                ImGui::Separator();
+                ImGui::TextWrapped("%s", logicString.c_str());
+                hasTooltipDetails = true;
+            }
+        }
+
+        if (showMapDebugDetails) {
+            if (hasTooltipDetails) {
+                ImGui::Separator();
+            }
+            ImGui::TextDisabled("Tag: %s", GetGameCheckTag(renderableMarker.marker->check).c_str());
+            if (!renderableMarker.marker->displayPath.empty()) {
+                ImGui::TextDisabled("Pack: %s", renderableMarker.marker->displayPath.c_str());
+            }
+        }
+
+        ImGui::EndTooltip();
+    };
+
+    bool markerHoveredForPopup = false;
+    double nowTime = ImGui::GetTime();
+
+    for (const auto& stackKey : stackOrder) {
+        auto& renderableMarkers = renderableMarkersByStackKey[stackKey];
+        if (renderableMarkers.empty()) {
+            continue;
+        }
+
+        const MapMarker& anchorMarker = *renderableMarkers.front().marker;
+        bool isMultiMarkerCluster = renderableMarkers.size() > 1;
+
+        float halfSize = std::max(4.0f, anchorMarker.size * imageScale * 0.5f);
+        ImVec2 center(imageStartPos.x + (anchorMarker.x * imageScale), imageStartPos.y + (anchorMarker.y * imageScale));
+        ImVec2 markerMin(center.x - halfSize, center.y - halfSize);
+        ImVec2 markerMax(center.x + halfSize, center.y + halfSize);
+
+        ImGui::SetCursorScreenPos(markerMin);
+        ImGui::PushID(fmt::format("MapMarker_{}_{}", tab.mapName, stackKey).c_str());
+        ImGui::InvisibleButton("marker", ImVec2(markerMax.x - markerMin.x, markerMax.y - markerMin.y));
+        bool hovered = ImGui::IsItemHovered();
+        bool clicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
+        ImGui::PopID();
+
+        bool hasAvailable = false;
+        bool hasUnavailable = false;
+        bool hasDone = false;
+        bool hasLowConfidence = false;
+        for (const auto& renderableMarker : renderableMarkers) {
+            if (renderableMarker.isDone) {
+                hasDone = true;
+            } else if (renderableMarker.isAvailable) {
+                hasAvailable = true;
+            } else {
+                hasUnavailable = true;
+            }
+            hasLowConfidence = hasLowConfidence || renderableMarker.marker->lowConfidence;
+        }
+
+        std::vector<ImU32> segmentColors;
+        if (hasAvailable) {
+            segmentColors.push_back(CHECK_TRACKER_MAP_COLOR_AVAILABLE);
+        }
+        if (hasUnavailable) {
+            segmentColors.push_back(CHECK_TRACKER_MAP_COLOR_UNAVAILABLE);
+        }
+        if (hasDone) {
+            segmentColors.push_back(CHECK_TRACKER_MAP_COLOR_DONE);
+        }
+        if (segmentColors.empty()) {
+            segmentColors.push_back(CHECK_TRACKER_MAP_COLOR_UNAVAILABLE);
+        }
+
+        if (segmentColors.size() == 1) {
+            drawList->AddRectFilled(markerMin, markerMax, segmentColors.front(), 1.0f);
+        } else {
+            float markerWidth = markerMax.x - markerMin.x;
+            for (size_t segmentIndex = 0; segmentIndex < segmentColors.size(); segmentIndex++) {
+                float leftX = markerMin.x + (markerWidth * static_cast<float>(segmentIndex) /
+                                             static_cast<float>(segmentColors.size()));
+                float rightX = markerMin.x + (markerWidth * static_cast<float>(segmentIndex + 1) /
+                                              static_cast<float>(segmentColors.size()));
+                drawList->AddRectFilled(ImVec2(leftX, markerMin.y), ImVec2(rightX, markerMax.y), segmentColors[segmentIndex]);
+            }
+        }
+
+        ImU32 borderColor = hasLowConfidence ? CHECK_TRACKER_MAP_COLOR_LOW_CONFIDENCE_BORDER : CHECK_TRACKER_MAP_COLOR_BORDER;
+        drawList->AddRect(markerMin, markerMax, borderColor, 1.0f, 0, 1.5f);
+
+        if (isMultiMarkerCluster) {
+            if (hovered) {
+                markerHoveredForPopup = true;
+                clusterPopupState.open = true;
+                clusterPopupState.tabName = tab.mapName;
+                clusterPopupState.stackKey = stackKey;
+                clusterPopupState.popupPosition = ImVec2(markerMax.x + 10.0f, markerMin.y - 4.0f);
+                clusterPopupState.keepAliveUntil = nowTime + 0.16;
+            }
+            continue;
+        }
+
+        if (clicked) {
+            ToggleSkippedStateForCheck(anchorMarker.check);
+        }
+
+        if (hovered) {
+            drawSingleMarkerTooltip(renderableMarkers.front());
+        }
+    }
+
+    bool popupHovered = false;
+    if (clusterPopupState.open && clusterPopupState.tabName == tab.mapName) {
+        auto popupClusterIt = renderableMarkersByStackKey.find(clusterPopupState.stackKey);
+        if (popupClusterIt == renderableMarkersByStackKey.end() || popupClusterIt->second.size() < 2) {
+            clusterPopupState.open = false;
+        } else {
+            ImGui::SetNextWindowPos(clusterPopupState.popupPosition, ImGuiCond_Always);
+            ImGuiWindowFlags popupFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                                          ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
+                                          ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
+            std::string popupTitle = "Map Checks##MapClusterPopup_" + tab.mapName;
+            ImGui::Begin(popupTitle.c_str(), nullptr, popupFlags);
+
+            popupHovered =
+                ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem | ImGuiHoveredFlags_ChildWindows);
+            if (popupHovered) {
+                clusterPopupState.keepAliveUntil = std::max(clusterPopupState.keepAliveUntil, nowTime + 0.16);
+            }
+
+            ImGui::Text("%zu checks", popupClusterIt->second.size());
+            ImGui::Separator();
+
+            for (const auto& renderableMarker : popupClusterIt->second) {
+                const MapMarker& marker = *renderableMarker.marker;
+                bool canToggle = CanToggleSkippedStateForCheck(marker.check);
+                std::string checkName = GetCheckDisplayName(marker.check);
+                std::string checkSelectableLabel = checkName + "##ClusterCheck_" + std::to_string(marker.check);
+
+                ImGui::PushID(static_cast<int>(marker.check));
+                ImGui::ColorButton("##status", ImGui::ColorConvertU32ToFloat4(renderableMarker.fillColor),
+                                   ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop, ImVec2(10.0f, 10.0f));
+                ImGui::SameLine();
+
+                if (!canToggle) {
+                    ImGui::BeginDisabled();
+                }
+                if (ImGui::Selectable(checkSelectableLabel.c_str(), false, ImGuiSelectableFlags_AllowDoubleClick)) {
+                    ToggleSkippedStateForCheck(marker.check);
+                    clusterPopupState.keepAliveUntil = std::max(clusterPopupState.keepAliveUntil, ImGui::GetTime() + 0.16);
+                }
+                if (!canToggle) {
+                    ImGui::EndDisabled();
+                }
+
+                if (ImGui::IsItemHovered()) {
+                    ImGui::BeginTooltip();
+                    ImGui::TextUnformatted(checkName.c_str());
+                    bool hasTooltipDetails = false;
+                    if (showLogicTooltip) {
+                        std::string logicString = GetCheckLogicString(marker.check);
+                        if (!logicString.empty()) {
+                            ImGui::Separator();
+                            ImGui::TextWrapped("%s", logicString.c_str());
+                            hasTooltipDetails = true;
+                        }
+                    }
+                    if (showMapDebugDetails) {
+                        if (hasTooltipDetails) {
+                            ImGui::Separator();
+                        }
+                        ImGui::TextDisabled("Tag: %s", GetGameCheckTag(marker.check).c_str());
+                        if (!marker.displayPath.empty()) {
+                            ImGui::TextDisabled("Pack: %s", marker.displayPath.c_str());
+                        }
+                    }
+                    ImGui::EndTooltip();
+                }
+
+                std::string extraText = GetCheckExtraInfoText(marker.check);
+                if (!extraText.empty()) {
+                    ImGui::SameLine();
+                    Color_RGBA8 legacyExtraColor = GetLegacyCheckExtraColor(marker.check);
+                    ImGui::PushStyleColor(
+                        ImGuiCol_Text,
+                        ImVec4(legacyExtraColor.r / 255.0f, legacyExtraColor.g / 255.0f, legacyExtraColor.b / 255.0f,
+                               legacyExtraColor.a / 255.0f));
+                    ImGui::Text("(%s)", extraText.c_str());
+                    ImGui::PopStyleColor();
+                }
+                ImGui::PopID();
+            }
+
+            ImGui::End();
+        }
+    }
+
+    if (clusterPopupState.open && !markerHoveredForPopup && !popupHovered && ImGui::GetTime() > clusterPopupState.keepAliveUntil) {
+        clusterPopupState.open = false;
+    }
+
+    if (showMapDebugDetails) {
+        ImGui::Separator();
+        std::string unassignedHeaderLabel =
+            fmt::format("Unassigned In-Game Check Tags ({})", mapTrackerState.unassignedCheckIds.size());
+        if (ImGui::CollapsingHeader(unassignedHeaderLabel.c_str())) {
+            if (mapTrackerState.unassignedCheckIds.empty()) {
+                ImGui::TextUnformatted("All visible checks were assigned.");
+            } else {
+                for (RandomizerCheck unassignedCheck : mapTrackerState.unassignedCheckIds) {
+                    std::string gameTag = GetGameCheckTag(unassignedCheck);
+                    ImGui::Text("%s", gameTag.c_str());
+                }
+            }
+        }
+    }
+}
+
+void DrawMapTrackerContent() {
+    if (!mapTrackerState.attemptedLoad) {
+        SPDLOG_INFO("[CheckTrackerMapDiag] First map render requested load.");
+        LoadMapTrackerData();
+    }
+
+    if (UIWidgets::Button("Focus Player Area",
+                          UIWidgets::ButtonOptions().Color(THEME_COLOR).Size({ 170.0f, 0.0f }))) {
+        UpdateRequestedMapTabFromCurrentArea(true);
+    }
+    ImGui::SameLine();
+    if (UIWidgets::Button("Reload Map Data",
+                          UIWidgets::ButtonOptions().Color(THEME_COLOR).Size({ 170.0f, 0.0f }))) {
+        SPDLOG_INFO("[CheckTrackerMapDiag] Manual reload requested.");
+        LoadMapTrackerData();
+    }
+    ImGui::SameLine();
+    ImGui::TextWrapped("Assets: %s", GetMapTrackerAssetsRootAbsoluteString().c_str());
+    ImGui::Separator();
+
+    if (!mapTrackerState.fatalErrors.empty()) {
+        for (const auto& fatalError : mapTrackerState.fatalErrors) {
+            ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "%s", fatalError.c_str());
+        }
+        ImGui::Separator();
+        DrawMapTrackerIssuesTab();
+        return;
+    }
+
+    UpdateRequestedMapTabFromCurrentArea(false);
+    bool mqSpoilers = CVarGetInteger(CVAR_TRACKER_CHECK("MQSpoilers"), 0);
+
+    int issuesTabIndex = static_cast<int>(mapTrackerState.tabs.size());
+    if (!mapTrackerState.requestedTabName.empty()) {
+        auto findIt = mapTrackerState.tabIndexByName.find(mapTrackerState.requestedTabName);
+        if (findIt != mapTrackerState.tabIndexByName.end()) {
+            mapTrackerState.selectedTabIndex = static_cast<int>(findIt->second);
+        }
+    }
+    mapTrackerState.requestedTabName.clear();
+
+    mapTrackerState.selectedTabIndex = std::clamp(mapTrackerState.selectedTabIndex, 0, issuesTabIndex);
+
+    ImVec4 selectedTabColor = ImGui::ColorConvertU32ToFloat4(THEME_COLOR);
+    float tabsRowStartX = ImGui::GetCursorPosX();
+    float tabsRowMaxX = tabsRowStartX + ImGui::GetContentRegionAvail().x;
+    bool hasPreviousTabButton = false;
+    auto drawTabButton = [&](const std::string& label, int tabIndex) {
+        ImVec2 textSize = ImGui::CalcTextSize(label.c_str());
+        float buttonWidth = textSize.x + (ImGui::GetStyle().FramePadding.x * 2.0f) + 12.0f;
+        buttonWidth = std::min(buttonWidth, std::max(1.0f, tabsRowMaxX - tabsRowStartX));
+        if (hasPreviousTabButton) {
+            ImGui::SameLine();
+            if (ImGui::GetCursorPosX() + buttonWidth > tabsRowMaxX) {
+                ImGui::NewLine();
+            }
+        }
+        bool isSelected = (mapTrackerState.selectedTabIndex == tabIndex);
+        if (isSelected) {
+            ImGui::PushStyleColor(ImGuiCol_Button, selectedTabColor);
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, selectedTabColor);
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, selectedTabColor);
+        }
+        if (ImGui::Button(label.c_str(), ImVec2(buttonWidth, 0.0f))) {
+            mapTrackerState.selectedTabIndex = tabIndex;
+        }
+        if (isSelected) {
+            ImGui::PopStyleColor(3);
+        }
+        hasPreviousTabButton = true;
+    };
+
+    for (size_t tabIndex = 0; tabIndex < mapTrackerState.tabs.size(); tabIndex++) {
+        drawTabButton(mapTrackerState.tabs[tabIndex].mapName, static_cast<int>(tabIndex));
+    }
+    drawTabButton("Unlinked / Issues", issuesTabIndex);
+
+    ImGui::Separator();
+    if (mapTrackerState.selectedTabIndex == issuesTabIndex) {
+        DrawMapTrackerIssuesTab();
+    } else if (!mapTrackerState.tabs.empty() &&
+               mapTrackerState.selectedTabIndex >= 0 &&
+               mapTrackerState.selectedTabIndex < static_cast<int>(mapTrackerState.tabs.size())) {
+        DrawMapTabContent(mapTrackerState.tabs[mapTrackerState.selectedTabIndex], mqSpoilers);
+    }
+}
 
 void TrySetAreas() {
     if (checksByArea.empty()) {
@@ -522,6 +2911,7 @@ void CheckTrackerLoadGame(int32_t fileNum) {
     if (IS_BOSS_RUSH) {
         return;
     }
+    ResetMapTrackerState(true);
     LoadSettings();
     TrySetAreas();
     for (auto& entry : Rando::StaticData::GetLocationTable()) {
@@ -610,9 +3000,7 @@ void CheckTrackerLoadGame(int32_t fileNum) {
 
     RegionTable_Init();
 
-    if (Rando::Context::GetInstance()->GetOption(RSK_SHUFFLE_ENTRANCES).Get()) {
-        Rando::Context::GetInstance()->GetEntranceShuffler()->ApplyEntranceOverrides();
-    }
+    Rando::Context::GetInstance()->GetEntranceShuffler()->ApplyEntranceOverrides();
 
     recalculateAvailable = true;
 }
@@ -943,6 +3331,7 @@ void Teardown() {
     filterChecksHidden = { 0 };
 
     lastLocationChecked = RC_UNKNOWN_CHECK;
+    ResetMapTrackerState(true);
 }
 
 bool IsAreaSpoiled(RandomizerCheckArea rcArea) {
@@ -953,6 +3342,8 @@ void SetAreaSpoiled(RandomizerCheckArea rcArea) {
     areasSpoiled |= (1 << rcArea);
     SaveManager::Instance->SaveSection(gSaveContext.fileNum, sectionId, true);
 }
+
+void InternalRecalculateAvailableChecks(RandomizerRegion startingRegion);
 
 void CheckTrackerWindow::DrawElement() {
     Color_Background = CVarGetColor(CVAR_TRACKER_CHECK("BgColor.Value"), Color_Bg_Default);
@@ -987,8 +3378,9 @@ void CheckTrackerWindow::DrawElement() {
     showHidden = CVarGetInteger(CVAR_TRACKER_CHECK("ShowHidden"), 0);
     mystery = CVarGetInteger(CVAR_RANDOMIZER_ENHANCEMENT("MysteriousShuffle"), 0);
     showLogicTooltip = CVarGetInteger(CVAR_TRACKER_CHECK("ShowLogic"), 0);
-    enableAvailableChecks = CVarGetInteger(CVAR_TRACKER_CHECK("EnableAvailableChecks"), 0);
+    enableAvailableChecks = CVarGetInteger(CVAR_TRACKER_CHECK("EnableAvailableChecks"), 1);
     onlyShowAvailable = CVarGetInteger(CVAR_TRACKER_CHECK("OnlyShowAvailable"), 0);
+    showMapDebugDetails = CVarGetInteger(CHECK_TRACKER_MAP_DEBUG_CVAR, 0);
 
     hideShopUnshuffledChecks = CVarGetInteger(CVAR_TRACKER_CHECK("HideUnshuffledShopChecks"), 0);
     alwaysShowGS = CVarGetInteger(CVAR_TRACKER_CHECK("AlwaysShowGSLocs"), 0);
@@ -1019,237 +3411,286 @@ void CheckTrackerWindow::DrawElement() {
     } else {
         ImGui::SetNextWindowSize(ImVec2(400, 540), ImGuiCond_FirstUseEver);
     }
-    BeginFloatWindows("Check Tracker", mIsVisible, ImGuiWindowFlags_NoScrollbar);
+    if (Trackers::BeginFloatWindows(
+            "Check Tracker", mIsVisible, Color_Background,
+            static_cast<TrackerWindowType>(CVarGetInteger(CVAR_TRACKER_CHECK("WindowType"), TRACKER_WINDOW_WINDOW)),
+            CVarGetInteger(CVAR_TRACKER_CHECK("Draggable"), 1), ImGuiWindowFlags_NoScrollbar)) {
+        if (!GameInteractor::IsSaveLoaded() || !initialized) {
+            ImGui::Text("Waiting for file load..."); // TODO Language
+            Trackers::EndFloatWindows();
+            return;
+        }
 
-    if (!GameInteractor::IsSaveLoaded() || !initialized) {
-        ImGui::Text("Waiting for file load..."); // TODO Language
-        EndFloatWindows();
-        return;
-    }
+        if (recalculateAvailable) {
+            recalculateAvailable = false;
+            InternalRecalculateAvailableChecks(availableChecksStartingRegion);
+            availableChecksStartingRegion = RR_ROOT;
+        }
 
-    if (recalculateAvailable) {
-        recalculateAvailable = false;
-        RecalculateAvailableChecks();
-    }
-
-    // Quick Options
+        // Quick Options
 #ifdef __WIIU__
-    float headerHeight = 40.0f;
+        float headerHeight = 40.0f;
 #else
-    float headerHeight = 20.0f;
+        float headerHeight = 20.0f;
 #endif
-    if (!ImGui::BeginTable("Check Tracker", 1, 0)) {
-        EndFloatWindows();
-        return;
-    }
-
-    ImGui::SetWindowFontScale(CVarGetFloat(CVAR_TRACKER_CHECK("FontSize"), 1.0f));
-
-    ImGui::TableNextRow(0, 0);
-    ImGui::TableNextColumn();
-    if (CVarGetInteger(CVAR_TRACKER_CHECK("HiddenItemsToggleVisible"), 1) &&
-        UIWidgets::CVarCheckbox(
-            "Show Hidden Items", CVAR_TRACKER_CHECK("ShowHidden"),
-            UIWidgets::CheckboxOptions(
-                { { .tooltip = "When active, items will show hidden checks by default when updated to this state." } })
-                .Color(THEME_COLOR))) {
-        doAreaScroll = true;
-        showHidden = CVarGetInteger(CVAR_TRACKER_CHECK("ShowHidden"), 0);
-        RecalculateAllAreaTotals();
-    }
-    if (enableAvailableChecks && CVarGetInteger(CVAR_TRACKER_CHECK("AvailableChecksToggleVisible"), 1)) {
-        if (UIWidgets::CVarCheckbox(
-                "Only Show Available Checks", CVAR_TRACKER_CHECK("OnlyShowAvailable"),
-                UIWidgets::CheckboxOptions({ { .tooltip = "When active, unavailable checks will be hidden." } })
-                    .Color(THEME_COLOR))) {
-            doAreaScroll = true;
-            RecalculateAllAreaTotals();
+        if (!ImGui::BeginTable("Check Tracker", 1, 0)) {
+            Trackers::EndFloatWindows();
+            return;
         }
-    }
-    if (CVarGetInteger(CVAR_TRACKER_CHECK("ExpandCollapseButtonsVisible"), 0)) {
-        if (UIWidgets::Button(
-                "Expand All",
-                UIWidgets::ButtonOptions().Color(THEME_COLOR).Size({ ImGui::GetContentRegionAvail().x / 2 - 6, 0 }))) {
-            optCollapseAll = false;
-            optExpandAll = true;
-            doAreaScroll = true;
-        }
-        ImGui::SameLine();
-        if (UIWidgets::Button(
-                "Collapse All",
-                UIWidgets::ButtonOptions().Color(THEME_COLOR).Size({ ImGui::GetContentRegionAvail().x - 6, 0 }))) {
-            optExpandAll = false;
-            optCollapseAll = true;
-        }
-    }
-    UIWidgets::PushStyleCombobox(THEME_COLOR);
-    if (CVarGetInteger(CVAR_TRACKER_CHECK("SearchInputVisible"), 1)) {
-        if (checkSearch.Draw("", ImGui::GetContentRegionAvail().x - 6)) {
-            UpdateFilters();
-        }
-        std::string checkSearchText = "";
-        checkSearchText = checkSearch.InputBuf;
-        checkSearchText.erase(std::remove(checkSearchText.begin(), checkSearchText.end(), ' '), checkSearchText.end());
-        if (checkSearchText.length() < 1) {
-            ImGui::SameLine(20.0f);
-            ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 0.4f), "Search...");
-        }
-    }
-    UIWidgets::PopStyleCombobox();
 
-    if (CVarGetInteger(CVAR_TRACKER_CHECK("CheckTotalsVisible"), 1)) {
-        std::ostringstream totalChecksSS;
-        totalChecksSS << "";
-        if (enableAvailableChecks) {
-            totalChecksSS << totalChecksAvailable << " Available / ";
-        }
-        totalChecksSS << totalChecksGotten << " Checked / " << totalChecks << " Total";
-        ImGui::Text("%s", totalChecksSS.str().c_str());
-    }
+        ImGui::SetWindowFontScale(CVarGetFloat(CVAR_TRACKER_CHECK("FontSize"), 1.0f));
 
-    bool headerPresent =
-        CVarGetInteger(CVAR_TRACKER_CHECK("HiddenItemsToggleVisible"), 1) ||
-        (enableAvailableChecks && CVarGetInteger(CVAR_TRACKER_CHECK("AvailableChecksToggleVisible"), 1)) ||
-        CVarGetInteger(CVAR_TRACKER_CHECK("ExpandCollapseButtonsVisible"), 0) ||
-        CVarGetInteger(CVAR_TRACKER_CHECK("SearchInputVisible"), 1) ||
-        CVarGetInteger(CVAR_TRACKER_CHECK("CheckTotalsVisible"), 1);
-    if (headerPresent) {
-        ImGui::Separator();
-    }
-
-    // Checks Section Lead-in
-    ImGui::TableNextRow();
-    ImGui::TableNextColumn();
-    if (!ImGui::BeginTable("CheckTracker##Checks", 1, ImGuiTableFlags_ScrollY)) {
-        ImGui::EndTable();
-        EndFloatWindows();
-        return;
-    }
-    ImGui::TableNextRow();
-    ImGui::TableNextColumn();
-
-    // Prep for loop
-    RainbowTick();
-    bool doDraw = false;
-    bool thisAreaFullyChecked = false;
-    bool mqSpoilers = CVarGetInteger(CVAR_TRACKER_CHECK("MQSpoilers"), 0);
-    bool hideIncomplete = CVarGetInteger(CVAR_TRACKER_CHECK("AreaIncomplete.Hide"), 0);
-    bool hideComplete = CVarGetInteger(CVAR_TRACKER_CHECK("AreaComplete.Hide"), 0);
-    bool collapseLogic;
-    bool doingCollapseOrExpand = optExpandAll || optCollapseAll;
-    bool isThisAreaSpoiled;
-    RandomizerCheckArea lastArea = RCAREA_INVALID;
-    Color_RGBA8 mainColor;
-    Color_RGBA8 extraColor;
-    std::string stemp;
-
-    bool shouldHideFilteredAreas = CVarGetInteger(CVAR_TRACKER_CHECK("HideFilteredAreas"), 1);
-
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f, 3.0f));
-    for (auto& [rcArea, checks] : checksByArea) {
-        RandomizerCheckArea thisArea = currentArea;
-
-        thisAreaFullyChecked = (areaChecksGotten[rcArea] == areaCheckTotals[rcArea]);
-        // Last Area needs to be cleaned up
-        if (lastArea != RCAREA_INVALID && doDraw) {
-            UIWidgets::PaddedSeparator();
-        }
-        lastArea = rcArea;
-        if (previousShowHidden != showHidden) {
-            previousShowHidden = showHidden;
-            doAreaScroll = true;
-        }
-        if ((shouldHideFilteredAreas && filterAreasHidden[rcArea]) ||
-            (!showHidden && ((hideComplete && thisAreaFullyChecked) || (hideIncomplete && !thisAreaFullyChecked))) ||
-            (enableAvailableChecks && onlyShowAvailable && areaChecksAvailable[rcArea] == 0)) {
-            doDraw = false;
-        } else {
-            // Get the colour for the area
-            if (thisAreaFullyChecked) {
-                mainColor = Color_Area_Complete_Main;
-                extraColor = Color_Area_Complete_Extra;
-            } else {
-                mainColor = Color_Area_Incomplete_Main;
-                extraColor = Color_Area_Incomplete_Extra;
+        ImGui::TableNextRow(0, 0);
+        ImGui::TableNextColumn();
+        bool mapMode = IsMapModeEnabled();
+        std::string modeButtonLabel = mapMode ? "Mode: Map" : "Mode: Legacy";
+        if (UIWidgets::Button(modeButtonLabel.c_str(),
+                              UIWidgets::ButtonOptions().Color(THEME_COLOR).Size({ ImGui::GetContentRegionAvail().x, 0 }))) {
+            mapMode = !mapMode;
+            SPDLOG_INFO("[CheckTrackerMapDiag] Tracker mode toggled to {}.", mapMode ? "Map" : "Legacy");
+            SetMapModeEnabled(mapMode);
+            if (mapMode) {
+                doAreaScroll = true;
             }
+        }
+        bool hasInlineHeaderToggle = false;
+        auto beginInlineHeaderToggle = [&]() {
+            if (hasInlineHeaderToggle) {
+                ImGui::SameLine();
+            }
+            hasInlineHeaderToggle = true;
+        };
 
-            // Draw the area
-            collapseLogic = !thisAreaFullyChecked;
-            if (doingCollapseOrExpand) {
-                if (optExpandAll) {
-                    collapseLogic = true;
-                } else if (optCollapseAll) {
-                    collapseLogic = false;
-                }
+        bool showHiddenItemsToggleVisible = CVarGetInteger(CVAR_TRACKER_CHECK("HiddenItemsToggleVisible"), 1);
+        if (showHiddenItemsToggleVisible) {
+            beginInlineHeaderToggle();
+            if (UIWidgets::CVarCheckbox(
+                    "Show Hidden Items", CVAR_TRACKER_CHECK("ShowHidden"),
+                    UIWidgets::CheckboxOptions(
+                        { { .tooltip =
+                                "When active, items will show hidden checks by default when updated to this state." } })
+                        .Color(THEME_COLOR))) {
+                doAreaScroll = true;
+                showHidden = CVarGetInteger(CVAR_TRACKER_CHECK("ShowHidden"), 0);
+                RecalculateAllAreaTotals();
             }
-            stemp = RandomizerCheckObjects::GetRCAreaName(rcArea) + "##TreeNode";
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(mainColor.r / 255.0f, mainColor.g / 255.0f,
-                                                        mainColor.b / 255.0f, mainColor.a / 255.0f));
-            if (doingCollapseOrExpand) {
-                ImGui::SetNextItemOpen(collapseLogic, ImGuiCond_Always);
-            } else {
-                ImGui::SetNextItemOpen(!thisAreaFullyChecked, ImGuiCond_Once);
+        }
+
+        bool showAvailableChecksToggleVisible =
+            enableAvailableChecks && CVarGetInteger(CVAR_TRACKER_CHECK("AvailableChecksToggleVisible"), 1);
+        if (showAvailableChecksToggleVisible) {
+            beginInlineHeaderToggle();
+            if (UIWidgets::CVarCheckbox(
+                    "Only Available", CVAR_TRACKER_CHECK("OnlyShowAvailable"),
+                    UIWidgets::CheckboxOptions(
+                        { { .tooltip = "When active, unavailable checks and chests will be hidden." } })
+                        .Color(THEME_COLOR))) {
+                doAreaScroll = true;
+                RecalculateAllAreaTotals();
             }
-            doDraw = ImGui::TreeNodeEx(stemp.c_str(), ImGuiTreeNodeFlags_NoTreePushOnOpen);
-            ImGui::PopStyleColor();
+        }
+
+        if (mapMode) {
+            beginInlineHeaderToggle();
+            UIWidgets::CVarCheckbox(
+                "Show Map Debug", CHECK_TRACKER_MAP_DEBUG_CVAR,
+                UIWidgets::CheckboxOptions(
+                    { { .tooltip = "Show map hover debug details and the unassigned in-game tag list." } })
+                    .Color(THEME_COLOR));
+            showMapDebugDetails = CVarGetInteger(CHECK_TRACKER_MAP_DEBUG_CVAR, 0);
+        }
+
+        if (!mapMode && CVarGetInteger(CVAR_TRACKER_CHECK("ExpandCollapseButtonsVisible"), 0)) {
+            if (UIWidgets::Button("Expand All", UIWidgets::ButtonOptions()
+                                                    .Color(THEME_COLOR)
+                                                    .Size({ ImGui::GetContentRegionAvail().x / 2 - 6, 0 }))) {
+                optCollapseAll = false;
+                optExpandAll = true;
+                doAreaScroll = true;
+            }
             ImGui::SameLine();
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(extraColor.r / 255.0f, extraColor.g / 255.0f,
-                                                        extraColor.b / 255.0f, extraColor.a / 255.0f));
+            if (UIWidgets::Button(
+                    "Collapse All",
+                    UIWidgets::ButtonOptions().Color(THEME_COLOR).Size({ ImGui::GetContentRegionAvail().x - 6, 0 }))) {
+                optExpandAll = false;
+                optCollapseAll = true;
+            }
+        }
+        UIWidgets::PushStyleCombobox(THEME_COLOR);
+        if (!mapMode && CVarGetInteger(CVAR_TRACKER_CHECK("SearchInputVisible"), 1)) {
+            if (checkSearch.Draw("", ImGui::GetContentRegionAvail().x - 6)) {
+                UpdateFilters();
+            }
+            std::string checkSearchText = "";
+            checkSearchText = checkSearch.InputBuf;
+            checkSearchText.erase(std::remove(checkSearchText.begin(), checkSearchText.end(), ' '),
+                                  checkSearchText.end());
+            if (checkSearchText.length() < 1) {
+                ImGui::SameLine(20.0f);
+                ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 0.4f), "Search...");
+            }
+        }
+        UIWidgets::PopStyleCombobox();
 
-            isThisAreaSpoiled = IsAreaSpoiled(rcArea) || mqSpoilers;
+        if (CVarGetInteger(CVAR_TRACKER_CHECK("CheckTotalsVisible"), 1)) {
+            std::ostringstream totalChecksSS;
+            totalChecksSS << "";
+            if (enableAvailableChecks) {
+                totalChecksSS << totalChecksAvailable << " Available / ";
+            }
+            totalChecksSS << totalChecksGotten << " Checked / " << totalChecks << " Total";
+            ImGui::Text("%s", totalChecksSS.str().c_str());
+        }
 
-            if (isThisAreaSpoiled) {
-                std::ostringstream areaTotalsSS;
-                std::ostringstream areaTotalsTooltipSS;
+        bool headerPresent =
+            showHiddenItemsToggleVisible || showAvailableChecksToggleVisible || mapMode ||
+            (!mapMode && CVarGetInteger(CVAR_TRACKER_CHECK("ExpandCollapseButtonsVisible"), 0)) ||
+            (!mapMode && CVarGetInteger(CVAR_TRACKER_CHECK("SearchInputVisible"), 1)) ||
+            CVarGetInteger(CVAR_TRACKER_CHECK("CheckTotalsVisible"), 1);
+        if (headerPresent) {
+            ImGui::Separator();
+        }
 
-                areaTotalsSS << "(";
-                if (enableAvailableChecks) {
-                    areaTotalsSS << static_cast<uint16_t>(areaChecksAvailable[rcArea]) << " / ";
-                    areaTotalsTooltipSS << "Available / ";
+        // Checks Section Lead-in
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        if (!ImGui::BeginTable("CheckTracker##Checks", 1, ImGuiTableFlags_ScrollY)) {
+            ImGui::EndTable();
+            Trackers::EndFloatWindows();
+            return;
+        }
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+
+        if (mapMode) {
+            DrawMapTrackerContent();
+        } else {
+            // Prep for loop
+            RainbowTick();
+            bool doDraw = false;
+            bool thisAreaFullyChecked = false;
+            bool mqSpoilers = CVarGetInteger(CVAR_TRACKER_CHECK("MQSpoilers"), 0);
+            bool hideIncomplete = CVarGetInteger(CVAR_TRACKER_CHECK("AreaIncomplete.Hide"), 0);
+            bool hideComplete = CVarGetInteger(CVAR_TRACKER_CHECK("AreaComplete.Hide"), 0);
+            bool collapseLogic;
+            bool doingCollapseOrExpand = optExpandAll || optCollapseAll;
+            bool isThisAreaSpoiled;
+            RandomizerCheckArea lastArea = RCAREA_INVALID;
+            Color_RGBA8 mainColor;
+            Color_RGBA8 extraColor;
+            std::string stemp;
+
+            bool shouldHideFilteredAreas = CVarGetInteger(CVAR_TRACKER_CHECK("HideFilteredAreas"), 1);
+
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f, 3.0f));
+            for (auto& [rcArea, checks] : checksByArea) {
+                RandomizerCheckArea thisArea = currentArea;
+
+                thisAreaFullyChecked = (areaChecksGotten[rcArea] == areaCheckTotals[rcArea]);
+                // Last Area needs to be cleaned up
+                if (lastArea != RCAREA_INVALID && doDraw) {
+                    UIWidgets::PaddedSeparator();
                 }
-                areaTotalsSS << static_cast<uint16_t>(areaChecksGotten[rcArea]) << " / "
-                             << static_cast<uint16_t>(areaCheckTotals[rcArea]) << ")";
-                areaTotalsTooltipSS << "Checked / Total";
-
-                if (showVOrMQ && RandomizerCheckObjects::AreaIsDungeon(rcArea)) {
-                    if (OTRGlobals::Instance->gRandoContext->GetDungeons()
-                            ->GetDungeonFromScene(DungeonSceneLookupByArea(rcArea))
-                            ->IsMQ()) {
-                        areaTotalsSS << " - MQ";
+                lastArea = rcArea;
+                if (previousShowHidden != showHidden) {
+                    previousShowHidden = showHidden;
+                    doAreaScroll = true;
+                }
+                if ((shouldHideFilteredAreas && filterAreasHidden[rcArea]) ||
+                    (!showHidden &&
+                     ((hideComplete && thisAreaFullyChecked) || (hideIncomplete && !thisAreaFullyChecked))) ||
+                    (enableAvailableChecks && onlyShowAvailable && areaChecksAvailable[rcArea] == 0)) {
+                    doDraw = false;
+                } else {
+                    // Get the colour for the area
+                    if (thisAreaFullyChecked) {
+                        mainColor = Color_Area_Complete_Main;
+                        extraColor = Color_Area_Complete_Extra;
                     } else {
-                        areaTotalsSS << " - Vanilla";
+                        mainColor = Color_Area_Incomplete_Main;
+                        extraColor = Color_Area_Incomplete_Extra;
+                    }
+
+                    // Draw the area
+                    collapseLogic = !thisAreaFullyChecked;
+                    if (doingCollapseOrExpand) {
+                        if (optExpandAll) {
+                            collapseLogic = true;
+                        } else if (optCollapseAll) {
+                            collapseLogic = false;
+                        }
+                    }
+                    stemp = RandomizerCheckObjects::GetRCAreaName(rcArea) + "##TreeNode";
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(mainColor.r / 255.0f, mainColor.g / 255.0f,
+                                                                mainColor.b / 255.0f, mainColor.a / 255.0f));
+                    if (doingCollapseOrExpand) {
+                        ImGui::SetNextItemOpen(collapseLogic, ImGuiCond_Always);
+                    } else {
+                        ImGui::SetNextItemOpen(!thisAreaFullyChecked, ImGuiCond_Once);
+                    }
+                    doDraw = ImGui::TreeNodeEx(stemp.c_str(), ImGuiTreeNodeFlags_NoTreePushOnOpen);
+                    ImGui::PopStyleColor();
+                    ImGui::SameLine();
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(extraColor.r / 255.0f, extraColor.g / 255.0f,
+                                                                extraColor.b / 255.0f, extraColor.a / 255.0f));
+
+                    isThisAreaSpoiled = IsAreaSpoiled(rcArea) || mqSpoilers;
+
+                    if (isThisAreaSpoiled) {
+                        std::ostringstream areaTotalsSS;
+                        std::ostringstream areaTotalsTooltipSS;
+
+                        areaTotalsSS << "(";
+                        if (enableAvailableChecks) {
+                            areaTotalsSS << static_cast<uint16_t>(areaChecksAvailable[rcArea]) << " / ";
+                            areaTotalsTooltipSS << "Available / ";
+                        }
+                        areaTotalsSS << static_cast<uint16_t>(areaChecksGotten[rcArea]) << " / "
+                                     << static_cast<uint16_t>(areaCheckTotals[rcArea]) << ")";
+                        areaTotalsTooltipSS << "Checked / Total";
+
+                        if (showVOrMQ && RandomizerCheckObjects::AreaIsDungeon(rcArea)) {
+                            if (OTRGlobals::Instance->gRandoContext->GetDungeons()
+                                    ->GetDungeonFromScene(DungeonSceneLookupByArea(rcArea))
+                                    ->IsMQ()) {
+                                areaTotalsSS << " - MQ";
+                            } else {
+                                areaTotalsSS << " - Vanilla";
+                            }
+                        }
+
+                        ImGui::Text("%s", areaTotalsSS.str().c_str());
+                        UIWidgets::Tooltip(areaTotalsTooltipSS.str().c_str());
+                    } else {
+                        ImGui::Text("???");
+                    }
+
+                    ImGui::PopStyleColor();
+
+                    // Keep areas loaded between transitions
+                    if (thisArea == rcArea && doAreaScroll) {
+                        ImGui::SetScrollHereY(0.0f);
+                        doAreaScroll = false;
+                    }
+                    for (auto rc : checks) {
+                        if (doDraw && isThisAreaSpoiled && !filterChecksHidden[rc]) {
+                            DrawLocation(rc);
+                        }
                     }
                 }
-
-                ImGui::Text("%s", areaTotalsSS.str().c_str());
-                UIWidgets::Tooltip(areaTotalsTooltipSS.str().c_str());
-            } else {
-                ImGui::Text("???");
             }
+            ImGui::PopStyleVar();
 
-            ImGui::PopStyleColor();
-
-            // Keep areas loaded between transitions
-            if (thisArea == rcArea && doAreaScroll) {
-                ImGui::SetScrollHereY(0.0f);
-                doAreaScroll = false;
-            }
-            for (auto rc : checks) {
-                if (doDraw && isThisAreaSpoiled && !filterChecksHidden[rc]) {
-                    DrawLocation(rc);
-                }
+            if (doingCollapseOrExpand) {
+                optCollapseAll = false;
+                optExpandAll = false;
             }
         }
-    }
-    ImGui::PopStyleVar();
 
-    ImGui::EndTable(); // Checks Lead-out
-    ImGui::EndTable(); // Quick Options Lead-out
-    EndFloatWindows();
-    if (doingCollapseOrExpand) {
-        optCollapseAll = false;
-        optExpandAll = false;
+        ImGui::EndTable(); // Checks Lead-out
+        ImGui::EndTable(); // Quick Options Lead-out
     }
+    Trackers::EndFloatWindows();
 }
 
 bool UpdateFilters() {
@@ -1289,40 +3730,45 @@ bool ShouldShowCheck(RandomizerCheck check) {
             (checkSearch.Filters.Size == 0 || checkSearch.PassFilter(search.c_str())));
 }
 
-// Windowing stuff
-void BeginFloatWindows(std::string UniqueName, bool& open, ImGuiWindowFlags flags) {
+namespace Trackers {
+bool BeginFloatWindows(const char* uniqueName, bool& open, const Color_RGBA8& backgroundColor,
+                       TrackerWindowType windowType, bool draggable, ImGuiWindowFlags flags) {
     ImGuiWindowFlags windowFlags = flags;
 
     if (windowFlags == 0) {
         windowFlags |= ImGuiWindowFlags_AlwaysVerticalScrollbar | ImGuiWindowFlags_NoFocusOnAppearing;
     }
 
-    if (CVarGetInteger(CVAR_TRACKER_CHECK("WindowType"), TRACKER_WINDOW_WINDOW) == TRACKER_WINDOW_FLOATING) {
+    if (windowType == TRACKER_WINDOW_FLOATING) {
         ImGui::SetNextWindowViewport(ImGui::GetMainViewport()->ID);
         windowFlags |= ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoTitleBar |
                        ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoScrollbar;
 
-        if (!CVarGetInteger(CVAR_TRACKER_CHECK("Draggable"), 1)) {
+        if (!draggable) {
             windowFlags |= ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoMove;
         }
     }
-    auto maybeParent = ImGui::GetCurrentWindow();
-    ImGuiWindow* window = ImGui::FindWindowByName(UniqueName.c_str());
-    if (window != NULL && window->DockTabIsVisible && window->ParentWindow != NULL &&
+
+    Color_RGBA8 effectiveBackground = backgroundColor;
+    ImGuiWindow* window = ImGui::FindWindowByName(uniqueName);
+    if (window != nullptr && window->DockTabIsVisible && window->ParentWindow != nullptr &&
         std::string(window->ParentWindow->Name).compare(0, strlen("Main - Deck"), "Main - Deck") == 0) {
-        Color_Background.a = 255;
+        effectiveBackground.a = 255;
     }
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, VecFromRGBA8(Color_Background));
+
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, VecFromRGBA8(effectiveBackground));
     ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 4.0f);
-    ImGui::Begin(UniqueName.c_str(), &open, windowFlags);
+    return ImGui::Begin(uniqueName, &open, windowFlags);
 }
+
 void EndFloatWindows() {
     ImGui::PopStyleVar();
     ImGui::PopStyleColor();
     ImGui::PopStyleColor();
     ImGui::End();
 }
+} // namespace Trackers
 
 void LoadSettings() {
     // If in randomzer, then get the setting and check if in general we should be showing the settings
@@ -1758,6 +4204,159 @@ bool IsHeartPiece(GetItemID giid) {
     return giid == GI_HEART_PIECE || giid == GI_HEART_PIECE_WIN;
 }
 
+bool CanToggleSkippedStateForCheck(RandomizerCheck rc) {
+    auto* itemLoc = OTRGlobals::Instance->gRandoContext->GetItemLocation(rc);
+    RandomizerCheckStatus status = itemLoc->GetCheckStatus();
+    return status == RCSHOW_UNCHECKED || status == RCSHOW_SEEN || status == RCSHOW_IDENTIFIED ||
+           status == RCSHOW_SCUMMED || itemLoc->GetIsSkipped();
+}
+
+bool ToggleSkippedStateForCheck(RandomizerCheck rc) {
+    if (!CanToggleSkippedStateForCheck(rc)) {
+        return false;
+    }
+
+    Rando::Location* loc = Rando::StaticData::GetLocation(rc);
+    Rando::ItemLocation* itemLoc = OTRGlobals::Instance->gRandoContext->GetItemLocation(rc);
+    bool skipped = itemLoc->GetIsSkipped();
+    bool available = itemLoc->IsAvailable();
+    if (skipped) {
+        itemLoc->SetIsSkipped(false);
+        areaChecksGotten[loc->GetArea()]--;
+        totalChecksGotten--;
+        if (available) {
+            areaChecksAvailable[loc->GetArea()]++;
+            totalChecksAvailable++;
+        }
+    } else {
+        itemLoc->SetIsSkipped(true);
+        areaChecksGotten[loc->GetArea()]++;
+        totalChecksGotten++;
+        if (available) {
+            areaChecksAvailable[loc->GetArea()]--;
+            totalChecksAvailable--;
+        }
+    }
+    UpdateOrdering(loc->GetArea());
+    UpdateInventoryChecks();
+    SaveManager::Instance->SaveSection(gSaveContext.fileNum, sectionId, true);
+    return true;
+}
+
+std::string GetCheckDisplayName(RandomizerCheck rc) {
+    Rando::Location* loc = Rando::StaticData::GetLocation(rc);
+    if (checkNameOverrides.contains(loc->GetRandomizerCheck())) {
+        return checkNameOverrides[loc->GetRandomizerCheck()];
+    }
+    return loc->GetShortName();
+}
+
+std::string GetCheckExtraInfoText(RandomizerCheck rc) {
+    Rando::Location* loc = Rando::StaticData::GetLocation(rc);
+    Rando::ItemLocation* itemLoc = OTRGlobals::Instance->gRandoContext->GetItemLocation(rc);
+    RandomizerCheckStatus status = itemLoc->GetCheckStatus();
+    bool skipped = itemLoc->GetIsSkipped();
+    std::string txt = "";
+
+    if (status != RCSHOW_UNCHECKED) {
+        switch (status) {
+            case RCSHOW_SAVED:
+            case RCSHOW_COLLECTED:
+            case RCSHOW_SCUMMED:
+                if (IS_RANDO) {
+                    txt = itemLoc->GetPlacedItem().GetName().GetForLanguage(gSaveContext.language);
+                } else {
+                    if (IsHeartPiece((GetItemID)Rando::StaticData::RetrieveItem(loc->GetVanillaItem()).GetItemID())) {
+                        if (gSaveContext.language == LANGUAGE_ENG || gSaveContext.language == LANGUAGE_GER ||
+                            gSaveContext.language == LANGUAGE_JPN) {
+                            txt = Rando::StaticData::RetrieveItem(loc->GetVanillaItem()).GetName().english;
+                        } else if (gSaveContext.language == LANGUAGE_FRA) {
+                            txt = Rando::StaticData::RetrieveItem(loc->GetVanillaItem()).GetName().french;
+                        }
+                    }
+                }
+                break;
+            case RCSHOW_IDENTIFIED:
+            case RCSHOW_SEEN:
+                if (IS_RANDO) {
+                    if (itemLoc->GetPlacedRandomizerGet() == RG_ICE_TRAP && !mystery) {
+                        if (status == RCSHOW_IDENTIFIED) {
+                            txt = OTRGlobals::Instance->gRandoContext->overrides[rc].GetTrickName().GetForLanguage(
+                                gSaveContext.language);
+                        } else {
+                            txt = Rando::StaticData::RetrieveItem(
+                                      OTRGlobals::Instance->gRandoContext->overrides[rc].LooksLike())
+                                      .GetName()
+                                      .GetForLanguage(gSaveContext.language);
+                        }
+                    } else if (!mystery) {
+                        txt = itemLoc->GetPlacedItem().GetName().GetForLanguage(gSaveContext.language);
+                    }
+                    if (IsVisibleInCheckTracker(rc) && status == RCSHOW_IDENTIFIED && !mystery) {
+                        auto price = OTRGlobals::Instance->gRandoContext->GetItemLocation(rc)->GetPrice();
+                        if (price) {
+                            txt += fmt::format(" - {}", price);
+                        }
+                    }
+                } else {
+                    if (IsHeartPiece((GetItemID)Rando::StaticData::RetrieveItem(loc->GetVanillaItem()).GetItemID())) {
+                        if (gSaveContext.language == LANGUAGE_ENG || gSaveContext.language == LANGUAGE_GER ||
+                            gSaveContext.language == LANGUAGE_JPN) {
+                            txt = Rando::StaticData::RetrieveItem(loc->GetVanillaItem()).GetName().english;
+                        } else if (gSaveContext.language == LANGUAGE_FRA) {
+                            txt = Rando::StaticData::RetrieveItem(loc->GetVanillaItem()).GetName().french;
+                        }
+                    }
+                }
+                break;
+            default:
+                break;
+        }
+    }
+
+    if (txt.empty() && skipped) {
+        txt = "Skipped"; // TODO language
+    }
+    return txt;
+}
+
+std::string GetCheckLogicString(RandomizerCheck rc) {
+    auto* itemLoc = OTRGlobals::Instance->gRandoContext->GetItemLocation(rc);
+    for (auto& locationInRegion : areaTable[itemLoc->GetParentRegionKey()].locations) {
+        if (locationInRegion.GetLocation() == rc) {
+            std::string conditionStr = locationInRegion.GetConditionStr();
+            if (conditionStr != "true") {
+                return conditionStr;
+            }
+            break;
+        }
+    }
+    return "";
+}
+
+Color_RGBA8 GetLegacyCheckExtraColor(RandomizerCheck rc) {
+    auto* itemLoc = OTRGlobals::Instance->gRandoContext->GetItemLocation(rc);
+    RandomizerCheckStatus status = itemLoc->GetCheckStatus();
+    bool skipped = itemLoc->GetIsSkipped();
+
+    if (status == RCSHOW_COLLECTED) {
+        return Color_Collected_Extra;
+    }
+    if (status == RCSHOW_SAVED) {
+        return Color_Saved_Extra;
+    }
+    if (skipped) {
+        return Color_Skipped_Extra;
+    }
+    if (status == RCSHOW_SEEN || status == RCSHOW_IDENTIFIED) {
+        return Color_Seen_Extra;
+    }
+    if (status == RCSHOW_SCUMMED) {
+        return Color_Scummed_Extra;
+    }
+    return Color_Unchecked_Extra;
+}
+
 void DrawLocation(RandomizerCheck rc) {
     Color_RGBA8 mainColor;
     Color_RGBA8 extraColor;
@@ -1829,11 +4428,7 @@ void DrawLocation(RandomizerCheck rc) {
     }
 
     // Main Text
-    if (checkNameOverrides.contains(loc->GetRandomizerCheck())) {
-        txt = checkNameOverrides[loc->GetRandomizerCheck()];
-    } else {
-        txt = loc->GetShortName();
-    }
+    txt = GetCheckDisplayName(rc);
 
     if (lastLocationChecked == loc->GetRandomizerCheck()) {
         txt = "* " + txt;
@@ -1842,30 +4437,10 @@ void DrawLocation(RandomizerCheck rc) {
     // Draw button - for Skipped/Seen/Scummed/Unchecked only
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, { 4.0f, 3.0f });
     float sz = ImGui::GetFrameHeight();
-    if (status == RCSHOW_UNCHECKED || status == RCSHOW_SEEN || status == RCSHOW_IDENTIFIED ||
-        status == RCSHOW_SCUMMED || skipped) {
+    if (CanToggleSkippedStateForCheck(rc)) {
         if (UIWidgets::StateButton(std::to_string(rc).c_str(), skipped ? ICON_FA_PLUS : ICON_FA_TIMES, ImVec2(sz, sz),
                                    UIWidgets::ButtonOptions().Color(THEME_COLOR))) {
-            if (skipped) {
-                OTRGlobals::Instance->gRandoContext->GetItemLocation(rc)->SetIsSkipped(false);
-                areaChecksGotten[loc->GetArea()]--;
-                totalChecksGotten--;
-                if (available) {
-                    areaChecksAvailable[loc->GetArea()]++;
-                    totalChecksAvailable++;
-                }
-            } else {
-                OTRGlobals::Instance->gRandoContext->GetItemLocation(rc)->SetIsSkipped(true);
-                areaChecksGotten[loc->GetArea()]++;
-                totalChecksGotten++;
-                if (available) {
-                    areaChecksAvailable[loc->GetArea()]--;
-                    totalChecksAvailable--;
-                }
-            }
-            UpdateOrdering(loc->GetArea());
-            UpdateInventoryChecks();
-            SaveManager::Instance->SaveSection(gSaveContext.fileNum, sectionId, true);
+            ToggleSkippedStateForCheck(rc);
         }
     } else {
         ImGui::Dummy(ImVec2(sz, sz));
@@ -1892,64 +4467,7 @@ void DrawLocation(RandomizerCheck rc) {
     ImGui::PopStyleColor();
 
     // Draw the extra info
-    txt = "";
-
-    if (status != RCSHOW_UNCHECKED) {
-        switch (status) {
-            case RCSHOW_SAVED:
-            case RCSHOW_COLLECTED:
-            case RCSHOW_SCUMMED:
-                if (IS_RANDO) {
-                    txt = itemLoc->GetPlacedItem().GetName().GetForLanguage(gSaveContext.language);
-                } else {
-                    if (IsHeartPiece((GetItemID)Rando::StaticData::RetrieveItem(loc->GetVanillaItem()).GetItemID())) {
-                        if (gSaveContext.language == LANGUAGE_ENG || gSaveContext.language == LANGUAGE_GER ||
-                            gSaveContext.language == LANGUAGE_JPN) {
-                            txt = Rando::StaticData::RetrieveItem(loc->GetVanillaItem()).GetName().english;
-                        } else if (gSaveContext.language == LANGUAGE_FRA) {
-                            txt = Rando::StaticData::RetrieveItem(loc->GetVanillaItem()).GetName().french;
-                        }
-                    }
-                }
-                break;
-            case RCSHOW_IDENTIFIED:
-            case RCSHOW_SEEN:
-                if (IS_RANDO) {
-                    if (itemLoc->GetPlacedRandomizerGet() == RG_ICE_TRAP && !mystery) {
-                        if (status == RCSHOW_IDENTIFIED) {
-                            txt = OTRGlobals::Instance->gRandoContext->overrides[rc].GetTrickName().GetForLanguage(
-                                gSaveContext.language);
-                        } else {
-                            txt = Rando::StaticData::RetrieveItem(
-                                      OTRGlobals::Instance->gRandoContext->overrides[rc].LooksLike())
-                                      .GetName()
-                                      .GetForLanguage(gSaveContext.language);
-                        }
-                    } else if (!mystery) {
-                        txt = itemLoc->GetPlacedItem().GetName().GetForLanguage(gSaveContext.language);
-                    }
-                    if (IsVisibleInCheckTracker(rc) && status == RCSHOW_IDENTIFIED && !mystery) {
-                        auto price = OTRGlobals::Instance->gRandoContext->GetItemLocation(rc)->GetPrice();
-                        if (price) {
-                            txt += fmt::format(" - {}", price);
-                        }
-                    }
-                } else {
-                    if (IsHeartPiece((GetItemID)Rando::StaticData::RetrieveItem(loc->GetVanillaItem()).GetItemID())) {
-                        if (gSaveContext.language == LANGUAGE_ENG || gSaveContext.language == LANGUAGE_GER ||
-                            gSaveContext.language == LANGUAGE_JPN) {
-                            txt = Rando::StaticData::RetrieveItem(loc->GetVanillaItem()).GetName().english;
-                        } else if (gSaveContext.language == LANGUAGE_FRA) {
-                            txt = Rando::StaticData::RetrieveItem(loc->GetVanillaItem()).GetName().french;
-                        }
-                    }
-                }
-                break;
-        }
-    }
-    if (txt == "" && skipped) {
-        txt = "Skipped"; // TODO language
-    }
+    txt = GetCheckExtraInfoText(rc);
 
     if (txt != "") {
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(extraColor.r / 255.0f, extraColor.g / 255.0f, extraColor.b / 255.0f,
@@ -1960,14 +4478,9 @@ void DrawLocation(RandomizerCheck rc) {
     }
 
     if (showLogicTooltip) {
-        for (auto& locationInRegion : areaTable[itemLoc->GetParentRegionKey()].locations) {
-            if (locationInRegion.GetLocation() == rc) {
-                std::string conditionStr = locationInRegion.GetConditionStr();
-                if (conditionStr != "true") {
-                    UIWidgets::Tooltip(conditionStr.c_str());
-                }
-                break;
-            }
+        std::string logicString = GetCheckLogicString(rc);
+        if (!logicString.empty()) {
+            UIWidgets::Tooltip(logicString.c_str());
         }
     }
 }
@@ -2006,9 +4519,9 @@ void RainbowTick() {
 }
 
 void ImGuiDrawTwoColorPickerSection(const char* text, const char* cvarMainName, const char* cvarExtraName,
-                                    Color_RGBA8& main_color, Color_RGBA8& extra_color, Color_RGBA8& main_default_color,
-                                    Color_RGBA8& extra_default_color, const char* cvarHideName, const char* tooltip,
-                                    UIWidgets::Colors theme) {
+                                    Color_RGBA8& main_color, Color_RGBA8& extra_color,
+                                    const Color_RGBA8& main_default_color, const Color_RGBA8& extra_default_color,
+                                    const char* cvarHideName, const char* tooltip, UIWidgets::Colors theme) {
     Color_RGBA8 cvarMainColor = CVarGetColor(cvarMainName, main_default_color);
     Color_RGBA8 cvarExtraColor = CVarGetColor(cvarExtraName, extra_default_color);
     main_color = cvarMainColor;
@@ -2052,7 +4565,7 @@ void ImGuiDrawTwoColorPickerSection(const char* text, const char* cvarMainName, 
     UIWidgets::PopStyleCombobox();
 }
 
-void RecalculateAvailableChecks(RandomizerRegion startingRegion /* = RR_ROOT */) {
+void InternalRecalculateAvailableChecks(RandomizerRegion startingRegion) {
     if (!enableAvailableChecks || !GameInteractor::IsSaveLoaded()) {
         return;
     }
@@ -2097,6 +4610,11 @@ void RecalculateAvailableChecks(RandomizerRegion startingRegion /* = RR_ROOT */)
                 GetPerformanceTimer(PT_RECALCULATE_AVAILABLE_CHECKS).count());
 }
 
+void RecalculateAvailableChecks(RandomizerRegion startingRegion /* = RR_ROOT */) {
+    recalculateAvailable = true;
+    availableChecksStartingRegion = startingRegion;
+}
+
 void CheckTracker_LoadFromPreset(nlohmann::json info) {
     presetLoaded = true;
     presetPos = { info["pos"]["x"], info["pos"]["y"] };
@@ -2114,7 +4632,8 @@ void CheckTrackerWindow::Draw() {
 
 static std::map<int32_t, const char*> windowType = { { TRACKER_WINDOW_FLOATING, "Floating" },
                                                      { TRACKER_WINDOW_WINDOW, "Window" } };
-static std::map<int32_t, const char*> displayType = { { 0, "Always" }, { 1, "Combo Button Hold" } };
+static std::map<int32_t, const char*> showMode = { { TRACKER_DISPLAY_ALWAYS, "Always" },
+                                                   { TRACKER_DISPLAY_COMBO_BUTTON, "Combo Button Hold" } };
 static std::map<int32_t, const char*> buttonStrings = {
     { TRACKER_COMBO_BUTTON_A, "A Button" },    { TRACKER_COMBO_BUTTON_B, "B Button" },
     { TRACKER_COMBO_BUTTON_C_UP, "C-Up" },     { TRACKER_COMBO_BUTTON_C_DOWN, "C-Down" },
@@ -2152,7 +4671,7 @@ void CheckTrackerSettingsWindow::DrawElement() {
                                     UIWidgets::CheckboxOptions().Color(THEME_COLOR));
             UIWidgets::CVarCheckbox("Only Enable While Paused", CVAR_TRACKER_CHECK("ShowOnlyPaused"),
                                     UIWidgets::CheckboxOptions().Color(THEME_COLOR));
-            UIWidgets::CVarCombobox("Display Mode", CVAR_TRACKER_CHECK("DisplayType"), displayType,
+            UIWidgets::CVarCombobox("Display Mode", CVAR_TRACKER_CHECK("DisplayType"), showMode,
                                     UIWidgets::ComboboxOptions()
                                         .LabelPosition(UIWidgets::LabelPositions::Far)
                                         .ComponentAlignment(UIWidgets::ComponentAlignments::Right)
@@ -2275,14 +4794,13 @@ void CheckTrackerWindow::UpdateElement() {
 }
 
 void RegisterCheckTrackerWidgets() {
-    backgroundColorWidget = { .name = "Background Color##CheckTrackerBgColor",
-                              .type = WidgetType::WIDGET_CVAR_COLOR_PICKER };
+    backgroundColorWidget = { .name = "Background Color##CheckTracker", .type = WidgetType::WIDGET_CVAR_COLOR_PICKER };
     backgroundColorWidget.CVar(CVAR_TRACKER_CHECK("BgColor"))
         .Options(
             ColorPickerOptions().Color(THEME_COLOR).DefaultValue(Color_Bg_Default).UseAlpha().ShowReset().ShowRandom());
     SohGui::mSohMenu->AddSearchWidget({ backgroundColorWidget, "Randomizer", "Check Tracker", "General Settings" });
 
-    windowTypeWidget = { .name = "Window Type", .type = WidgetType::WIDGET_CVAR_COMBOBOX };
+    windowTypeWidget = { .name = "Window Type##CheckTracker", .type = WidgetType::WIDGET_CVAR_COMBOBOX };
     windowTypeWidget.CVar(CVAR_TRACKER_CHECK("WindowType"))
         .Options(ComboboxOptions()
                      .DefaultIndex(TRACKER_WINDOW_WINDOW)
@@ -2310,7 +4828,8 @@ void RegisterCheckTrackerWidgets() {
             hideShopUnshuffledChecks = CVarGetInteger(CVAR_TRACKER_CHECK("HideUnshuffledShopChecks"), 0);
             UpdateFilters();
         });
-    SohGui::mSohMenu->AddSearchWidget({ hideUnshuffledShopWidget, "Randomizer", "Check Tracker", "General Settings" });
+    SohGui::mSohMenu->AddSearchWidget(
+        { hideUnshuffledShopWidget, "Randomizer", "Check Tracker", "General Settings" });
 
     showGSWidget = { .name = "Always Show Gold Skulltulas", .type = WidgetType::WIDGET_CVAR_CHECKBOX };
     showGSWidget.CVar(CVAR_TRACKER_CHECK("AlwaysShowGSLocs"))
@@ -2337,7 +4856,7 @@ void RegisterCheckTrackerWidgets() {
                      .Tooltip("If enabled, will show the checks that are available to be collected "
                               "with your current progress."))
         .Callback([&](WidgetInfo& info) {
-            enableAvailableChecks = CVarGetInteger(CVAR_TRACKER_CHECK("EnableAvailableChecks"), 0);
+            enableAvailableChecks = CVarGetInteger(CVAR_TRACKER_CHECK("EnableAvailableChecks"), 1);
             RecalculateAvailableChecks();
         });
 }
