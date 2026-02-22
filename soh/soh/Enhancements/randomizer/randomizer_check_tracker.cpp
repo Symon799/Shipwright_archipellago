@@ -21,9 +21,11 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <numeric>
 #include <optional>
 #include <string>
 #include <sstream>
@@ -194,6 +196,8 @@ bool CheckByArea(RandomizerCheckArea);
 bool IsCheckHidden(RandomizerCheck rc);
 void DrawLocation(RandomizerCheck);
 void DrawMapTrackerContent();
+void StepMapTrackerDataLoad();
+void FinalizeMapTrackerDataLoad();
 void LoadSettings();
 void RainbowTick();
 void UpdateAreas(RandomizerCheckArea area);
@@ -206,6 +210,9 @@ std::string GetCheckExtraInfoText(RandomizerCheck rc);
 std::string GetCheckLogicString(RandomizerCheck rc);
 Color_RGBA8 GetLegacyCheckExtraColor(RandomizerCheck rc);
 std::string BuildCanonicalAliasKey(const std::string& input);
+struct MapMarkerSource;
+std::vector<std::string> BuildSourceAliases(const MapMarkerSource& source);
+bool LoadJsonWithComments(const std::filesystem::path& filePath, json& outJson, std::string& outError);
 int sectionId;
 
 namespace Trackers {
@@ -312,6 +319,13 @@ constexpr float CHECK_TRACKER_MAP_CLOSE_SCORE_DELTA = 0.08f;
 constexpr float CHECK_TRACKER_MAP_CONFLICT_DUPLICATE_THRESHOLD = 0.74f;
 constexpr float CHECK_TRACKER_MAP_CONFLICT_DUPLICATE_MAX_SCORE_GAP = 0.14f;
 constexpr float CHECK_TRACKER_MAP_ZERO_SCORE_EPSILON = 0.0001f;
+constexpr float CHECK_TRACKER_MAP_HIGH_PRECISION_TRIGGER_SCORE = 0.72f;
+constexpr float CHECK_TRACKER_MAP_HIGH_PRECISION_MIN_SCORE = 0.58f;
+constexpr size_t CHECK_TRACKER_MAP_HIGH_PRECISION_MAX_RESULTS = 12;
+constexpr double CHECK_TRACKER_MAP_MATCH_STEP_BUDGET_MS = 7.5;
+constexpr size_t CHECK_TRACKER_MAP_MATCH_STEP_MAX_SOURCES = 96;
+constexpr int CHECK_TRACKER_MAP_MATCH_CACHE_VERSION = 3;
+constexpr const char* CHECK_TRACKER_MAP_MATCH_CACHE_RELATIVE_PATH = "cache/match_cache_v1.json";
 constexpr ImU32 CHECK_TRACKER_MAP_COLOR_DONE = IM_COL32(130, 130, 130, 220);
 constexpr ImU32 CHECK_TRACKER_MAP_COLOR_AVAILABLE = IM_COL32(55, 185, 85, 220);
 constexpr ImU32 CHECK_TRACKER_MAP_COLOR_UNAVAILABLE = IM_COL32(200, 65, 65, 220);
@@ -389,6 +403,12 @@ struct MapIssueEntry {
 struct MapTrackerState {
     bool attemptedLoad = false;
     bool loaded = false;
+    bool loading = false;
+    std::string loadingStatus;
+    size_t loadingCurrent = 0;
+    size_t loadingTotal = 0;
+    std::string cacheStatus;
+    std::filesystem::path cacheFilePath;
     std::filesystem::path assetsRoot;
     std::filesystem::path assetsArchiveMountRoot;
     std::string resourcePathPrefix;
@@ -407,6 +427,26 @@ struct MapTrackerState {
 };
 
 static MapTrackerState mapTrackerState;
+
+struct MapTrackerLoadContext {
+    bool active = false;
+    std::chrono::steady_clock::time_point startTime;
+    std::unordered_map<std::string, std::string> mapImagePathsByName;
+    std::vector<std::string> orderedMapNames;
+    std::vector<MapMarkerSource> markerSources;
+    std::vector<CheckDescriptor> descriptors;
+    std::unordered_map<std::string, std::vector<size_t>> descriptorIndicesByAlias;
+    std::unordered_map<RandomizerCheckArea, std::vector<size_t>> descriptorIndicesByArea;
+    std::unordered_map<RandomizerCheck, size_t> descriptorIndexByCheck;
+    std::vector<SourceMatchInfo> matchInfos;
+    size_t nextMarkerSourceIndex = 0;
+    std::string markerSourcesSignature;
+    std::string descriptorsSignature;
+    std::filesystem::path cacheFilePath;
+    bool loadedFromCache = false;
+};
+
+static MapTrackerLoadContext mapTrackerLoadContext;
 
 std::string TrimCopy(const std::string& value) {
     size_t start = value.find_first_not_of(" \t\r\n");
@@ -521,11 +561,36 @@ std::string GetGameCheckTag(RandomizerCheck rc) {
     return tag;
 }
 
+std::string GetGameCheckPath(RandomizerCheck rc) {
+    static std::unordered_map<RandomizerCheck, std::string> pathCacheByCheck;
+
+    auto cacheIt = pathCacheByCheck.find(rc);
+    if (cacheIt != pathCacheByCheck.end()) {
+        return cacheIt->second;
+    }
+
+    std::string path = fmt::format("rc_{}", static_cast<int>(rc));
+    auto* location = Rando::StaticData::GetLocation(rc);
+    if (location != nullptr) {
+        path = fmt::format("{} / {}", RandomizerCheckObjects::GetRCAreaName(location->GetArea()), location->GetName());
+    }
+
+    pathCacheByCheck[rc] = path;
+    return path;
+}
+
 bool EndsWith(const std::string& value, const std::string& suffix) {
     if (value.length() < suffix.length()) {
         return false;
     }
     return value.compare(value.length() - suffix.length(), suffix.length(), suffix) == 0;
+}
+
+bool StartsWith(const std::string& value, const std::string& prefix) {
+    if (value.length() < prefix.length()) {
+        return false;
+    }
+    return value.compare(0, prefix.length(), prefix) == 0;
 }
 
 std::string JoinWithComma(const std::vector<std::string>& values) {
@@ -615,6 +680,35 @@ std::string BuildCanonicalAliasKey(const std::string& input) {
     return key;
 }
 
+bool IsReducedAliasNoiseToken(const std::string& token) {
+    return token == "boss" || token == "bossroom" || token == "room" || token == "heart" || token == "container";
+}
+
+std::string BuildReducedAliasKey(const std::string& input) {
+    std::vector<std::string> tokens = TokenizeForMatching(input);
+    if (tokens.empty()) {
+        return "";
+    }
+
+    std::string reducedKey;
+    bool removedToken = false;
+    for (const auto& token : tokens) {
+        if (IsReducedAliasNoiseToken(token)) {
+            removedToken = true;
+            continue;
+        }
+        if (!reducedKey.empty()) {
+            reducedKey += "_";
+        }
+        reducedKey += token;
+    }
+
+    if (!removedToken || reducedKey.empty()) {
+        return "";
+    }
+    return reducedKey;
+}
+
 bool IsNumericToken(const std::string& token) {
     if (token.empty()) {
         return false;
@@ -622,6 +716,35 @@ bool IsNumericToken(const std::string& token) {
     return std::all_of(token.begin(), token.end(), [](char ch) {
         return std::isdigit(static_cast<unsigned char>(ch)) != 0;
     });
+}
+
+float ComputeTailTokenSimilarity(const std::vector<std::string>& left, const std::vector<std::string>& right) {
+    if (left.empty() || right.empty()) {
+        return 0.0f;
+    }
+
+    size_t tailLength = std::min({ left.size(), right.size(), static_cast<size_t>(4) });
+    if (tailLength == 0) {
+        return 0.0f;
+    }
+
+    float totalWeight = 0.0f;
+    float matchedWeight = 0.0f;
+    for (size_t tailIndex = 0; tailIndex < tailLength; tailIndex++) {
+        float weight = static_cast<float>(tailLength - tailIndex);
+        totalWeight += weight;
+
+        const std::string& leftToken = left[left.size() - 1 - tailIndex];
+        const std::string& rightToken = right[right.size() - 1 - tailIndex];
+        if (leftToken == rightToken) {
+            matchedWeight += weight;
+        }
+    }
+
+    if (totalWeight <= 0.0f) {
+        return 0.0f;
+    }
+    return std::clamp(matchedWeight / totalWeight, 0.0f, 1.0f);
 }
 
 float ScoreTokenVectors(const std::vector<std::string>& left, const std::vector<std::string>& right) {
@@ -653,6 +776,15 @@ float ScoreTokenVectors(const std::vector<std::string>& left, const std::vector<
     if (!left.empty() && !right.empty() && left[0] == right[0]) {
         prefixScore = 1.0f;
     }
+    float tailScore = ComputeTailTokenSimilarity(left, right);
+
+    float terminalPenalty = 0.0f;
+    if (!left.empty() && !right.empty() && left.back() != right.back()) {
+        terminalPenalty -= 0.20f;
+    }
+    if (left.size() >= 2 && right.size() >= 2 && left[left.size() - 2] != right[right.size() - 2]) {
+        terminalPenalty -= 0.04f;
+    }
 
     bool leftHasNumeric = false;
     bool rightHasNumeric = false;
@@ -676,8 +808,407 @@ float ScoreTokenVectors(const std::vector<std::string>& left, const std::vector<
         numericScore = numericOverlap ? 0.20f : -0.24f;
     }
 
-    float score = (0.72f * jaccard) + (0.20f * orderScore) + (0.08f * prefixScore) + numericScore;
+    float score =
+        (0.43f * jaccard) + (0.12f * orderScore) + (0.03f * prefixScore) + (0.42f * tailScore) + terminalPenalty +
+        numericScore;
     return std::clamp(score, 0.0f, 1.0f);
+}
+
+size_t ComputeLevenshteinDistance(const std::string& left, const std::string& right) {
+    if (left.empty()) {
+        return right.size();
+    }
+    if (right.empty()) {
+        return left.size();
+    }
+
+    std::vector<size_t> previousRow(right.size() + 1);
+    std::vector<size_t> currentRow(right.size() + 1);
+
+    for (size_t rightIndex = 0; rightIndex <= right.size(); rightIndex++) {
+        previousRow[rightIndex] = rightIndex;
+    }
+
+    for (size_t leftIndex = 0; leftIndex < left.size(); leftIndex++) {
+        currentRow[0] = leftIndex + 1;
+        for (size_t rightIndex = 0; rightIndex < right.size(); rightIndex++) {
+            size_t replaceCost = previousRow[rightIndex] + (left[leftIndex] == right[rightIndex] ? 0 : 1);
+            size_t insertCost = currentRow[rightIndex] + 1;
+            size_t deleteCost = previousRow[rightIndex + 1] + 1;
+            currentRow[rightIndex + 1] = std::min({ replaceCost, insertCost, deleteCost });
+        }
+        previousRow.swap(currentRow);
+    }
+
+    return previousRow[right.size()];
+}
+
+float ComputeNormalizedEditSimilarity(const std::string& left, const std::string& right) {
+    if (left.empty() || right.empty()) {
+        return 0.0f;
+    }
+    size_t maxLength = std::max(left.size(), right.size());
+    if (maxLength == 0) {
+        return 0.0f;
+    }
+    size_t distance = ComputeLevenshteinDistance(left, right);
+    if (distance >= maxLength) {
+        return 0.0f;
+    }
+    return 1.0f - (static_cast<float>(distance) / static_cast<float>(maxLength));
+}
+
+std::string TruncateReasonText(const std::string& value, size_t maxLength = 96) {
+    if (value.length() <= maxLength) {
+        return value;
+    }
+    if (maxLength <= 3) {
+        return value.substr(0, maxLength);
+    }
+    return value.substr(0, maxLength - 3) + "...";
+}
+
+struct HighPrecisionAliasScoreDetails {
+    float totalScore = 0.0f;
+    float editScore = 0.0f;
+    float tokenScore = 0.0f;
+    float tailTokenScore = 0.0f;
+    float prefixScore = 0.0f;
+    float suffixScore = 0.0f;
+    float terminalPenalty = 0.0f;
+};
+
+HighPrecisionAliasScoreDetails ScoreHighPrecisionAliasPairDetailed(
+    const std::string& sourceAlias, const std::vector<std::string>& sourceAliasTokens, const std::string& descriptorAlias,
+    const std::vector<std::string>& descriptorAliasTokens) {
+    HighPrecisionAliasScoreDetails details;
+    if (sourceAlias.empty() || descriptorAlias.empty()) {
+        return details;
+    }
+    if (sourceAlias == descriptorAlias) {
+        details.totalScore = 1.0f;
+        details.editScore = 1.0f;
+        details.tokenScore = 1.0f;
+        details.prefixScore = 1.0f;
+        details.suffixScore = 1.0f;
+        return details;
+    }
+
+    details.editScore = ComputeNormalizedEditSimilarity(sourceAlias, descriptorAlias);
+    details.tokenScore = ScoreTokenVectors(sourceAliasTokens, descriptorAliasTokens);
+    details.tailTokenScore = ComputeTailTokenSimilarity(sourceAliasTokens, descriptorAliasTokens);
+    details.prefixScore = (StartsWith(sourceAlias, descriptorAlias) || StartsWith(descriptorAlias, sourceAlias)) ? 1.0f : 0.0f;
+    details.suffixScore = (EndsWith(sourceAlias, descriptorAlias) || EndsWith(descriptorAlias, sourceAlias)) ? 1.0f : 0.0f;
+    bool terminalTokenMatch = !sourceAliasTokens.empty() && !descriptorAliasTokens.empty() &&
+                              sourceAliasTokens.back() == descriptorAliasTokens.back();
+    details.terminalPenalty = terminalTokenMatch ? 0.06f : -0.24f;
+    details.totalScore = (0.34f * details.editScore) + (0.23f * details.tokenScore) + (0.31f * details.tailTokenScore) +
+                         (0.03f * details.prefixScore) + (0.05f * details.suffixScore) + details.terminalPenalty;
+
+    if (details.suffixScore > 0.0f && details.tokenScore > 0.50f) {
+        details.totalScore += 0.03f;
+    }
+    details.totalScore = std::clamp(details.totalScore, 0.0f, 1.0f);
+    return details;
+}
+
+float ScoreHighPrecisionAliasPair(const std::string& sourceAlias, const std::vector<std::string>& sourceAliasTokens,
+                                  const std::string& descriptorAlias,
+                                  const std::vector<std::string>& descriptorAliasTokens) {
+    return ScoreHighPrecisionAliasPairDetailed(sourceAlias, sourceAliasTokens, descriptorAlias, descriptorAliasTokens).totalScore;
+}
+
+std::vector<std::string> BuildHighPrecisionSourceAliases(const MapMarkerSource& source) {
+    std::unordered_set<std::string> seenAliases;
+    std::vector<std::string> aliases;
+
+    auto addAlias = [&](const std::string& value) {
+        std::string normalized = NormalizeForMatching(value);
+        if (normalized.empty()) {
+            return;
+        }
+        if (seenAliases.insert(normalized).second) {
+            aliases.push_back(normalized);
+        }
+
+        std::string canonical = BuildCanonicalAliasKey(normalized);
+        if (!canonical.empty() && seenAliases.insert(canonical).second) {
+            aliases.push_back(canonical);
+        }
+
+        std::string reduced = BuildReducedAliasKey(normalized);
+        if (!reduced.empty() && seenAliases.insert(reduced).second) {
+            aliases.push_back(reduced);
+        }
+    };
+
+    addAlias(source.displayPath);
+    addAlias(source.placement.mapName + " " + source.displayPath);
+    for (const auto& visibilityKey : source.visibilityKeys) {
+        addAlias(visibilityKey);
+        addAlias(source.placement.mapName + " " + visibilityKey);
+    }
+    for (const auto& sourceAlias : BuildSourceAliases(source)) {
+        addAlias(sourceAlias);
+    }
+
+    return aliases;
+}
+
+uint64_t HashStringFNV1a64(const std::string& value) {
+    uint64_t hash = 1469598103934665603ULL;
+    for (unsigned char ch : value) {
+        hash ^= static_cast<uint64_t>(ch);
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+void HashCombine64(uint64_t& hash, uint64_t value) {
+    hash ^= value + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
+}
+
+std::string BuildMarkerSourceCacheKey(const MapMarkerSource& source) {
+    std::vector<std::string> normalizedVisibilityKeys = source.visibilityKeys;
+    std::sort(normalizedVisibilityKeys.begin(), normalizedVisibilityKeys.end());
+    normalizedVisibilityKeys.erase(
+        std::unique(normalizedVisibilityKeys.begin(), normalizedVisibilityKeys.end()), normalizedVisibilityKeys.end());
+
+    std::string visibilityJoined = JoinWithComma(normalizedVisibilityKeys);
+    return fmt::format("{}|{}|{}|{:.3f}|{:.3f}|{:.3f}|{}", NormalizeForMatching(source.sourceFile),
+                       NormalizeForMatching(source.displayPath), NormalizeForMatching(source.placement.mapName),
+                       source.placement.x, source.placement.y, source.placement.size, visibilityJoined);
+}
+
+std::string BuildMarkerSourcesSignature(const std::vector<MapMarkerSource>& markerSources) {
+    std::vector<std::string> keys;
+    keys.reserve(markerSources.size());
+    for (const auto& source : markerSources) {
+        keys.push_back(BuildMarkerSourceCacheKey(source));
+    }
+    std::sort(keys.begin(), keys.end());
+
+    uint64_t hash = 1469598103934665603ULL;
+    HashCombine64(hash, static_cast<uint64_t>(keys.size()));
+    for (const auto& key : keys) {
+        HashCombine64(hash, HashStringFNV1a64(key));
+    }
+    return fmt::format("{:016x}", hash);
+}
+
+std::string BuildDescriptorsSignature(const std::vector<CheckDescriptor>& descriptors) {
+    std::vector<std::string> descriptorKeys;
+    descriptorKeys.reserve(descriptors.size());
+    for (const auto& descriptor : descriptors) {
+        std::vector<std::string> aliases = descriptor.normalizedAliases;
+        std::sort(aliases.begin(), aliases.end());
+        std::string aliasJoined = JoinWithComma(aliases);
+        descriptorKeys.push_back(fmt::format("{}|{}|{}|{}", static_cast<int>(descriptor.check),
+                                             static_cast<int>(descriptor.area), static_cast<int>(descriptor.quest),
+                                             aliasJoined));
+    }
+    std::sort(descriptorKeys.begin(), descriptorKeys.end());
+
+    uint64_t hash = 1469598103934665603ULL;
+    HashCombine64(hash, static_cast<uint64_t>(descriptorKeys.size()));
+    for (const auto& key : descriptorKeys) {
+        HashCombine64(hash, HashStringFNV1a64(key));
+    }
+    return fmt::format("{:016x}", hash);
+}
+
+std::filesystem::path GetMapTrackerMatchCachePath(const std::filesystem::path& assetsRoot) {
+    return assetsRoot / CHECK_TRACKER_MAP_MATCH_CACHE_RELATIVE_PATH;
+}
+
+bool TryLoadMatchInfosFromCache(const std::filesystem::path& cacheFilePath, const std::string& markerSourcesSignature,
+                                const std::string& descriptorsSignature,
+                                const std::vector<MapMarkerSource>& markerSources,
+                                const std::unordered_map<RandomizerCheck, size_t>& descriptorIndexByCheck,
+                                std::vector<SourceMatchInfo>& outMatchInfos, std::string& outStatus, std::string& outError) {
+    outStatus.clear();
+    outError.clear();
+    outMatchInfos.clear();
+
+    if (!std::filesystem::exists(cacheFilePath)) {
+        outStatus = "Cache miss (file not found)";
+        return false;
+    }
+
+    json cacheJson;
+    std::string parseError;
+    if (!LoadJsonWithComments(cacheFilePath, cacheJson, parseError)) {
+        outError = "Failed to parse cache file: " + parseError;
+        return false;
+    }
+
+    if (!cacheJson.is_object()) {
+        outError = "Cache root is not an object.";
+        return false;
+    }
+
+    int cacheVersion = cacheJson.value("version", 0);
+    if (cacheVersion != CHECK_TRACKER_MAP_MATCH_CACHE_VERSION) {
+        outStatus = fmt::format("Cache miss (version {})", cacheVersion);
+        return false;
+    }
+
+    std::string cachedSourceSignature = cacheJson.value("marker_sources_signature", "");
+    std::string cachedDescriptorSignature = cacheJson.value("descriptors_signature", "");
+    if (cachedSourceSignature != markerSourcesSignature || cachedDescriptorSignature != descriptorsSignature) {
+        outStatus = "Cache miss (signature mismatch)";
+        return false;
+    }
+
+    if (!cacheJson.contains("checks_index") || !cacheJson["checks_index"].is_array() ||
+        !cacheJson.contains("checks_lookup") || !cacheJson["checks_lookup"].is_object()) {
+        outStatus = "Cache miss (legacy cache format)";
+        return false;
+    }
+
+    if (!cacheJson.contains("entries") || !cacheJson["entries"].is_array()) {
+        outError = "Cache file is missing a valid entries array.";
+        return false;
+    }
+
+    std::unordered_map<std::string, std::vector<std::vector<RankedCheckCandidate>>> entriesBySourceKey;
+    for (const auto& entry : cacheJson["entries"]) {
+        if (!entry.is_object() || !entry.contains("source_key") || !entry["source_key"].is_string() ||
+            !entry.contains("candidates") || !entry["candidates"].is_array()) {
+            continue;
+        }
+
+        std::vector<RankedCheckCandidate> candidates;
+        for (const auto& candidateJson : entry["candidates"]) {
+            if (!candidateJson.is_object() || !candidateJson.contains("check") || !candidateJson["check"].is_number_integer() ||
+                !candidateJson.contains("score")) {
+                continue;
+            }
+
+            RandomizerCheck check = static_cast<RandomizerCheck>(candidateJson["check"].get<int>());
+            if (!descriptorIndexByCheck.contains(check)) {
+                continue;
+            }
+
+            RankedCheckCandidate candidate;
+            candidate.check = check;
+            if (candidateJson["score"].is_number_float()) {
+                candidate.score = candidateJson["score"].get<float>();
+            } else if (candidateJson["score"].is_number_integer()) {
+                candidate.score = static_cast<float>(candidateJson["score"].get<int>());
+            } else {
+                continue;
+            }
+            candidate.score = std::clamp(candidate.score, 0.0f, 1.0f);
+            if (candidateJson.contains("reason") && candidateJson["reason"].is_string()) {
+                candidate.reason = candidateJson["reason"].get<std::string>();
+            } else {
+                candidate.reason = "Cache";
+            }
+            candidates.push_back(std::move(candidate));
+        }
+
+        std::sort(candidates.begin(), candidates.end(),
+                  [](const RankedCheckCandidate& left, const RankedCheckCandidate& right) {
+                      if (left.score == right.score) {
+                          return left.check < right.check;
+                      }
+                      return left.score > right.score;
+                  });
+        if (candidates.size() > 8) {
+            candidates.resize(8);
+        }
+        entriesBySourceKey[entry["source_key"].get<std::string>()].push_back(std::move(candidates));
+    }
+
+    outMatchInfos.reserve(markerSources.size());
+    for (const auto& source : markerSources) {
+        const std::string sourceKey = BuildMarkerSourceCacheKey(source);
+        auto findIt = entriesBySourceKey.find(sourceKey);
+        if (findIt == entriesBySourceKey.end() || findIt->second.empty()) {
+            outStatus = "Cache miss (source set changed)";
+            outMatchInfos.clear();
+            return false;
+        }
+
+        SourceMatchInfo matchInfo;
+        matchInfo.source = source;
+        matchInfo.rankedCandidates = std::move(findIt->second.back());
+        findIt->second.pop_back();
+        outMatchInfos.push_back(std::move(matchInfo));
+    }
+
+    outStatus = fmt::format("Cache hit ({} entries)", outMatchInfos.size());
+    return true;
+}
+
+bool SaveMatchInfosToCache(const std::filesystem::path& cacheFilePath, const std::string& markerSourcesSignature,
+                           const std::string& descriptorsSignature, const std::vector<SourceMatchInfo>& matchInfos,
+                           const std::vector<CheckDescriptor>& descriptors, std::string& outError) {
+    outError.clear();
+    std::error_code createDirError;
+    std::filesystem::create_directories(cacheFilePath.parent_path(), createDirError);
+    if (createDirError) {
+        outError = "Failed to create cache directory: " + createDirError.message();
+        return false;
+    }
+
+    json cacheJson;
+    cacheJson["version"] = CHECK_TRACKER_MAP_MATCH_CACHE_VERSION;
+    cacheJson["marker_sources_signature"] = markerSourcesSignature;
+    cacheJson["descriptors_signature"] = descriptorsSignature;
+    cacheJson["checks_index"] = json::array();
+    cacheJson["checks_lookup"] = json::object();
+    cacheJson["entries"] = json::array();
+
+    std::vector<CheckDescriptor> descriptorIndexEntries = descriptors;
+    std::sort(descriptorIndexEntries.begin(), descriptorIndexEntries.end(),
+              [](const CheckDescriptor& left, const CheckDescriptor& right) {
+                  return static_cast<int>(left.check) < static_cast<int>(right.check);
+              });
+    for (const auto& descriptor : descriptorIndexEntries) {
+        json checkIndexEntry = {
+            { "check", static_cast<int>(descriptor.check) },
+            { "check_name", descriptor.checkDisplayName },
+            { "check_tag", GetGameCheckTag(descriptor.check) },
+            { "check_path", GetGameCheckPath(descriptor.check) },
+            { "area", RandomizerCheckObjects::GetRCAreaName(descriptor.area) },
+            { "quest", static_cast<int>(descriptor.quest) }
+        };
+        cacheJson["checks_index"].push_back(checkIndexEntry);
+        cacheJson["checks_lookup"][std::to_string(static_cast<int>(descriptor.check))] = checkIndexEntry;
+    }
+
+    for (const auto& matchInfo : matchInfos) {
+        json entry;
+        entry["source_key"] = BuildMarkerSourceCacheKey(matchInfo.source);
+        entry["source_file"] = matchInfo.source.sourceFile;
+        entry["source_path"] = matchInfo.source.displayPath;
+        entry["source_map"] = matchInfo.source.placement.mapName;
+        entry["source_visibility_keys"] = matchInfo.source.visibilityKeys;
+        entry["source_position"] = { { "x", matchInfo.source.placement.x },
+                                     { "y", matchInfo.source.placement.y },
+                                     { "size", matchInfo.source.placement.size } };
+        entry["candidates"] = json::array();
+        for (const auto& candidate : matchInfo.rankedCandidates) {
+            entry["candidates"].push_back(
+                { { "check", static_cast<int>(candidate.check) },
+                  { "check_name", GetCheckDisplayName(candidate.check) },
+                  { "check_tag", GetGameCheckTag(candidate.check) },
+                  { "check_path", GetGameCheckPath(candidate.check) },
+                  { "score", candidate.score },
+                  { "reason", candidate.reason } });
+        }
+        cacheJson["entries"].push_back(std::move(entry));
+    }
+
+    std::ofstream outputFile(cacheFilePath, std::ios::trunc);
+    if (!outputFile.is_open()) {
+        outError = "Failed to open cache file for writing.";
+        return false;
+    }
+    outputFile << cacheJson.dump(2);
+    return true;
 }
 
 std::string JoinPathComponents(const std::vector<std::string>& parts) {
@@ -1163,10 +1694,26 @@ std::vector<std::string> BuildSourceAliases(const MapMarkerSource& source) {
     aliases.push_back(source.displayPath);
     aliases.push_back(source.placement.mapName + " " + source.displayPath);
 
+    std::string displayPathLeaf = source.displayPath;
+    size_t leafSeparatorPos = displayPathLeaf.find_last_of('/');
+    if (leafSeparatorPos != std::string::npos) {
+        displayPathLeaf = TrimCopy(displayPathLeaf.substr(leafSeparatorPos + 1));
+    }
+    if (!displayPathLeaf.empty() && displayPathLeaf != source.displayPath) {
+        aliases.push_back(displayPathLeaf);
+        aliases.push_back(source.placement.mapName + " " + displayPathLeaf);
+    }
+
     std::string canonicalDisplayPath = BuildCanonicalAliasKey(source.displayPath);
     if (!canonicalDisplayPath.empty() && canonicalDisplayPath != NormalizeForMatching(source.displayPath)) {
         aliases.push_back(canonicalDisplayPath);
         aliases.push_back(source.placement.mapName + " " + canonicalDisplayPath);
+    }
+
+    std::string canonicalDisplayPathLeaf = BuildCanonicalAliasKey(displayPathLeaf);
+    if (!canonicalDisplayPathLeaf.empty() && canonicalDisplayPathLeaf != NormalizeForMatching(displayPathLeaf)) {
+        aliases.push_back(canonicalDisplayPathLeaf);
+        aliases.push_back(source.placement.mapName + " " + canonicalDisplayPathLeaf);
     }
 
     std::filesystem::path sourcePath(source.sourceFile);
@@ -1194,6 +1741,20 @@ std::vector<std::string> BuildSourceAliases(const MapMarkerSource& source) {
         if (!canonicalVisibilityKey.empty() && canonicalVisibilityKey != visibilityKey) {
             aliases.push_back(canonicalVisibilityKey);
             aliases.push_back(source.placement.mapName + " " + canonicalVisibilityKey);
+        }
+
+        std::vector<std::string> visibilityTokens = TokenizeForMatching(visibilityKey);
+        if (!visibilityTokens.empty() && !IsNumericToken(visibilityTokens.back())) {
+            std::string singleTokenTail = visibilityTokens.back();
+            aliases.push_back(singleTokenTail);
+            aliases.push_back(source.placement.mapName + " " + singleTokenTail);
+        }
+        if (visibilityTokens.size() >= 2 && !IsNumericToken(visibilityTokens[visibilityTokens.size() - 1]) &&
+            !IsNumericToken(visibilityTokens[visibilityTokens.size() - 2])) {
+            std::string twoTokenTail =
+                visibilityTokens[visibilityTokens.size() - 2] + "_" + visibilityTokens[visibilityTokens.size() - 1];
+            aliases.push_back(twoTokenTail);
+            aliases.push_back(source.placement.mapName + " " + twoTokenTail);
         }
     }
 
@@ -1271,6 +1832,18 @@ SourceScoringContext BuildSourceScoringContext(const MapMarkerSource& source) {
             std::string canonicalKey = BuildCanonicalAliasKey(normalizedKey);
             if (!canonicalKey.empty() && canonicalKey != normalizedKey) {
                 context.normalizedVisibilityKeys.push_back(canonicalKey);
+            }
+
+            std::string reducedKey = BuildReducedAliasKey(normalizedKey);
+            if (!reducedKey.empty() && reducedKey != normalizedKey) {
+                context.normalizedVisibilityKeys.push_back(reducedKey);
+            }
+
+            if (!canonicalKey.empty()) {
+                std::string reducedCanonicalKey = BuildReducedAliasKey(canonicalKey);
+                if (!reducedCanonicalKey.empty() && reducedCanonicalKey != canonicalKey) {
+                    context.normalizedVisibilityKeys.push_back(reducedCanonicalKey);
+                }
             }
         }
         if (StringContainsMq(key)) {
@@ -1389,6 +1962,18 @@ std::vector<CheckDescriptor> BuildVisibleCheckDescriptors() {
                 if (!canonicalAlias.empty() && canonicalAlias != normalizedAlias) {
                     addAliasVariant(canonicalAlias);
                 }
+
+                std::string reducedAlias = BuildReducedAliasKey(normalizedAlias);
+                if (!reducedAlias.empty() && reducedAlias != normalizedAlias) {
+                    addAliasVariant(reducedAlias);
+                }
+
+                if (!canonicalAlias.empty()) {
+                    std::string reducedCanonicalAlias = BuildReducedAliasKey(canonicalAlias);
+                    if (!reducedCanonicalAlias.empty() && reducedCanonicalAlias != canonicalAlias) {
+                        addAliasVariant(reducedCanonicalAlias);
+                    }
+                }
             }
 
             descriptors.push_back(std::move(descriptor));
@@ -1403,45 +1988,73 @@ RankedCheckCandidate ScoreSourceAgainstCheck(const SourceScoringContext& sourceC
     result.check = descriptor.check;
 
     float bestAliasScore = 0.0f;
+    float bestTailScore = 0.0f;
+    float bestTerminalPenalty = 0.0f;
     for (const auto& sourceTokens : sourceContext.aliasTokens) {
         for (const auto& descriptorAliasTokens : descriptor.aliasTokens) {
             float aliasScore = ScoreTokenVectors(sourceTokens, descriptorAliasTokens);
-            if (aliasScore > bestAliasScore) {
+            float tailScore = ComputeTailTokenSimilarity(sourceTokens, descriptorAliasTokens);
+            float terminalPenalty = 0.0f;
+            if (!sourceTokens.empty() && !descriptorAliasTokens.empty() &&
+                sourceTokens.back() != descriptorAliasTokens.back()) {
+                terminalPenalty -= 0.20f;
+            }
+            if (sourceTokens.size() >= 2 && descriptorAliasTokens.size() >= 2 &&
+                sourceTokens[sourceTokens.size() - 2] != descriptorAliasTokens[descriptorAliasTokens.size() - 2]) {
+                terminalPenalty -= 0.04f;
+            }
+
+            if (aliasScore > bestAliasScore ||
+                (std::abs(aliasScore - bestAliasScore) <= 0.0001f && tailScore > bestTailScore)) {
                 bestAliasScore = aliasScore;
+                bestTailScore = tailScore;
+                bestTerminalPenalty = terminalPenalty;
             }
         }
     }
 
     float score = bestAliasScore;
+    float areaAdjustment = 0.0f;
+    float mqAdjustment = 0.0f;
+    float visibilityExactBonus = 0.0f;
+    float visibilitySuffixBonus = 0.0f;
 
     if (sourceContext.sourceArea.has_value()) {
         if (sourceContext.sourceArea.value() == descriptor.area) {
-            score += 0.12f;
+            areaAdjustment = 0.12f;
         } else {
-            score -= 0.08f;
+            areaAdjustment = -0.08f;
         }
+        score += areaAdjustment;
     }
 
     bool descriptorIsMq = descriptor.quest == RCQUEST_MQ || StringContainsMq(descriptor.checkDisplayName);
     if (sourceContext.sourceAppearsMq == descriptorIsMq) {
-        score += 0.07f;
+        mqAdjustment = 0.07f;
     } else if (sourceContext.sourceAppearsMq != descriptorIsMq) {
-        score -= 0.07f;
+        mqAdjustment = -0.07f;
     }
+    score += mqAdjustment;
 
     for (const auto& normalizedKey : sourceContext.normalizedVisibilityKeys) {
         for (const auto& normalizedAlias : descriptor.normalizedAliases) {
             if (normalizedKey == normalizedAlias) {
+                visibilityExactBonus += 0.25f;
                 score += 0.25f;
             } else if ((!normalizedAlias.empty() && EndsWith(normalizedKey, normalizedAlias)) ||
                        (!normalizedKey.empty() && EndsWith(normalizedAlias, normalizedKey))) {
+                visibilitySuffixBonus += 0.08f;
                 score += 0.08f;
             }
         }
     }
 
     result.score = std::clamp(score, 0.0f, 1.0f);
-    result.reason = fmt::format("Score {:.2f}", result.score);
+    result.reason = fmt::format(
+        "Rescore: alias={:.2f} aliasTail={:.2f} aliasTerminal={:+.2f} area={:+.2f} mq={:+.2f} visExact={:+.2f} "
+        "visSuffix={:+.2f} total={:.2f}",
+        bestAliasScore, bestTailScore, bestTerminalPenalty, areaAdjustment, mqAdjustment, visibilityExactBonus,
+        visibilitySuffixBonus, result.score);
     return result;
 }
 
@@ -1473,7 +2086,8 @@ SourceMatchInfo BuildMatchInfo(
                 RankedCheckCandidate candidate;
                 candidate.check = candidateCheck;
                 candidate.score = baseScore;
-                candidate.reason = reason;
+                candidate.reason =
+                    fmt::format("{} | key=\"{}\" | base={:.2f}", reason, TruncateReasonText(aliasKey), baseScore);
                 candidateByCheck[candidateCheck] = std::move(candidate);
             }
         }
@@ -1487,6 +2101,17 @@ SourceMatchInfo BuildMatchInfo(
         if (!canonicalKey.empty() && canonicalKey != normalizedKey) {
             addAliasMatches(canonicalKey, 0.99f, "Canonical visibility_rules match");
         }
+
+        std::string reducedKey = BuildReducedAliasKey(normalizedKey);
+        if (!reducedKey.empty() && reducedKey != normalizedKey) {
+            addAliasMatches(reducedKey, 0.96f, "Reduced visibility_rules match");
+        }
+        if (!canonicalKey.empty()) {
+            std::string reducedCanonicalKey = BuildReducedAliasKey(canonicalKey);
+            if (!reducedCanonicalKey.empty() && reducedCanonicalKey != canonicalKey) {
+                addAliasMatches(reducedCanonicalKey, 0.95f, "Reduced canonical visibility_rules match");
+            }
+        }
     }
 
     std::string normalizedMapPathAlias = NormalizeForMatching(source.placement.mapName + " " + source.displayPath);
@@ -1495,6 +2120,10 @@ SourceMatchInfo BuildMatchInfo(
     if (!canonicalMapPathAlias.empty() && canonicalMapPathAlias != normalizedMapPathAlias) {
         addAliasMatches(canonicalMapPathAlias, 0.88f, "Canonical map+path alias");
     }
+    std::string reducedMapPathAlias = BuildReducedAliasKey(normalizedMapPathAlias);
+    if (!reducedMapPathAlias.empty() && reducedMapPathAlias != normalizedMapPathAlias) {
+        addAliasMatches(reducedMapPathAlias, 0.86f, "Reduced map+path alias");
+    }
 
     std::string normalizedPathAlias = NormalizeForMatching(source.displayPath);
     addAliasMatches(normalizedPathAlias, 0.82f, "Exact path alias");
@@ -1502,20 +2131,73 @@ SourceMatchInfo BuildMatchInfo(
     if (!canonicalPathAlias.empty() && canonicalPathAlias != normalizedPathAlias) {
         addAliasMatches(canonicalPathAlias, 0.80f, "Canonical path alias");
     }
+    std::string reducedPathAlias = BuildReducedAliasKey(normalizedPathAlias);
+    if (!reducedPathAlias.empty() && reducedPathAlias != normalizedPathAlias) {
+        addAliasMatches(reducedPathAlias, 0.78f, "Reduced path alias");
+    }
 
     if (candidateByCheck.empty() && sourceScoringContext.sourceArea.has_value()) {
         auto areaIt = descriptorIndicesByArea.find(sourceScoringContext.sourceArea.value());
         if (areaIt != descriptorIndicesByArea.end()) {
-            std::string normalizedPath = NormalizeForMatching(source.displayPath);
+            std::vector<std::string> fallbackNeedles;
+            auto addFallbackNeedle = [&](const std::string& value) {
+                if (!value.empty()) {
+                    fallbackNeedles.push_back(value);
+                }
+            };
+            auto addFallbackNeedleVariants = [&](const std::string& value) {
+                addFallbackNeedle(value);
+                std::string reducedValue = BuildReducedAliasKey(value);
+                if (!reducedValue.empty() && reducedValue != value) {
+                    addFallbackNeedle(reducedValue);
+                }
+            };
+
+            addFallbackNeedleVariants(NormalizeForMatching(source.displayPath));
+            for (const auto& visibilityKey : sourceScoringContext.normalizedVisibilityKeys) {
+                addFallbackNeedleVariants(visibilityKey);
+            }
+            std::sort(fallbackNeedles.begin(), fallbackNeedles.end());
+            fallbackNeedles.erase(std::unique(fallbackNeedles.begin(), fallbackNeedles.end()), fallbackNeedles.end());
+
+            auto aliasMatchesNeedle = [](const std::string& aliasValue, const std::string& needleValue) {
+                std::string needlePrefix = needleValue.empty() ? "" : (needleValue + "_");
+                std::string aliasPrefix = aliasValue.empty() ? "" : (aliasValue + "_");
+                return aliasValue == needleValue || (!aliasValue.empty() && EndsWith(aliasValue, needleValue)) ||
+                       (!needleValue.empty() && EndsWith(needleValue, aliasValue)) ||
+                       (!needlePrefix.empty() && StartsWith(aliasValue, needlePrefix)) ||
+                       (!aliasPrefix.empty() && StartsWith(needleValue, aliasPrefix));
+            };
+
             for (size_t descriptorIndex : areaIt->second) {
                 const auto& descriptor = descriptors[descriptorIndex];
                 for (const auto& alias : descriptor.normalizedAliases) {
-                    if (alias == normalizedPath || (!alias.empty() && EndsWith(alias, normalizedPath)) ||
-                        (!normalizedPath.empty() && EndsWith(normalizedPath, alias))) {
+                    bool matchedFallback = false;
+                    std::string matchedNeedle;
+                    std::string matchedAlias;
+                    std::string reducedAlias = BuildReducedAliasKey(alias);
+                    for (const auto& needle : fallbackNeedles) {
+                        if (aliasMatchesNeedle(alias, needle)) {
+                            matchedFallback = true;
+                            matchedNeedle = needle;
+                            matchedAlias = alias;
+                            break;
+                        }
+                        if (!reducedAlias.empty() && aliasMatchesNeedle(reducedAlias, needle)) {
+                            matchedFallback = true;
+                            matchedNeedle = needle;
+                            matchedAlias = reducedAlias;
+                            break;
+                        }
+                    }
+
+                    if (matchedFallback) {
                         RankedCheckCandidate candidate;
                         candidate.check = descriptor.check;
-                        candidate.score = 0.55f;
-                        candidate.reason = "Area-local path fallback";
+                        candidate.score = 0.58f;
+                        candidate.reason = fmt::format(
+                            "Area-local alias fallback | alias=\"{}\" | needle=\"{}\" | base=0.58",
+                            TruncateReasonText(matchedAlias), TruncateReasonText(matchedNeedle));
                         candidateByCheck[candidate.check] = std::move(candidate);
                         break;
                     }
@@ -1524,21 +2206,122 @@ SourceMatchInfo BuildMatchInfo(
         }
     }
 
+    float bestFastCandidateScore = 0.0f;
+    for (const auto& [candidateCheck, candidate] : candidateByCheck) {
+        (void)candidateCheck;
+        bestFastCandidateScore = std::max(bestFastCandidateScore, candidate.score);
+    }
+
+    bool runHighPrecisionPass = candidateByCheck.empty() || bestFastCandidateScore < CHECK_TRACKER_MAP_HIGH_PRECISION_TRIGGER_SCORE;
+    if (runHighPrecisionPass) {
+        std::vector<std::string> sourceAliases = BuildHighPrecisionSourceAliases(source);
+        std::vector<std::vector<std::string>> sourceAliasTokens;
+        sourceAliasTokens.reserve(sourceAliases.size());
+        for (const auto& sourceAlias : sourceAliases) {
+            sourceAliasTokens.push_back(TokenizeForMatching(sourceAlias));
+        }
+
+        std::vector<size_t> descriptorIndices;
+        if (sourceScoringContext.sourceArea.has_value()) {
+            auto areaIt = descriptorIndicesByArea.find(sourceScoringContext.sourceArea.value());
+            if (areaIt != descriptorIndicesByArea.end()) {
+                descriptorIndices = areaIt->second;
+            }
+        } else {
+            descriptorIndices.resize(descriptors.size());
+            std::iota(descriptorIndices.begin(), descriptorIndices.end(), 0);
+        }
+
+        if (!sourceAliases.empty() && !descriptorIndices.empty()) {
+            std::vector<RankedCheckCandidate> scoredHighPrecisionChecks;
+            scoredHighPrecisionChecks.reserve(descriptorIndices.size());
+
+            for (size_t descriptorIndex : descriptorIndices) {
+                const auto& descriptor = descriptors[descriptorIndex];
+                float bestHighPrecisionScore = 0.0f;
+                HighPrecisionAliasScoreDetails bestHighPrecisionDetails;
+                std::string bestSourceAlias;
+                std::string bestDescriptorAlias;
+                for (size_t sourceAliasIndex = 0; sourceAliasIndex < sourceAliases.size(); sourceAliasIndex++) {
+                    const std::string& sourceAlias = sourceAliases[sourceAliasIndex];
+                    const auto& sourceTokens = sourceAliasTokens[sourceAliasIndex];
+                    for (size_t descriptorAliasIndex = 0; descriptorAliasIndex < descriptor.normalizedAliases.size();
+                         descriptorAliasIndex++) {
+                        const std::string& descriptorAlias = descriptor.normalizedAliases[descriptorAliasIndex];
+                        const auto& descriptorTokens = descriptor.aliasTokens[descriptorAliasIndex];
+                        HighPrecisionAliasScoreDetails pairScore =
+                            ScoreHighPrecisionAliasPairDetailed(sourceAlias, sourceTokens, descriptorAlias, descriptorTokens);
+                        if (pairScore.totalScore > bestHighPrecisionScore) {
+                            bestHighPrecisionScore = pairScore.totalScore;
+                            bestHighPrecisionDetails = pairScore;
+                            bestSourceAlias = sourceAlias;
+                            bestDescriptorAlias = descriptorAlias;
+                        }
+                    }
+                }
+
+                if (bestHighPrecisionScore >= CHECK_TRACKER_MAP_HIGH_PRECISION_MIN_SCORE) {
+                    RankedCheckCandidate candidate;
+                    candidate.check = descriptor.check;
+                    candidate.score = bestHighPrecisionScore;
+                    candidate.reason = fmt::format(
+                        "High-precision fuzzy | src=\"{}\" | dst=\"{}\" | edit={:.2f} token={:.2f} tail={:.2f} "
+                        "prefix={:.0f} suffix={:.0f} terminal={:+.2f} | base={:.2f}",
+                        TruncateReasonText(bestSourceAlias), TruncateReasonText(bestDescriptorAlias),
+                        bestHighPrecisionDetails.editScore, bestHighPrecisionDetails.tokenScore,
+                        bestHighPrecisionDetails.tailTokenScore, bestHighPrecisionDetails.prefixScore,
+                        bestHighPrecisionDetails.suffixScore, bestHighPrecisionDetails.terminalPenalty,
+                        bestHighPrecisionScore);
+                    scoredHighPrecisionChecks.push_back(std::move(candidate));
+                }
+            }
+
+            std::sort(scoredHighPrecisionChecks.begin(), scoredHighPrecisionChecks.end(),
+                      [](const RankedCheckCandidate& left, const RankedCheckCandidate& right) {
+                          if (left.score == right.score) {
+                              return left.check < right.check;
+                          }
+                          return left.score > right.score;
+                      });
+            if (scoredHighPrecisionChecks.size() > CHECK_TRACKER_MAP_HIGH_PRECISION_MAX_RESULTS) {
+                scoredHighPrecisionChecks.resize(CHECK_TRACKER_MAP_HIGH_PRECISION_MAX_RESULTS);
+            }
+
+            for (auto& highPrecisionCandidate : scoredHighPrecisionChecks) {
+                auto existingIt = candidateByCheck.find(highPrecisionCandidate.check);
+                if (existingIt == candidateByCheck.end() || highPrecisionCandidate.score > existingIt->second.score) {
+                    candidateByCheck[highPrecisionCandidate.check] = std::move(highPrecisionCandidate);
+                }
+            }
+        }
+    }
+
     matchInfo.rankedCandidates.reserve(candidateByCheck.size());
     for (auto& [check, candidate] : candidateByCheck) {
+        (void)check;
+        float preBlendScore = candidate.score;
+        float rescoredValue = 0.0f;
+        std::string rescoredReason = "Rescore skipped";
         auto descriptorIndexIt = descriptorIndexByCheck.find(candidate.check);
         if (descriptorIndexIt != descriptorIndexByCheck.end()) {
-            float rescoredValue =
-                ScoreSourceAgainstCheck(sourceScoringContext, descriptors[descriptorIndexIt->second]).score;
+            RankedCheckCandidate rescoredCandidate =
+                ScoreSourceAgainstCheck(sourceScoringContext, descriptors[descriptorIndexIt->second]);
+            rescoredValue = rescoredCandidate.score;
+            rescoredReason = rescoredCandidate.reason;
             candidate.score = std::clamp((candidate.score * 0.45f) + (rescoredValue * 0.75f), 0.0f, 1.0f);
         }
 
+        bool areaPenaltyApplied = false;
         if (sourceScoringContext.sourceArea.has_value()) {
             const auto* location = Rando::StaticData::GetLocation(candidate.check);
             if (location->GetArea() != sourceScoringContext.sourceArea.value()) {
                 candidate.score = std::max(0.0f, candidate.score - 0.18f);
+                areaPenaltyApplied = true;
             }
         }
+        candidate.reason = fmt::format("{} | {} | pre={:.2f} rescored={:.2f} final={:.2f}{}",
+                                       candidate.reason, rescoredReason, preBlendScore, rescoredValue, candidate.score,
+                                       areaPenaltyApplied ? " | area-penalty" : "");
         if (candidate.score > 0.01f) {
             matchInfo.rankedCandidates.push_back(std::move(candidate));
         }
@@ -1569,6 +2352,7 @@ void ResetMapTrackerState(bool unloadTextures) {
         }
     }
     mapTrackerState = {};
+    mapTrackerLoadContext = {};
 }
 
 std::string ResolveMapImagePath(const std::string& mapName,
@@ -1713,7 +2497,14 @@ void LoadMapTrackerData() {
     const auto loadStartTime = std::chrono::steady_clock::now();
     ResetMapTrackerState(true);
     mapTrackerState.attemptedLoad = true;
+    mapTrackerState.loading = true;
+    mapTrackerState.loadingStatus = "Preparing map data...";
+    mapTrackerState.loadingCurrent = 0;
+    mapTrackerState.loadingTotal = 1;
+    mapTrackerState.cacheStatus.clear();
+    mapTrackerLoadContext.startTime = loadStartTime;
     mapTrackerState.assetsRoot = GetMapTrackerAssetsRoot();
+    mapTrackerState.cacheFilePath = GetMapTrackerMatchCachePath(mapTrackerState.assetsRoot);
     SPDLOG_INFO("[CheckTrackerMapDiag] Load start. assetsRoot='{}' candidates='{}'", mapTrackerState.assetsRoot.string(),
                 BuildMapTrackerAssetsRootCandidatesSummary());
 
@@ -1728,6 +2519,7 @@ void LoadMapTrackerData() {
             "Extract the pack so these paths exist: " + (mapTrackerState.assetsRoot / "maps/maps.jsonc").string() + " and " +
             (mapTrackerState.assetsRoot / "locations").string() + ".");
         SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: assets root missing '{}'.", mapTrackerState.assetsRoot.string());
+        mapTrackerState.loading = false;
         return;
     }
 
@@ -1737,6 +2529,7 @@ void LoadMapTrackerData() {
         mapTrackerState.fatalErrors.push_back("Failed to mount map asset archive: " + archiveMountError);
         SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: failed to mount map archive. assetsRoot='{}' error='{}'",
                      mapTrackerState.assetsRoot.string(), archiveMountError);
+        mapTrackerState.loading = false;
         return;
     }
     SPDLOG_INFO("[CheckTrackerMapDiag] Archive mounted. mountRoot='{}' resourcePrefix='{}'", mapTrackerState.assetsArchiveMountRoot.string(),
@@ -1751,6 +2544,7 @@ void LoadMapTrackerData() {
     if (!mapTrackerState.fatalErrors.empty()) {
         SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: required files missing. maps='{}' locations='{}'",
                      mapsJsonPath.string(), locationsDirPath.string());
+        mapTrackerState.loading = false;
         return;
     }
 
@@ -1760,6 +2554,7 @@ void LoadMapTrackerData() {
         mapTrackerState.fatalErrors.push_back("Could not parse " + mapsJsonPath.string() + ": " + parseError);
         SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: failed to parse maps metadata '{}': {}",
                      mapsJsonPath.string(), parseError);
+        mapTrackerState.loading = false;
         return;
     }
 
@@ -1768,6 +2563,7 @@ void LoadMapTrackerData() {
     if (!mapsJson.is_array()) {
         mapTrackerState.fatalErrors.push_back("Expected an array in " + mapsJsonPath.string());
         SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: maps metadata root is not an array: '{}'.", mapsJsonPath.string());
+        mapTrackerState.loading = false;
         return;
     }
 
@@ -1853,6 +2649,7 @@ void LoadMapTrackerData() {
         mapTrackerState.fatalErrors.push_back("No usable map markers were found in " + locationsDirPath.string() +
                                               ". The pack may be incomplete or only contain MQ/hint markers.");
         SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: no usable marker sources found in '{}'.", locationsDirPath.string());
+        mapTrackerState.loading = false;
         return;
     }
 
@@ -1860,6 +2657,7 @@ void LoadMapTrackerData() {
     if (descriptors.empty()) {
         mapTrackerState.fatalErrors.push_back("No visible checks available to map. Load a randomizer save first.");
         SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: no visible check descriptors available.");
+        mapTrackerState.loading = false;
         return;
     }
     SPDLOG_INFO("[CheckTrackerMapDiag] Built descriptors. count={}", descriptors.size());
@@ -1881,29 +2679,59 @@ void LoadMapTrackerData() {
     SPDLOG_INFO("[CheckTrackerMapDiag] Built fast indices. aliases={} areas={} checks={}", descriptorIndicesByAlias.size(),
                 descriptorIndicesByArea.size(), descriptorIndexByCheck.size());
 
-    std::vector<SourceMatchInfo> matchInfos;
-    matchInfos.reserve(markerSources.size());
-    for (size_t markerSourceIndex = 0; markerSourceIndex < markerSources.size(); markerSourceIndex++) {
-        const auto& markerSource = markerSources[markerSourceIndex];
-        const auto sourceStartTime = std::chrono::steady_clock::now();
-        matchInfos.push_back(BuildMatchInfo(markerSource, descriptors, descriptorIndicesByAlias, descriptorIndicesByArea,
-                                            descriptorIndexByCheck));
-        const double sourceElapsedMs = GetElapsedMilliseconds(sourceStartTime);
+    mapTrackerLoadContext.active = true;
+    mapTrackerLoadContext.mapImagePathsByName = std::move(mapImagePathsByName);
+    mapTrackerLoadContext.orderedMapNames = std::move(orderedMapNames);
+    mapTrackerLoadContext.markerSources = std::move(markerSources);
+    mapTrackerLoadContext.descriptors = std::move(descriptors);
+    mapTrackerLoadContext.descriptorIndicesByAlias = std::move(descriptorIndicesByAlias);
+    mapTrackerLoadContext.descriptorIndicesByArea = std::move(descriptorIndicesByArea);
+    mapTrackerLoadContext.descriptorIndexByCheck = std::move(descriptorIndexByCheck);
+    mapTrackerLoadContext.markerSourcesSignature = BuildMarkerSourcesSignature(mapTrackerLoadContext.markerSources);
+    mapTrackerLoadContext.descriptorsSignature = BuildDescriptorsSignature(mapTrackerLoadContext.descriptors);
+    mapTrackerLoadContext.cacheFilePath = mapTrackerState.cacheFilePath;
+    mapTrackerLoadContext.matchInfos.clear();
+    mapTrackerLoadContext.matchInfos.reserve(mapTrackerLoadContext.markerSources.size());
+    mapTrackerLoadContext.nextMarkerSourceIndex = 0;
+    mapTrackerLoadContext.loadedFromCache = false;
 
-        if (sourceElapsedMs > 25.0) {
-            SPDLOG_INFO("[CheckTrackerMapDiag] Slow source match: {} ms | path='{}' file='{}'",
-                        sourceElapsedMs, markerSource.displayPath, markerSource.sourceFile);
-        }
-
-        if (((markerSourceIndex + 1) % 250) == 0 || markerSourceIndex + 1 == markerSources.size()) {
-            const double totalElapsedMs = GetElapsedMilliseconds(loadStartTime);
-            const double averageMsPerSource = totalElapsedMs / static_cast<double>(markerSourceIndex + 1);
-            SPDLOG_INFO("[CheckTrackerMapDiag] Match progress {}/{} ({:.1f}%). elapsed={} ms avgPerSource={} ms",
-                        markerSourceIndex + 1, markerSources.size(),
-                        100.0 * static_cast<double>(markerSourceIndex + 1) / static_cast<double>(markerSources.size()),
-                        totalElapsedMs, averageMsPerSource);
-        }
+    std::string cacheStatus;
+    std::string cacheError;
+    std::vector<SourceMatchInfo> cachedMatchInfos;
+    if (TryLoadMatchInfosFromCache(
+            mapTrackerLoadContext.cacheFilePath, mapTrackerLoadContext.markerSourcesSignature,
+            mapTrackerLoadContext.descriptorsSignature, mapTrackerLoadContext.markerSources,
+            mapTrackerLoadContext.descriptorIndexByCheck, cachedMatchInfos, cacheStatus, cacheError)) {
+        mapTrackerLoadContext.matchInfos = std::move(cachedMatchInfos);
+        mapTrackerLoadContext.nextMarkerSourceIndex = mapTrackerLoadContext.markerSources.size();
+        mapTrackerLoadContext.loadedFromCache = true;
+        mapTrackerState.cacheStatus = cacheStatus;
+        mapTrackerState.loadingStatus = "Using cached matches...";
+        mapTrackerState.loadingCurrent = mapTrackerLoadContext.nextMarkerSourceIndex;
+        mapTrackerState.loadingTotal = mapTrackerLoadContext.markerSources.size();
+        SPDLOG_INFO("[CheckTrackerMapDiag] {}", cacheStatus);
+        return;
     }
+    if (!cacheError.empty()) {
+        mapTrackerState.warnings.push_back(
+            { "Map match cache read failed", cacheError + " | File: " + mapTrackerLoadContext.cacheFilePath.string() });
+        SPDLOG_WARN("[CheckTrackerMapDiag] Cache read failed: {}", cacheError);
+        mapTrackerState.cacheStatus = "Cache read failed";
+    } else {
+        mapTrackerState.cacheStatus = cacheStatus.empty() ? "Cache miss" : cacheStatus;
+        SPDLOG_INFO("[CheckTrackerMapDiag] {}", mapTrackerState.cacheStatus);
+    }
+
+    mapTrackerState.loadingStatus = "Matching checks...";
+    mapTrackerState.loadingCurrent = 0;
+    mapTrackerState.loadingTotal = mapTrackerLoadContext.markerSources.size();
+}
+
+void FinalizeMapTrackerDataLoad() {
+    std::vector<SourceMatchInfo>& matchInfos = mapTrackerLoadContext.matchInfos;
+    const std::vector<CheckDescriptor>& descriptors = mapTrackerLoadContext.descriptors;
+    const std::vector<std::string>& orderedMapNames = mapTrackerLoadContext.orderedMapNames;
+    const std::unordered_map<std::string, std::string>& mapImagePathsByName = mapTrackerLoadContext.mapImagePathsByName;
 
     std::sort(matchInfos.begin(), matchInfos.end(), [](const SourceMatchInfo& left, const SourceMatchInfo& right) {
         float leftScore = left.rankedCandidates.empty() ? 0.0f : left.rankedCandidates.front().score;
@@ -1911,6 +2739,22 @@ void LoadMapTrackerData() {
         return leftScore > rightScore;
     });
     SPDLOG_INFO("[CheckTrackerMapDiag] Match sorting complete. sources={}", matchInfos.size());
+
+    if (!mapTrackerLoadContext.loadedFromCache) {
+        std::string cacheWriteError;
+        if (SaveMatchInfosToCache(mapTrackerLoadContext.cacheFilePath, mapTrackerLoadContext.markerSourcesSignature,
+                                  mapTrackerLoadContext.descriptorsSignature, matchInfos,
+                                  mapTrackerLoadContext.descriptors, cacheWriteError)) {
+            mapTrackerState.cacheStatus = fmt::format("Cache saved ({})", mapTrackerLoadContext.cacheFilePath.string());
+            SPDLOG_INFO("[CheckTrackerMapDiag] {}", mapTrackerState.cacheStatus);
+        } else {
+            mapTrackerState.warnings.push_back(
+                { "Map match cache write failed",
+                  cacheWriteError + " | File: " + mapTrackerLoadContext.cacheFilePath.string() });
+            mapTrackerState.cacheStatus = "Cache write failed";
+            SPDLOG_WARN("[CheckTrackerMapDiag] Cache write failed: {}", cacheWriteError);
+        }
+    }
 
     std::vector<MapMarker> mappedMarkers;
     std::unordered_set<RandomizerCheck> assignedChecks;
@@ -2109,6 +2953,8 @@ void LoadMapTrackerData() {
     auto gui = Ship::Context::GetInstance()->GetWindow()->GetGui();
     if (gui == nullptr) {
         mapTrackerState.fatalErrors.push_back("Could not access GUI texture loader.");
+        mapTrackerState.loading = false;
+        mapTrackerLoadContext = {};
         SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: GUI texture loader was null.");
         return;
     }
@@ -2117,6 +2963,8 @@ void LoadMapTrackerData() {
     if (context == nullptr || context->GetResourceManager() == nullptr ||
         context->GetResourceManager()->GetArchiveManager() == nullptr) {
         mapTrackerState.fatalErrors.push_back("Could not access archive manager for map texture resources.");
+        mapTrackerState.loading = false;
+        mapTrackerLoadContext = {};
         SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: archive manager unavailable.");
         return;
     }
@@ -2167,9 +3015,63 @@ void LoadMapTrackerData() {
     }
 
     mapTrackerState.loaded = true;
+    mapTrackerState.loading = false;
+    mapTrackerState.loadingStatus.clear();
+    mapTrackerState.loadingCurrent = mapTrackerState.loadingTotal;
     SPDLOG_INFO("[CheckTrackerMapDiag] Load completed in {} ms. tabs={} warnings={} fatalErrors={}",
-                GetElapsedMilliseconds(loadStartTime), mapTrackerState.tabs.size(), mapTrackerState.warnings.size(),
-                mapTrackerState.fatalErrors.size());
+                GetElapsedMilliseconds(mapTrackerLoadContext.startTime), mapTrackerState.tabs.size(),
+                mapTrackerState.warnings.size(), mapTrackerState.fatalErrors.size());
+    mapTrackerLoadContext = {};
+}
+
+void StepMapTrackerDataLoad() {
+    if (!mapTrackerState.loading || !mapTrackerLoadContext.active) {
+        return;
+    }
+
+    const auto stepStartTime = std::chrono::steady_clock::now();
+    size_t processedThisStep = 0;
+    const size_t markerSourceCount = mapTrackerLoadContext.markerSources.size();
+    while (mapTrackerLoadContext.nextMarkerSourceIndex < markerSourceCount &&
+           processedThisStep < CHECK_TRACKER_MAP_MATCH_STEP_MAX_SOURCES) {
+        const auto& markerSource = mapTrackerLoadContext.markerSources[mapTrackerLoadContext.nextMarkerSourceIndex];
+        const auto sourceStartTime = std::chrono::steady_clock::now();
+        mapTrackerLoadContext.matchInfos.push_back(
+            BuildMatchInfo(markerSource, mapTrackerLoadContext.descriptors, mapTrackerLoadContext.descriptorIndicesByAlias,
+                           mapTrackerLoadContext.descriptorIndicesByArea, mapTrackerLoadContext.descriptorIndexByCheck));
+        const double sourceElapsedMs = GetElapsedMilliseconds(sourceStartTime);
+        if (sourceElapsedMs > 25.0) {
+            SPDLOG_INFO("[CheckTrackerMapDiag] Slow source match: {} ms | path='{}' file='{}'",
+                        sourceElapsedMs, markerSource.displayPath, markerSource.sourceFile);
+        }
+
+        mapTrackerLoadContext.nextMarkerSourceIndex++;
+        processedThisStep++;
+
+        const size_t processedCount = mapTrackerLoadContext.nextMarkerSourceIndex;
+        if ((processedCount % 250) == 0 || processedCount == markerSourceCount) {
+            const double totalElapsedMs = GetElapsedMilliseconds(mapTrackerLoadContext.startTime);
+            const double averageMsPerSource = totalElapsedMs / static_cast<double>(processedCount);
+            SPDLOG_INFO("[CheckTrackerMapDiag] Match progress {}/{} ({:.1f}%). elapsed={} ms avgPerSource={} ms",
+                        processedCount, markerSourceCount,
+                        100.0 * static_cast<double>(processedCount) / static_cast<double>(markerSourceCount),
+                        totalElapsedMs, averageMsPerSource);
+        }
+
+        const double stepElapsedMs = GetElapsedMilliseconds(stepStartTime);
+        if (stepElapsedMs >= CHECK_TRACKER_MAP_MATCH_STEP_BUDGET_MS && processedThisStep >= 8) {
+            break;
+        }
+    }
+
+    mapTrackerState.loadingCurrent = mapTrackerLoadContext.nextMarkerSourceIndex;
+    mapTrackerState.loadingTotal = markerSourceCount;
+    mapTrackerState.loadingStatus = "Matching checks...";
+
+    if (mapTrackerLoadContext.nextMarkerSourceIndex >= markerSourceCount) {
+        mapTrackerState.loadingStatus = "Finalizing map tabs...";
+        FinalizeMapTrackerDataLoad();
+    }
 }
 
 bool IsCheckDoneForMapDisplay(RandomizerCheck rc) {
@@ -2272,9 +3174,26 @@ void DrawMapIssueList(const std::vector<MapIssueEntry>& issues, const char* empt
     }
 }
 
+void DrawMapUnassignedCheckTagsSection() {
+    std::string unassignedHeaderLabel =
+        fmt::format("Unassigned In-Game Check Tags ({})", mapTrackerState.unassignedCheckIds.size());
+    if (ImGui::CollapsingHeader(unassignedHeaderLabel.c_str())) {
+        if (mapTrackerState.unassignedCheckIds.empty()) {
+            ImGui::TextUnformatted("All visible checks were assigned.");
+        } else {
+            for (RandomizerCheck unassignedCheck : mapTrackerState.unassignedCheckIds) {
+                std::string gameTag = GetGameCheckTag(unassignedCheck);
+                ImGui::Text("%s", gameTag.c_str());
+            }
+        }
+    }
+}
+
 void DrawMapTrackerIssuesTab() {
-    ImGui::TextWrapped("Assets folder: %s", GetMapTrackerAssetsRootAbsoluteString().c_str());
-    ImGui::Separator();
+    if (showMapDebugDetails) {
+        ImGui::TextWrapped("Assets folder: %s", GetMapTrackerAssetsRootAbsoluteString().c_str());
+        ImGui::Separator();
+    }
 
     if (!mapTrackerState.fatalErrors.empty()) {
         ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "Fatal setup errors:");
@@ -2571,13 +3490,16 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
             ImGui::Text("%zu checks", popupClusterIt->second.size());
             ImGui::Separator();
 
-            for (const auto& renderableMarker : popupClusterIt->second) {
+            for (size_t clusterIndex = 0; clusterIndex < popupClusterIt->second.size(); clusterIndex++) {
+                const auto& renderableMarker = popupClusterIt->second[clusterIndex];
                 const MapMarker& marker = *renderableMarker.marker;
                 bool canToggle = CanToggleSkippedStateForCheck(marker.check);
                 std::string checkName = GetCheckDisplayName(marker.check);
-                std::string checkSelectableLabel = checkName + "##ClusterCheck_" + std::to_string(marker.check);
+                std::string markerRowId = fmt::format("ClusterCheckRow_{}_{}_{}_{}", static_cast<int>(marker.check),
+                                                      clusterIndex, marker.displayPath, marker.mapName);
+                std::string checkSelectableLabel = checkName + "##Select";
 
-                ImGui::PushID(static_cast<int>(marker.check));
+                ImGui::PushID(markerRowId.c_str());
                 ImGui::ColorButton("##status", ImGui::ColorConvertU32ToFloat4(renderableMarker.fillColor),
                                    ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop, ImVec2(10.0f, 10.0f));
                 ImGui::SameLine();
@@ -2638,22 +3560,6 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
     if (clusterPopupState.open && !markerHoveredForPopup && !popupHovered && ImGui::GetTime() > clusterPopupState.keepAliveUntil) {
         clusterPopupState.open = false;
     }
-
-    if (showMapDebugDetails) {
-        ImGui::Separator();
-        std::string unassignedHeaderLabel =
-            fmt::format("Unassigned In-Game Check Tags ({})", mapTrackerState.unassignedCheckIds.size());
-        if (ImGui::CollapsingHeader(unassignedHeaderLabel.c_str())) {
-            if (mapTrackerState.unassignedCheckIds.empty()) {
-                ImGui::TextUnformatted("All visible checks were assigned.");
-            } else {
-                for (RandomizerCheck unassignedCheck : mapTrackerState.unassignedCheckIds) {
-                    std::string gameTag = GetGameCheckTag(unassignedCheck);
-                    ImGui::Text("%s", gameTag.c_str());
-                }
-            }
-        }
-    }
 }
 
 void DrawMapTrackerContent() {
@@ -2662,19 +3568,24 @@ void DrawMapTrackerContent() {
         LoadMapTrackerData();
     }
 
-    if (UIWidgets::Button("Focus Player Area",
-                          UIWidgets::ButtonOptions().Color(THEME_COLOR).Size({ 170.0f, 0.0f }))) {
-        UpdateRequestedMapTabFromCurrentArea(true);
+    if (mapTrackerState.loading) {
+        StepMapTrackerDataLoad();
     }
-    ImGui::SameLine();
-    if (UIWidgets::Button("Reload Map Data",
-                          UIWidgets::ButtonOptions().Color(THEME_COLOR).Size({ 170.0f, 0.0f }))) {
-        SPDLOG_INFO("[CheckTrackerMapDiag] Manual reload requested.");
-        LoadMapTrackerData();
+
+    if (mapTrackerState.loading) {
+        float progress = 0.0f;
+        if (mapTrackerState.loadingTotal > 0) {
+            progress = static_cast<float>(mapTrackerState.loadingCurrent) / static_cast<float>(mapTrackerState.loadingTotal);
+        }
+        std::string statusText = mapTrackerState.loadingStatus.empty() ? "Matching checks..." : mapTrackerState.loadingStatus;
+        ImGui::TextUnformatted(statusText.c_str());
+        ImGui::ProgressBar(progress, ImVec2(ImGui::GetContentRegionAvail().x, 0.0f));
+        ImGui::TextDisabled("%zu / %zu", mapTrackerState.loadingCurrent, mapTrackerState.loadingTotal);
+        if (!mapTrackerState.cacheStatus.empty()) {
+            ImGui::TextDisabled("%s", mapTrackerState.cacheStatus.c_str());
+        }
+        return;
     }
-    ImGui::SameLine();
-    ImGui::TextWrapped("Assets: %s", GetMapTrackerAssetsRootAbsoluteString().c_str());
-    ImGui::Separator();
 
     if (!mapTrackerState.fatalErrors.empty()) {
         for (const auto& fatalError : mapTrackerState.fatalErrors) {
@@ -2687,8 +3598,9 @@ void DrawMapTrackerContent() {
 
     UpdateRequestedMapTabFromCurrentArea(false);
     bool mqSpoilers = CVarGetInteger(CVAR_TRACKER_CHECK("MQSpoilers"), 0);
+    bool showIssuesTab = showMapDebugDetails;
 
-    int issuesTabIndex = static_cast<int>(mapTrackerState.tabs.size());
+    int issuesTabIndex = showIssuesTab ? static_cast<int>(mapTrackerState.tabs.size()) : -1;
     if (!mapTrackerState.requestedTabName.empty()) {
         auto findIt = mapTrackerState.tabIndexByName.find(mapTrackerState.requestedTabName);
         if (findIt != mapTrackerState.tabIndexByName.end()) {
@@ -2697,7 +3609,13 @@ void DrawMapTrackerContent() {
     }
     mapTrackerState.requestedTabName.clear();
 
-    mapTrackerState.selectedTabIndex = std::clamp(mapTrackerState.selectedTabIndex, 0, issuesTabIndex);
+    int maxSelectableTabIndex = showIssuesTab ? issuesTabIndex : std::max(0, static_cast<int>(mapTrackerState.tabs.size()) - 1);
+    mapTrackerState.selectedTabIndex = std::clamp(mapTrackerState.selectedTabIndex, 0, maxSelectableTabIndex);
+
+    if (showMapDebugDetails) {
+        DrawMapUnassignedCheckTagsSection();
+        ImGui::Separator();
+    }
 
     ImVec4 selectedTabColor = ImGui::ColorConvertU32ToFloat4(THEME_COLOR);
     std::vector<MapTabVisualSummary> tabVisualSummaries(mapTrackerState.tabs.size());
@@ -2734,6 +3652,15 @@ void DrawMapTrackerContent() {
         if (ImGui::Button(label.c_str(), ImVec2(buttonWidth, 0.0f))) {
             mapTrackerState.selectedTabIndex = tabIndex;
         }
+        if (isSelected) {
+            ImDrawList* tabDrawList = ImGui::GetWindowDrawList();
+            ImVec2 rectMin = ImGui::GetItemRectMin();
+            ImVec2 rectMax = ImGui::GetItemRectMax();
+            float rounding = ImGui::GetStyle().FrameRounding;
+            tabDrawList->AddRect(rectMin, rectMax, IM_COL32(255, 255, 255, 255), rounding, 0, 2.0f);
+            tabDrawList->AddRect(ImVec2(rectMin.x + 1.0f, rectMin.y + 1.0f), ImVec2(rectMax.x - 1.0f, rectMax.y - 1.0f),
+                                 IM_COL32(15, 15, 15, 220), rounding, 0, 1.0f);
+        }
         if (baseColor.has_value()) {
             ImGui::PopStyleColor(4);
             ImGui::PopStyleVar();
@@ -2747,7 +3674,9 @@ void DrawMapTrackerContent() {
         ImVec4 mapTabColor = GetMapTabBaseColor(tabVisualSummaries[tabIndex]);
         drawTabButton(mapTrackerState.tabs[tabIndex].mapName, static_cast<int>(tabIndex), mapTabColor);
     }
-    drawTabButton("Unlinked / Issues", issuesTabIndex, std::nullopt);
+    if (showIssuesTab) {
+        drawTabButton("Unlinked / Issues", issuesTabIndex, std::nullopt);
+    }
 
     ImGui::Separator();
     ImVec2 mapBodySize = ImGui::GetContentRegionAvail();
@@ -2759,7 +3688,7 @@ void DrawMapTrackerContent() {
     }
 
     if (ImGui::BeginChild("CheckTrackerMapBody", mapBodySize, false, mapBodyFlags)) {
-        if (mapTrackerState.selectedTabIndex == issuesTabIndex) {
+        if (showIssuesTab && mapTrackerState.selectedTabIndex == issuesTabIndex) {
             DrawMapTrackerIssuesTab();
         } else if (!mapTrackerState.tabs.empty() &&
                    mapTrackerState.selectedTabIndex >= 0 &&
@@ -3551,14 +4480,55 @@ void CheckTrackerWindow::DrawElement() {
         ImGui::TableNextRow(0, 0);
         ImGui::TableNextColumn();
         bool mapMode = IsMapModeEnabled();
+        bool showCheckTotals = CVarGetInteger(CVAR_TRACKER_CHECK("CheckTotalsVisible"), 1);
+        std::string totalChecksText;
+        if (showCheckTotals) {
+            std::ostringstream totalChecksSS;
+            if (enableAvailableChecks) {
+                totalChecksSS << totalChecksAvailable << " Available / ";
+            }
+            totalChecksSS << totalChecksGotten << " Checked / " << totalChecks << " Total";
+            totalChecksText = totalChecksSS.str();
+        }
         std::string modeButtonLabel = mapMode ? "Mode: Map" : "Mode: Legacy";
+        float modeButtonWidth = mapMode ? 120.0f : ImGui::GetContentRegionAvail().x;
         if (UIWidgets::Button(modeButtonLabel.c_str(),
-                              UIWidgets::ButtonOptions().Color(THEME_COLOR).Size({ ImGui::GetContentRegionAvail().x, 0 }))) {
+                              UIWidgets::ButtonOptions().Color(THEME_COLOR).Size({ modeButtonWidth, 0.0f }))) {
             mapMode = !mapMode;
             SPDLOG_INFO("[CheckTrackerMapDiag] Tracker mode toggled to {}.", mapMode ? "Map" : "Legacy");
             SetMapModeEnabled(mapMode);
             if (mapMode) {
                 doAreaScroll = true;
+            }
+        }
+        if (mapMode) {
+            ImGui::SameLine();
+            if (UIWidgets::Button("Focus Player", UIWidgets::ButtonOptions().Color(THEME_COLOR).Size({ 120.0f, 0.0f }))) {
+                UpdateRequestedMapTabFromCurrentArea(true);
+            }
+
+            ImGui::SameLine();
+            if (UIWidgets::Button("Reload Data", UIWidgets::ButtonOptions().Color(THEME_COLOR).Size({ 110.0f, 0.0f }))) {
+                SPDLOG_INFO("[CheckTrackerMapDiag] Manual reload requested.");
+                LoadMapTrackerData();
+            }
+
+            if (showCheckTotals) {
+                ImGui::SameLine();
+                ImGui::TextUnformatted(totalChecksText.c_str());
+            }
+
+            if (showMapDebugDetails) {
+                std::string assetsText = "Assets: " + GetMapTrackerAssetsRootAbsoluteString();
+                ImGui::TextWrapped("%s", assetsText.c_str());
+                std::string cachePathText =
+                    "Match Cache: " + (mapTrackerState.cacheFilePath.empty()
+                                           ? GetMapTrackerMatchCachePath(GetMapTrackerAssetsRoot()).string()
+                                           : mapTrackerState.cacheFilePath.string());
+                ImGui::TextWrapped("%s", cachePathText.c_str());
+                if (!mapTrackerState.cacheStatus.empty()) {
+                    ImGui::TextDisabled("%s", mapTrackerState.cacheStatus.c_str());
+                }
             }
         }
         bool hasInlineHeaderToggle = false;
@@ -3640,21 +4610,15 @@ void CheckTrackerWindow::DrawElement() {
         }
         UIWidgets::PopStyleCombobox();
 
-        if (CVarGetInteger(CVAR_TRACKER_CHECK("CheckTotalsVisible"), 1)) {
-            std::ostringstream totalChecksSS;
-            totalChecksSS << "";
-            if (enableAvailableChecks) {
-                totalChecksSS << totalChecksAvailable << " Available / ";
-            }
-            totalChecksSS << totalChecksGotten << " Checked / " << totalChecks << " Total";
-            ImGui::Text("%s", totalChecksSS.str().c_str());
+        if (!mapMode && showCheckTotals) {
+            ImGui::Text("%s", totalChecksText.c_str());
         }
 
         bool headerPresent =
             showHiddenItemsToggleVisible || showAvailableChecksToggleVisible || mapMode ||
             (!mapMode && CVarGetInteger(CVAR_TRACKER_CHECK("ExpandCollapseButtonsVisible"), 0)) ||
             (!mapMode && CVarGetInteger(CVAR_TRACKER_CHECK("SearchInputVisible"), 1)) ||
-            CVarGetInteger(CVAR_TRACKER_CHECK("CheckTotalsVisible"), 1);
+            showCheckTotals;
         if (headerPresent) {
             ImGui::Separator();
         }
