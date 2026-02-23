@@ -196,8 +196,6 @@ bool CheckByArea(RandomizerCheckArea);
 bool IsCheckHidden(RandomizerCheck rc);
 void DrawLocation(RandomizerCheck);
 void DrawMapTrackerContent();
-void StepMapTrackerDataLoad();
-void FinalizeMapTrackerDataLoad();
 void LoadSettings();
 void RainbowTick();
 void UpdateAreas(RandomizerCheckArea area);
@@ -210,8 +208,6 @@ std::string GetCheckExtraInfoText(RandomizerCheck rc);
 std::string GetCheckLogicString(RandomizerCheck rc);
 Color_RGBA8 GetLegacyCheckExtraColor(RandomizerCheck rc);
 std::string BuildCanonicalAliasKey(const std::string& input);
-struct MapMarkerSource;
-std::vector<std::string> BuildSourceAliases(const MapMarkerSource& source);
 bool LoadJsonWithComments(const std::filesystem::path& filePath, json& outJson, std::string& outError);
 int sectionId;
 
@@ -310,27 +306,13 @@ std::array<bool, RC_MAX> filterChecksHidden = { 0 };
 
 constexpr const char* CHECK_TRACKER_MAP_MODE_CVAR = CVAR_TRACKER_CHECK("MapMode");
 constexpr const char* CHECK_TRACKER_MAP_DEBUG_CVAR = CVAR_TRACKER_CHECK("MapDebugInfo");
-constexpr const char* CHECK_TRACKER_MAP_ASSETS_ROOT = "mods/check_tracker_map_pack";
-constexpr const char* CHECK_TRACKER_MAPS_JSON = "maps/maps.jsonc";
-constexpr const char* CHECK_TRACKER_LOCATIONS_DIR = "locations";
-constexpr float CHECK_TRACKER_MAP_SCORE_THRESHOLD = 0.38f;
-constexpr float CHECK_TRACKER_MAP_LOW_CONFIDENCE_THRESHOLD = 0.62f;
-constexpr float CHECK_TRACKER_MAP_CLOSE_SCORE_DELTA = 0.08f;
-constexpr float CHECK_TRACKER_MAP_CONFLICT_DUPLICATE_THRESHOLD = 0.74f;
-constexpr float CHECK_TRACKER_MAP_CONFLICT_DUPLICATE_MAX_SCORE_GAP = 0.14f;
-constexpr float CHECK_TRACKER_MAP_ZERO_SCORE_EPSILON = 0.0001f;
-constexpr float CHECK_TRACKER_MAP_HIGH_PRECISION_TRIGGER_SCORE = 0.72f;
-constexpr float CHECK_TRACKER_MAP_HIGH_PRECISION_MIN_SCORE = 0.58f;
-constexpr size_t CHECK_TRACKER_MAP_HIGH_PRECISION_MAX_RESULTS = 12;
-constexpr double CHECK_TRACKER_MAP_MATCH_STEP_BUDGET_MS = 7.5;
-constexpr size_t CHECK_TRACKER_MAP_MATCH_STEP_MAX_SOURCES = 96;
-constexpr int CHECK_TRACKER_MAP_MATCH_CACHE_VERSION = 3;
-constexpr const char* CHECK_TRACKER_MAP_MATCH_CACHE_RELATIVE_PATH = "cache/match_cache_v1.json";
+constexpr const char* CHECK_TRACKER_MAP_ASSETS_ROOT = "mods/check_tracker_map_pack/soh-map-tracker-v0.1";
+constexpr const char* CHECK_TRACKER_MAPS_JSON = "maps.json";
+constexpr const char* CHECK_TRACKER_LOCATIONS_DIR = "areas";
 constexpr ImU32 CHECK_TRACKER_MAP_COLOR_DONE = IM_COL32(130, 130, 130, 220);
 constexpr ImU32 CHECK_TRACKER_MAP_COLOR_AVAILABLE = IM_COL32(55, 185, 85, 220);
 constexpr ImU32 CHECK_TRACKER_MAP_COLOR_UNAVAILABLE = IM_COL32(200, 65, 65, 220);
 constexpr ImU32 CHECK_TRACKER_MAP_COLOR_BORDER = IM_COL32(255, 255, 255, 245);
-constexpr ImU32 CHECK_TRACKER_MAP_COLOR_LOW_CONFIDENCE_BORDER = IM_COL32(255, 210, 90, 255);
 
 struct MapPlacement {
     std::string mapName;
@@ -339,33 +321,10 @@ struct MapPlacement {
     float size = 22.0f;
 };
 
-struct MapMarkerSource {
-    std::string sourceFile;
-    std::string displayPath;
-    std::vector<std::string> visibilityKeys;
-    MapPlacement placement;
-    bool isFromHintNamedNode = false;
-};
-
 struct CheckDescriptor {
     RandomizerCheck check = RC_UNKNOWN_CHECK;
     RandomizerCheckArea area = RCAREA_INVALID;
-    RandomizerCheckQuest quest = RCQUEST_BOTH;
     std::string checkDisplayName;
-    std::vector<std::string> aliases;
-    std::vector<std::string> normalizedAliases;
-    std::vector<std::vector<std::string>> aliasTokens;
-};
-
-struct RankedCheckCandidate {
-    RandomizerCheck check = RC_UNKNOWN_CHECK;
-    float score = 0.0f;
-    std::string reason;
-};
-
-struct SourceMatchInfo {
-    MapMarkerSource source;
-    std::vector<RankedCheckCandidate> rankedCandidates;
 };
 
 struct MapMarker {
@@ -373,13 +332,9 @@ struct MapMarker {
     std::string mapName;
     std::string displayPath;
     std::string sourceFile;
-    std::string visibilityKey;
-    std::string confidenceReason;
-    float confidence = 0.0f;
     float x = 0.0f;
     float y = 0.0f;
     float size = 22.0f;
-    bool lowConfidence = false;
 };
 
 struct MapTabData {
@@ -400,6 +355,12 @@ struct MapIssueEntry {
     std::string details;
 };
 
+struct MapPackAreaFileRef {
+    std::filesystem::path diskPath;
+    std::string resourcePath;
+    std::string displayName;
+};
+
 struct MapTrackerState {
     bool attemptedLoad = false;
     bool loaded = false;
@@ -407,16 +368,13 @@ struct MapTrackerState {
     std::string loadingStatus;
     size_t loadingCurrent = 0;
     size_t loadingTotal = 0;
-    std::string cacheStatus;
-    std::filesystem::path cacheFilePath;
     std::filesystem::path assetsRoot;
     std::filesystem::path assetsArchiveMountRoot;
     std::string resourcePathPrefix;
+    bool usingArchivePack = false;
     std::vector<std::string> fatalErrors;
     std::vector<MapIssueEntry> warnings;
-    std::vector<MapIssueEntry> zeroScoreUnresolvedLinks;
     std::vector<MapIssueEntry> unresolvedLinks;
-    std::vector<MapIssueEntry> lowConfidenceLinks;
     std::vector<RandomizerCheck> unassignedCheckIds;
     std::vector<MapTabData> tabs;
     std::unordered_map<std::string, size_t> tabIndexByName;
@@ -429,21 +387,7 @@ struct MapTrackerState {
 static MapTrackerState mapTrackerState;
 
 struct MapTrackerLoadContext {
-    bool active = false;
     std::chrono::steady_clock::time_point startTime;
-    std::unordered_map<std::string, std::string> mapImagePathsByName;
-    std::vector<std::string> orderedMapNames;
-    std::vector<MapMarkerSource> markerSources;
-    std::vector<CheckDescriptor> descriptors;
-    std::unordered_map<std::string, std::vector<size_t>> descriptorIndicesByAlias;
-    std::unordered_map<RandomizerCheckArea, std::vector<size_t>> descriptorIndicesByArea;
-    std::unordered_map<RandomizerCheck, size_t> descriptorIndexByCheck;
-    std::vector<SourceMatchInfo> matchInfos;
-    size_t nextMarkerSourceIndex = 0;
-    std::string markerSourcesSignature;
-    std::string descriptorsSignature;
-    std::filesystem::path cacheFilePath;
-    bool loadedFromCache = false;
 };
 
 static MapTrackerLoadContext mapTrackerLoadContext;
@@ -684,547 +628,6 @@ bool IsReducedAliasNoiseToken(const std::string& token) {
     return token == "boss" || token == "bossroom" || token == "room" || token == "heart" || token == "container";
 }
 
-std::string BuildReducedAliasKey(const std::string& input) {
-    std::vector<std::string> tokens = TokenizeForMatching(input);
-    if (tokens.empty()) {
-        return "";
-    }
-
-    std::string reducedKey;
-    bool removedToken = false;
-    for (const auto& token : tokens) {
-        if (IsReducedAliasNoiseToken(token)) {
-            removedToken = true;
-            continue;
-        }
-        if (!reducedKey.empty()) {
-            reducedKey += "_";
-        }
-        reducedKey += token;
-    }
-
-    if (!removedToken || reducedKey.empty()) {
-        return "";
-    }
-    return reducedKey;
-}
-
-bool IsNumericToken(const std::string& token) {
-    if (token.empty()) {
-        return false;
-    }
-    return std::all_of(token.begin(), token.end(), [](char ch) {
-        return std::isdigit(static_cast<unsigned char>(ch)) != 0;
-    });
-}
-
-float ComputeTailTokenSimilarity(const std::vector<std::string>& left, const std::vector<std::string>& right) {
-    if (left.empty() || right.empty()) {
-        return 0.0f;
-    }
-
-    size_t tailLength = std::min({ left.size(), right.size(), static_cast<size_t>(4) });
-    if (tailLength == 0) {
-        return 0.0f;
-    }
-
-    float totalWeight = 0.0f;
-    float matchedWeight = 0.0f;
-    for (size_t tailIndex = 0; tailIndex < tailLength; tailIndex++) {
-        float weight = static_cast<float>(tailLength - tailIndex);
-        totalWeight += weight;
-
-        const std::string& leftToken = left[left.size() - 1 - tailIndex];
-        const std::string& rightToken = right[right.size() - 1 - tailIndex];
-        if (leftToken == rightToken) {
-            matchedWeight += weight;
-        }
-    }
-
-    if (totalWeight <= 0.0f) {
-        return 0.0f;
-    }
-    return std::clamp(matchedWeight / totalWeight, 0.0f, 1.0f);
-}
-
-float ScoreTokenVectors(const std::vector<std::string>& left, const std::vector<std::string>& right) {
-    if (left.empty() || right.empty()) {
-        return 0.0f;
-    }
-
-    std::unordered_set<std::string> leftSet(left.begin(), left.end());
-    std::unordered_set<std::string> rightSet(right.begin(), right.end());
-    size_t intersection = 0;
-    for (const auto& token : leftSet) {
-        if (rightSet.contains(token)) {
-            intersection++;
-        }
-    }
-    size_t unionCount = leftSet.size() + rightSet.size() - intersection;
-    float jaccard = unionCount == 0 ? 0.0f : static_cast<float>(intersection) / static_cast<float>(unionCount);
-
-    size_t sequenceMatches = 0;
-    size_t limit = std::min(left.size(), right.size());
-    for (size_t i = 0; i < limit; i++) {
-        if (left[i] == right[i]) {
-            sequenceMatches++;
-        }
-    }
-    float orderScore = limit == 0 ? 0.0f : static_cast<float>(sequenceMatches) / static_cast<float>(limit);
-
-    float prefixScore = 0.0f;
-    if (!left.empty() && !right.empty() && left[0] == right[0]) {
-        prefixScore = 1.0f;
-    }
-    float tailScore = ComputeTailTokenSimilarity(left, right);
-
-    float terminalPenalty = 0.0f;
-    if (!left.empty() && !right.empty() && left.back() != right.back()) {
-        terminalPenalty -= 0.20f;
-    }
-    if (left.size() >= 2 && right.size() >= 2 && left[left.size() - 2] != right[right.size() - 2]) {
-        terminalPenalty -= 0.04f;
-    }
-
-    bool leftHasNumeric = false;
-    bool rightHasNumeric = false;
-    bool numericOverlap = false;
-    for (const auto& token : leftSet) {
-        if (IsNumericToken(token)) {
-            leftHasNumeric = true;
-            if (rightSet.contains(token)) {
-                numericOverlap = true;
-            }
-        }
-    }
-    for (const auto& token : rightSet) {
-        if (IsNumericToken(token)) {
-            rightHasNumeric = true;
-        }
-    }
-
-    float numericScore = 0.0f;
-    if (leftHasNumeric && rightHasNumeric) {
-        numericScore = numericOverlap ? 0.20f : -0.24f;
-    }
-
-    float score =
-        (0.43f * jaccard) + (0.12f * orderScore) + (0.03f * prefixScore) + (0.42f * tailScore) + terminalPenalty +
-        numericScore;
-    return std::clamp(score, 0.0f, 1.0f);
-}
-
-size_t ComputeLevenshteinDistance(const std::string& left, const std::string& right) {
-    if (left.empty()) {
-        return right.size();
-    }
-    if (right.empty()) {
-        return left.size();
-    }
-
-    std::vector<size_t> previousRow(right.size() + 1);
-    std::vector<size_t> currentRow(right.size() + 1);
-
-    for (size_t rightIndex = 0; rightIndex <= right.size(); rightIndex++) {
-        previousRow[rightIndex] = rightIndex;
-    }
-
-    for (size_t leftIndex = 0; leftIndex < left.size(); leftIndex++) {
-        currentRow[0] = leftIndex + 1;
-        for (size_t rightIndex = 0; rightIndex < right.size(); rightIndex++) {
-            size_t replaceCost = previousRow[rightIndex] + (left[leftIndex] == right[rightIndex] ? 0 : 1);
-            size_t insertCost = currentRow[rightIndex] + 1;
-            size_t deleteCost = previousRow[rightIndex + 1] + 1;
-            currentRow[rightIndex + 1] = std::min({ replaceCost, insertCost, deleteCost });
-        }
-        previousRow.swap(currentRow);
-    }
-
-    return previousRow[right.size()];
-}
-
-float ComputeNormalizedEditSimilarity(const std::string& left, const std::string& right) {
-    if (left.empty() || right.empty()) {
-        return 0.0f;
-    }
-    size_t maxLength = std::max(left.size(), right.size());
-    if (maxLength == 0) {
-        return 0.0f;
-    }
-    size_t distance = ComputeLevenshteinDistance(left, right);
-    if (distance >= maxLength) {
-        return 0.0f;
-    }
-    return 1.0f - (static_cast<float>(distance) / static_cast<float>(maxLength));
-}
-
-std::string TruncateReasonText(const std::string& value, size_t maxLength = 96) {
-    if (value.length() <= maxLength) {
-        return value;
-    }
-    if (maxLength <= 3) {
-        return value.substr(0, maxLength);
-    }
-    return value.substr(0, maxLength - 3) + "...";
-}
-
-struct HighPrecisionAliasScoreDetails {
-    float totalScore = 0.0f;
-    float editScore = 0.0f;
-    float tokenScore = 0.0f;
-    float tailTokenScore = 0.0f;
-    float prefixScore = 0.0f;
-    float suffixScore = 0.0f;
-    float terminalPenalty = 0.0f;
-};
-
-HighPrecisionAliasScoreDetails ScoreHighPrecisionAliasPairDetailed(
-    const std::string& sourceAlias, const std::vector<std::string>& sourceAliasTokens, const std::string& descriptorAlias,
-    const std::vector<std::string>& descriptorAliasTokens) {
-    HighPrecisionAliasScoreDetails details;
-    if (sourceAlias.empty() || descriptorAlias.empty()) {
-        return details;
-    }
-    if (sourceAlias == descriptorAlias) {
-        details.totalScore = 1.0f;
-        details.editScore = 1.0f;
-        details.tokenScore = 1.0f;
-        details.prefixScore = 1.0f;
-        details.suffixScore = 1.0f;
-        return details;
-    }
-
-    details.editScore = ComputeNormalizedEditSimilarity(sourceAlias, descriptorAlias);
-    details.tokenScore = ScoreTokenVectors(sourceAliasTokens, descriptorAliasTokens);
-    details.tailTokenScore = ComputeTailTokenSimilarity(sourceAliasTokens, descriptorAliasTokens);
-    details.prefixScore = (StartsWith(sourceAlias, descriptorAlias) || StartsWith(descriptorAlias, sourceAlias)) ? 1.0f : 0.0f;
-    details.suffixScore = (EndsWith(sourceAlias, descriptorAlias) || EndsWith(descriptorAlias, sourceAlias)) ? 1.0f : 0.0f;
-    bool terminalTokenMatch = !sourceAliasTokens.empty() && !descriptorAliasTokens.empty() &&
-                              sourceAliasTokens.back() == descriptorAliasTokens.back();
-    details.terminalPenalty = terminalTokenMatch ? 0.06f : -0.24f;
-    details.totalScore = (0.34f * details.editScore) + (0.23f * details.tokenScore) + (0.31f * details.tailTokenScore) +
-                         (0.03f * details.prefixScore) + (0.05f * details.suffixScore) + details.terminalPenalty;
-
-    if (details.suffixScore > 0.0f && details.tokenScore > 0.50f) {
-        details.totalScore += 0.03f;
-    }
-    details.totalScore = std::clamp(details.totalScore, 0.0f, 1.0f);
-    return details;
-}
-
-float ScoreHighPrecisionAliasPair(const std::string& sourceAlias, const std::vector<std::string>& sourceAliasTokens,
-                                  const std::string& descriptorAlias,
-                                  const std::vector<std::string>& descriptorAliasTokens) {
-    return ScoreHighPrecisionAliasPairDetailed(sourceAlias, sourceAliasTokens, descriptorAlias, descriptorAliasTokens).totalScore;
-}
-
-std::vector<std::string> BuildHighPrecisionSourceAliases(const MapMarkerSource& source) {
-    std::unordered_set<std::string> seenAliases;
-    std::vector<std::string> aliases;
-
-    auto addAlias = [&](const std::string& value) {
-        std::string normalized = NormalizeForMatching(value);
-        if (normalized.empty()) {
-            return;
-        }
-        if (seenAliases.insert(normalized).second) {
-            aliases.push_back(normalized);
-        }
-
-        std::string canonical = BuildCanonicalAliasKey(normalized);
-        if (!canonical.empty() && seenAliases.insert(canonical).second) {
-            aliases.push_back(canonical);
-        }
-
-        std::string reduced = BuildReducedAliasKey(normalized);
-        if (!reduced.empty() && seenAliases.insert(reduced).second) {
-            aliases.push_back(reduced);
-        }
-    };
-
-    addAlias(source.displayPath);
-    addAlias(source.placement.mapName + " " + source.displayPath);
-    for (const auto& visibilityKey : source.visibilityKeys) {
-        addAlias(visibilityKey);
-        addAlias(source.placement.mapName + " " + visibilityKey);
-    }
-    for (const auto& sourceAlias : BuildSourceAliases(source)) {
-        addAlias(sourceAlias);
-    }
-
-    return aliases;
-}
-
-uint64_t HashStringFNV1a64(const std::string& value) {
-    uint64_t hash = 1469598103934665603ULL;
-    for (unsigned char ch : value) {
-        hash ^= static_cast<uint64_t>(ch);
-        hash *= 1099511628211ULL;
-    }
-    return hash;
-}
-
-void HashCombine64(uint64_t& hash, uint64_t value) {
-    hash ^= value + 0x9e3779b97f4a7c15ULL + (hash << 6) + (hash >> 2);
-}
-
-std::string BuildMarkerSourceCacheKey(const MapMarkerSource& source) {
-    std::vector<std::string> normalizedVisibilityKeys = source.visibilityKeys;
-    std::sort(normalizedVisibilityKeys.begin(), normalizedVisibilityKeys.end());
-    normalizedVisibilityKeys.erase(
-        std::unique(normalizedVisibilityKeys.begin(), normalizedVisibilityKeys.end()), normalizedVisibilityKeys.end());
-
-    std::string visibilityJoined = JoinWithComma(normalizedVisibilityKeys);
-    return fmt::format("{}|{}|{}|{:.3f}|{:.3f}|{:.3f}|{}", NormalizeForMatching(source.sourceFile),
-                       NormalizeForMatching(source.displayPath), NormalizeForMatching(source.placement.mapName),
-                       source.placement.x, source.placement.y, source.placement.size, visibilityJoined);
-}
-
-std::string BuildMarkerSourcesSignature(const std::vector<MapMarkerSource>& markerSources) {
-    std::vector<std::string> keys;
-    keys.reserve(markerSources.size());
-    for (const auto& source : markerSources) {
-        keys.push_back(BuildMarkerSourceCacheKey(source));
-    }
-    std::sort(keys.begin(), keys.end());
-
-    uint64_t hash = 1469598103934665603ULL;
-    HashCombine64(hash, static_cast<uint64_t>(keys.size()));
-    for (const auto& key : keys) {
-        HashCombine64(hash, HashStringFNV1a64(key));
-    }
-    return fmt::format("{:016x}", hash);
-}
-
-std::string BuildDescriptorsSignature(const std::vector<CheckDescriptor>& descriptors) {
-    std::vector<std::string> descriptorKeys;
-    descriptorKeys.reserve(descriptors.size());
-    for (const auto& descriptor : descriptors) {
-        std::vector<std::string> aliases = descriptor.normalizedAliases;
-        std::sort(aliases.begin(), aliases.end());
-        std::string aliasJoined = JoinWithComma(aliases);
-        descriptorKeys.push_back(fmt::format("{}|{}|{}|{}", static_cast<int>(descriptor.check),
-                                             static_cast<int>(descriptor.area), static_cast<int>(descriptor.quest),
-                                             aliasJoined));
-    }
-    std::sort(descriptorKeys.begin(), descriptorKeys.end());
-
-    uint64_t hash = 1469598103934665603ULL;
-    HashCombine64(hash, static_cast<uint64_t>(descriptorKeys.size()));
-    for (const auto& key : descriptorKeys) {
-        HashCombine64(hash, HashStringFNV1a64(key));
-    }
-    return fmt::format("{:016x}", hash);
-}
-
-std::filesystem::path GetMapTrackerMatchCachePath(const std::filesystem::path& assetsRoot) {
-    return assetsRoot / CHECK_TRACKER_MAP_MATCH_CACHE_RELATIVE_PATH;
-}
-
-bool TryLoadMatchInfosFromCache(const std::filesystem::path& cacheFilePath, const std::string& markerSourcesSignature,
-                                const std::string& descriptorsSignature,
-                                const std::vector<MapMarkerSource>& markerSources,
-                                const std::unordered_map<RandomizerCheck, size_t>& descriptorIndexByCheck,
-                                std::vector<SourceMatchInfo>& outMatchInfos, std::string& outStatus, std::string& outError) {
-    outStatus.clear();
-    outError.clear();
-    outMatchInfos.clear();
-
-    if (!std::filesystem::exists(cacheFilePath)) {
-        outStatus = "Cache miss (file not found)";
-        return false;
-    }
-
-    json cacheJson;
-    std::string parseError;
-    if (!LoadJsonWithComments(cacheFilePath, cacheJson, parseError)) {
-        outError = "Failed to parse cache file: " + parseError;
-        return false;
-    }
-
-    if (!cacheJson.is_object()) {
-        outError = "Cache root is not an object.";
-        return false;
-    }
-
-    int cacheVersion = cacheJson.value("version", 0);
-    if (cacheVersion != CHECK_TRACKER_MAP_MATCH_CACHE_VERSION) {
-        outStatus = fmt::format("Cache miss (version {})", cacheVersion);
-        return false;
-    }
-
-    std::string cachedSourceSignature = cacheJson.value("marker_sources_signature", "");
-    std::string cachedDescriptorSignature = cacheJson.value("descriptors_signature", "");
-    if (cachedSourceSignature != markerSourcesSignature || cachedDescriptorSignature != descriptorsSignature) {
-        outStatus = "Cache miss (signature mismatch)";
-        return false;
-    }
-
-    if (!cacheJson.contains("checks_index") || !cacheJson["checks_index"].is_array() ||
-        !cacheJson.contains("checks_lookup") || !cacheJson["checks_lookup"].is_object()) {
-        outStatus = "Cache miss (legacy cache format)";
-        return false;
-    }
-
-    if (!cacheJson.contains("entries") || !cacheJson["entries"].is_array()) {
-        outError = "Cache file is missing a valid entries array.";
-        return false;
-    }
-
-    std::unordered_map<std::string, std::vector<std::vector<RankedCheckCandidate>>> entriesBySourceKey;
-    for (const auto& entry : cacheJson["entries"]) {
-        if (!entry.is_object() || !entry.contains("source_key") || !entry["source_key"].is_string() ||
-            !entry.contains("candidates") || !entry["candidates"].is_array()) {
-            continue;
-        }
-
-        std::vector<RankedCheckCandidate> candidates;
-        for (const auto& candidateJson : entry["candidates"]) {
-            if (!candidateJson.is_object() || !candidateJson.contains("check") || !candidateJson["check"].is_number_integer() ||
-                !candidateJson.contains("score")) {
-                continue;
-            }
-
-            RandomizerCheck check = static_cast<RandomizerCheck>(candidateJson["check"].get<int>());
-            if (!descriptorIndexByCheck.contains(check)) {
-                continue;
-            }
-
-            RankedCheckCandidate candidate;
-            candidate.check = check;
-            if (candidateJson["score"].is_number_float()) {
-                candidate.score = candidateJson["score"].get<float>();
-            } else if (candidateJson["score"].is_number_integer()) {
-                candidate.score = static_cast<float>(candidateJson["score"].get<int>());
-            } else {
-                continue;
-            }
-            candidate.score = std::clamp(candidate.score, 0.0f, 1.0f);
-            if (candidateJson.contains("reason") && candidateJson["reason"].is_string()) {
-                candidate.reason = candidateJson["reason"].get<std::string>();
-            } else {
-                candidate.reason = "Cache";
-            }
-            candidates.push_back(std::move(candidate));
-        }
-
-        std::sort(candidates.begin(), candidates.end(),
-                  [](const RankedCheckCandidate& left, const RankedCheckCandidate& right) {
-                      if (left.score == right.score) {
-                          return left.check < right.check;
-                      }
-                      return left.score > right.score;
-                  });
-        if (candidates.size() > 8) {
-            candidates.resize(8);
-        }
-        entriesBySourceKey[entry["source_key"].get<std::string>()].push_back(std::move(candidates));
-    }
-
-    outMatchInfos.reserve(markerSources.size());
-    for (const auto& source : markerSources) {
-        const std::string sourceKey = BuildMarkerSourceCacheKey(source);
-        auto findIt = entriesBySourceKey.find(sourceKey);
-        if (findIt == entriesBySourceKey.end() || findIt->second.empty()) {
-            outStatus = "Cache miss (source set changed)";
-            outMatchInfos.clear();
-            return false;
-        }
-
-        SourceMatchInfo matchInfo;
-        matchInfo.source = source;
-        matchInfo.rankedCandidates = std::move(findIt->second.back());
-        findIt->second.pop_back();
-        outMatchInfos.push_back(std::move(matchInfo));
-    }
-
-    outStatus = fmt::format("Cache hit ({} entries)", outMatchInfos.size());
-    return true;
-}
-
-bool SaveMatchInfosToCache(const std::filesystem::path& cacheFilePath, const std::string& markerSourcesSignature,
-                           const std::string& descriptorsSignature, const std::vector<SourceMatchInfo>& matchInfos,
-                           const std::vector<CheckDescriptor>& descriptors, std::string& outError) {
-    outError.clear();
-    std::error_code createDirError;
-    std::filesystem::create_directories(cacheFilePath.parent_path(), createDirError);
-    if (createDirError) {
-        outError = "Failed to create cache directory: " + createDirError.message();
-        return false;
-    }
-
-    json cacheJson;
-    cacheJson["version"] = CHECK_TRACKER_MAP_MATCH_CACHE_VERSION;
-    cacheJson["marker_sources_signature"] = markerSourcesSignature;
-    cacheJson["descriptors_signature"] = descriptorsSignature;
-    cacheJson["checks_index"] = json::array();
-    cacheJson["checks_lookup"] = json::object();
-    cacheJson["entries"] = json::array();
-
-    std::vector<CheckDescriptor> descriptorIndexEntries = descriptors;
-    std::sort(descriptorIndexEntries.begin(), descriptorIndexEntries.end(),
-              [](const CheckDescriptor& left, const CheckDescriptor& right) {
-                  return static_cast<int>(left.check) < static_cast<int>(right.check);
-              });
-    for (const auto& descriptor : descriptorIndexEntries) {
-        json checkIndexEntry = {
-            { "check", static_cast<int>(descriptor.check) },
-            { "check_name", descriptor.checkDisplayName },
-            { "check_tag", GetGameCheckTag(descriptor.check) },
-            { "check_path", GetGameCheckPath(descriptor.check) },
-            { "area", RandomizerCheckObjects::GetRCAreaName(descriptor.area) },
-            { "quest", static_cast<int>(descriptor.quest) }
-        };
-        cacheJson["checks_index"].push_back(checkIndexEntry);
-        cacheJson["checks_lookup"][std::to_string(static_cast<int>(descriptor.check))] = checkIndexEntry;
-    }
-
-    for (const auto& matchInfo : matchInfos) {
-        json entry;
-        entry["source_key"] = BuildMarkerSourceCacheKey(matchInfo.source);
-        entry["source_file"] = matchInfo.source.sourceFile;
-        entry["source_path"] = matchInfo.source.displayPath;
-        entry["source_map"] = matchInfo.source.placement.mapName;
-        entry["source_visibility_keys"] = matchInfo.source.visibilityKeys;
-        entry["source_position"] = { { "x", matchInfo.source.placement.x },
-                                     { "y", matchInfo.source.placement.y },
-                                     { "size", matchInfo.source.placement.size } };
-        entry["candidates"] = json::array();
-        for (const auto& candidate : matchInfo.rankedCandidates) {
-            entry["candidates"].push_back(
-                { { "check", static_cast<int>(candidate.check) },
-                  { "check_name", GetCheckDisplayName(candidate.check) },
-                  { "check_tag", GetGameCheckTag(candidate.check) },
-                  { "check_path", GetGameCheckPath(candidate.check) },
-                  { "score", candidate.score },
-                  { "reason", candidate.reason } });
-        }
-        cacheJson["entries"].push_back(std::move(entry));
-    }
-
-    std::ofstream outputFile(cacheFilePath, std::ios::trunc);
-    if (!outputFile.is_open()) {
-        outError = "Failed to open cache file for writing.";
-        return false;
-    }
-    outputFile << cacheJson.dump(2);
-    return true;
-}
-
-std::string JoinPathComponents(const std::vector<std::string>& parts) {
-    std::string result;
-    for (size_t i = 0; i < parts.size(); i++) {
-        if (parts[i].empty()) {
-            continue;
-        }
-        if (!result.empty()) {
-            result += " / ";
-        }
-        result += parts[i];
-    }
-    return result;
-}
-
 bool TryReadFloat(const json& value, float& outValue) {
     if (value.is_number_float()) {
         outValue = value.get<float>();
@@ -1338,6 +741,116 @@ std::string GetMapTrackerAssetsRootAbsoluteString() {
     return absolutePath.string();
 }
 
+std::string BuildMapTrackerResourcePath(const std::string& resourcePathPrefix, const std::string& relativePath) {
+    if (resourcePathPrefix.empty()) {
+        return std::filesystem::path(relativePath).lexically_normal().generic_string();
+    }
+    return (std::filesystem::path(resourcePathPrefix) / relativePath).lexically_normal().generic_string();
+}
+
+bool LoadJsonFromArchiveResource(const std::string& resourcePath, json& outJson, std::string& outError) {
+    auto context = Ship::Context::GetInstance();
+    if (context == nullptr || context->GetResourceManager() == nullptr ||
+        context->GetResourceManager()->GetArchiveManager() == nullptr) {
+        outError = "Resource manager is unavailable.";
+        return false;
+    }
+
+    auto archiveManager = context->GetResourceManager()->GetArchiveManager();
+    auto resourceFile = archiveManager->LoadFile(resourcePath);
+    if (resourceFile == nullptr || !resourceFile->IsLoaded || resourceFile->Buffer == nullptr) {
+        outError = "Could not load archive file: " + resourcePath;
+        return false;
+    }
+
+    try {
+        outJson = json::parse(resourceFile->Buffer->begin(), resourceFile->Buffer->end(), nullptr, true, true);
+    } catch (const std::exception& exception) {
+        outError = exception.what();
+        return false;
+    }
+    return true;
+}
+
+bool LoadJsonFromMapPack(const std::filesystem::path& diskPath, const std::string& resourcePath, json& outJson,
+                         std::string& outError) {
+    if (!diskPath.empty()) {
+        return LoadJsonWithComments(diskPath, outJson, outError);
+    }
+    return LoadJsonFromArchiveResource(resourcePath, outJson, outError);
+}
+
+bool EnsureMapTrackerZipArchiveMounted(const std::filesystem::path& archivePath, const std::string& preferredPrefix,
+                                       std::filesystem::path& outArchiveMountRoot, std::string& outResourcePathPrefix,
+                                       std::string& outError) {
+    auto context = Ship::Context::GetInstance();
+    if (context == nullptr || context->GetResourceManager() == nullptr ||
+        context->GetResourceManager()->GetArchiveManager() == nullptr) {
+        outError = "Resource manager is unavailable.";
+        return false;
+    }
+
+    auto archiveManager = context->GetResourceManager()->GetArchiveManager();
+    outArchiveMountRoot = archivePath;
+
+    std::string preferredProbePath = BuildMapTrackerResourcePath(preferredPrefix, CHECK_TRACKER_MAPS_JSON);
+    if (!archiveManager->HasFile(preferredProbePath) && !archiveManager->HasFile(CHECK_TRACKER_MAPS_JSON)) {
+        auto archive = archiveManager->AddArchive(archivePath.string());
+        if (archive == nullptr) {
+            outError = "Failed to mount archive file: " + archivePath.string();
+            return false;
+        }
+    }
+
+    if (archiveManager->HasFile(preferredProbePath)) {
+        outResourcePathPrefix = preferredPrefix;
+        return true;
+    }
+
+    if (archiveManager->HasFile(CHECK_TRACKER_MAPS_JSON)) {
+        outResourcePathPrefix.clear();
+        return true;
+    }
+
+    std::string fallbackPrefix;
+    std::string preferredListPattern = "soh-map-tracker-v*/maps.json";
+    auto preferredMatches = archiveManager->ListFiles(preferredListPattern);
+    if (preferredMatches != nullptr) {
+        for (const auto& resourcePath : *preferredMatches) {
+            if (!EndsWith(resourcePath, "/maps.json")) {
+                continue;
+            }
+            fallbackPrefix = resourcePath.substr(0, resourcePath.size() - std::string("/maps.json").size());
+            break;
+        }
+    }
+
+    if (fallbackPrefix.empty()) {
+        auto allMatches = archiveManager->ListFiles("*maps.json");
+        if (allMatches != nullptr) {
+            for (const auto& resourcePath : *allMatches) {
+                if (resourcePath == CHECK_TRACKER_MAPS_JSON) {
+                    fallbackPrefix.clear();
+                    break;
+                }
+                if (EndsWith(resourcePath, "/maps.json")) {
+                    fallbackPrefix = resourcePath.substr(0, resourcePath.size() - std::string("/maps.json").size());
+                    break;
+                }
+            }
+        }
+    }
+
+    outResourcePathPrefix = fallbackPrefix;
+    if (!archiveManager->HasFile(BuildMapTrackerResourcePath(outResourcePathPrefix, CHECK_TRACKER_MAPS_JSON))) {
+        outError = "Map pack is not indexed after mount. Missing virtual file: " +
+                   BuildMapTrackerResourcePath(preferredPrefix, CHECK_TRACKER_MAPS_JSON);
+        return false;
+    }
+
+    return true;
+}
+
 bool EnsureMapTrackerArchiveMounted(const std::filesystem::path& assetsRoot, std::filesystem::path& outArchiveMountRoot,
                                     std::string& outResourcePathPrefix, std::string& outError) {
     auto context = Ship::Context::GetInstance();
@@ -1408,34 +921,6 @@ void SetMapModeEnabled(bool enabled) {
     CVarSetInteger(CHECK_TRACKER_MAP_MODE_CVAR, enabled ? 1 : 0);
 }
 
-void SplitVisibilityRule(const std::string& value, std::vector<std::string>& outKeys) {
-    std::stringstream ss(value);
-    std::string key;
-    while (std::getline(ss, key, ',')) {
-        key = NormalizeForMatching(TrimCopy(key));
-        if (!key.empty()) {
-            outKeys.push_back(key);
-        }
-    }
-}
-
-std::vector<std::string> ExtractSectionVisibilityKeys(const json& section) {
-    std::vector<std::string> keys;
-    if (!section.contains("visibility_rules") || !section["visibility_rules"].is_array()) {
-        return keys;
-    }
-
-    for (const auto& visibilityRule : section["visibility_rules"]) {
-        if (visibilityRule.is_string()) {
-            SplitVisibilityRule(visibilityRule.get<std::string>(), keys);
-        }
-    }
-
-    std::sort(keys.begin(), keys.end());
-    keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
-    return keys;
-}
-
 std::vector<MapPlacement> ExtractPlacementsFromNode(const json& node, const std::string& sourceFile,
                                                     std::vector<MapIssueEntry>& warnings) {
     std::vector<MapPlacement> placements;
@@ -1483,182 +968,6 @@ std::vector<MapPlacement> ExtractPlacementsFromNode(const json& node, const std:
     return placements;
 }
 
-void CollectMarkerSourcesFromNode(const json& node, const std::string& sourceFile, std::vector<std::string> pathStack,
-                                  const std::vector<MapPlacement>& inheritedPlacements,
-                                  std::vector<MapMarkerSource>& outSources, std::vector<MapIssueEntry>& warnings,
-                                  bool inheritedHintNamedNode = false) {
-    if (!node.is_object()) {
-        return;
-    }
-
-    bool nodeIsHintNamed = false;
-    if (node.contains("name") && node["name"].is_string()) {
-        std::string nodeName = node["name"].get<std::string>();
-        nodeIsHintNamed = HasHintSuffix(nodeName);
-        pathStack.push_back(StripHintSuffix(nodeName));
-    }
-    bool currentPathIsHintNamed = inheritedHintNamedNode || nodeIsHintNamed;
-
-    std::vector<MapPlacement> currentPlacements = ExtractPlacementsFromNode(node, sourceFile, warnings);
-    if (currentPlacements.empty()) {
-        currentPlacements = inheritedPlacements;
-    }
-
-    if (node.contains("sections") && node["sections"].is_array()) {
-        for (const auto& section : node["sections"]) {
-            if (!section.is_object()) {
-                continue;
-            }
-
-            std::vector<std::string> sectionPath = pathStack;
-            std::string sectionName = "Unnamed Section";
-            bool sectionIsHintNamed = false;
-            if (section.contains("name") && section["name"].is_string()) {
-                std::string sectionRawName = section["name"].get<std::string>();
-                sectionIsHintNamed = HasHintSuffix(sectionRawName);
-                sectionName = StripHintSuffix(sectionRawName);
-            }
-            sectionPath.push_back(sectionName);
-            std::string joinedPath = JoinPathComponents(sectionPath);
-            std::vector<std::string> visibilityKeys = ExtractSectionVisibilityKeys(section);
-
-            if (currentPlacements.empty()) {
-                warnings.push_back(
-                    { "Missing map placement in " + sourceFile,
-                      "Section \"" + joinedPath + "\" has no map_locations in this node or its parents." });
-                continue;
-            }
-
-            for (const auto& placement : currentPlacements) {
-                MapMarkerSource markerSource;
-                markerSource.sourceFile = sourceFile;
-                markerSource.displayPath = joinedPath;
-                markerSource.visibilityKeys = visibilityKeys;
-                markerSource.placement = placement;
-                markerSource.isFromHintNamedNode = currentPathIsHintNamed || sectionIsHintNamed;
-                outSources.push_back(markerSource);
-            }
-        }
-    }
-
-    if (node.contains("children") && node["children"].is_array()) {
-        for (const auto& child : node["children"]) {
-            CollectMarkerSourcesFromNode(child, sourceFile, pathStack, currentPlacements, outSources, warnings,
-                                         currentPathIsHintNamed);
-        }
-    }
-}
-
-std::optional<RandomizerCheckArea> AreaFromNormalizedMapName(const std::string& normalizedMapName) {
-    static std::unordered_map<std::string, RandomizerCheckArea> mapNameToArea = {
-        { "kokiri_forest", RCAREA_KOKIRI_FOREST },
-        { "kf", RCAREA_KOKIRI_FOREST },
-        { "lost_woods", RCAREA_LOST_WOODS },
-        { "lw", RCAREA_LOST_WOODS },
-        { "sacred_forest_meadow", RCAREA_SACRED_FOREST_MEADOW },
-        { "sfm", RCAREA_SACRED_FOREST_MEADOW },
-        { "hyrule_field", RCAREA_HYRULE_FIELD },
-        { "hyrule_fields", RCAREA_HYRULE_FIELD },
-        { "hf", RCAREA_HYRULE_FIELD },
-        { "lake_hylia", RCAREA_LAKE_HYLIA },
-        { "lh", RCAREA_LAKE_HYLIA },
-        { "gerudo_valley", RCAREA_GERUDO_VALLEY },
-        { "gv", RCAREA_GERUDO_VALLEY },
-        { "gerudo_fortress", RCAREA_GERUDO_FORTRESS },
-        { "hideout", RCAREA_GERUDO_FORTRESS },
-        { "gf", RCAREA_GERUDO_FORTRESS },
-        { "wasteland", RCAREA_WASTELAND },
-        { "haunted_wasteland", RCAREA_WASTELAND },
-        { "desert_colossus", RCAREA_DESERT_COLOSSUS },
-        { "colossus", RCAREA_DESERT_COLOSSUS },
-        { "market", RCAREA_MARKET },
-        { "hyrule_market", RCAREA_MARKET },
-        { "tot", RCAREA_MARKET },
-        { "temple_of_time", RCAREA_MARKET },
-        { "gift_from_sages", RCAREA_MARKET },
-        { "hyrule_castle", RCAREA_HYRULE_CASTLE },
-        { "hc", RCAREA_HYRULE_CASTLE },
-        { "kakariko_village", RCAREA_KAKARIKO_VILLAGE },
-        { "kak", RCAREA_KAKARIKO_VILLAGE },
-        { "graveyard", RCAREA_GRAVEYARD },
-        { "dampe_race", RCAREA_GRAVEYARD },
-        { "death_mountain_trail", RCAREA_DEATH_MOUNTAIN_TRAIL },
-        { "dmt", RCAREA_DEATH_MOUNTAIN_TRAIL },
-        { "goron_city", RCAREA_GORON_CITY },
-        { "gc", RCAREA_GORON_CITY },
-        { "death_mountain_crater", RCAREA_DEATH_MOUNTAIN_CRATER },
-        { "dmc", RCAREA_DEATH_MOUNTAIN_CRATER },
-        { "zora_river", RCAREA_ZORAS_RIVER },
-        { "zorariver", RCAREA_ZORAS_RIVER },
-        { "zr", RCAREA_ZORAS_RIVER },
-        { "zoras_domain", RCAREA_ZORAS_DOMAIN },
-        { "zora_domain", RCAREA_ZORAS_DOMAIN },
-        { "zd", RCAREA_ZORAS_DOMAIN },
-        { "zoras_fountain", RCAREA_ZORAS_FOUNTAIN },
-        { "zora_fountain", RCAREA_ZORAS_FOUNTAIN },
-        { "zf", RCAREA_ZORAS_FOUNTAIN },
-        { "lon_lon_ranch", RCAREA_LON_LON_RANCH },
-        { "llr", RCAREA_LON_LON_RANCH },
-        { "deku_tree", RCAREA_DEKU_TREE },
-        { "dodongos_cavern", RCAREA_DODONGOS_CAVERN },
-        { "jabu_jabus_belly", RCAREA_JABU_JABUS_BELLY },
-        { "forest_temple", RCAREA_FOREST_TEMPLE },
-        { "fire_temple", RCAREA_FIRE_TEMPLE },
-        { "water_temple", RCAREA_WATER_TEMPLE },
-        { "spirit_temple", RCAREA_SPIRIT_TEMPLE },
-        { "shadow_temple", RCAREA_SHADOW_TEMPLE },
-        { "bottom_of_the_well", RCAREA_BOTTOM_OF_THE_WELL },
-        { "ice_cavern", RCAREA_ICE_CAVERN },
-        { "gerudo_training_ground", RCAREA_GERUDO_TRAINING_GROUND },
-        { "gerudo_training_grounds", RCAREA_GERUDO_TRAINING_GROUND },
-        { "ganons_castle", RCAREA_GANONS_CASTLE },
-        { "ganons_tower", RCAREA_GANONS_CASTLE },
-    };
-
-    std::string key = normalizedMapName;
-    if (key.rfind("mq_", 0) == 0) {
-        key = key.substr(3);
-    }
-    if (mapNameToArea.contains(key)) {
-        return mapNameToArea[key];
-    }
-    return std::nullopt;
-}
-
-void AddUniqueIndex(std::vector<size_t>& indices, size_t index) {
-    if (std::find(indices.begin(), indices.end(), index) == indices.end()) {
-        indices.push_back(index);
-    }
-}
-
-std::optional<RandomizerCheckArea> DetermineSourceArea(const MapMarkerSource& source) {
-    std::optional<RandomizerCheckArea> area = AreaFromNormalizedMapName(NormalizeForMatching(source.placement.mapName));
-    if (area.has_value()) {
-        return area;
-    }
-
-    std::string sourceStem = NormalizeForMatching(std::filesystem::path(source.sourceFile).stem().string());
-    area = AreaFromNormalizedMapName(sourceStem);
-    if (area.has_value()) {
-        return area;
-    }
-
-    for (const auto& key : source.visibilityKeys) {
-        std::string normalizedKey = NormalizeForMatching(key);
-        size_t separatorPos = normalizedKey.find('_');
-        std::string prefix = separatorPos == std::string::npos ? normalizedKey : normalizedKey.substr(0, separatorPos);
-        if (prefix.empty()) {
-            continue;
-        }
-        area = AreaFromNormalizedMapName(prefix);
-        if (area.has_value()) {
-            return area;
-        }
-    }
-
-    return std::nullopt;
-}
-
 std::vector<std::string> BuildMapImageLookupKeys(const std::string& mapName) {
     std::vector<std::string> keys;
     std::string normalized = NormalizeForMatching(mapName);
@@ -1689,80 +998,6 @@ std::vector<std::string> BuildMapImageLookupKeys(const std::string& mapName) {
     return keys;
 }
 
-std::vector<std::string> BuildSourceAliases(const MapMarkerSource& source) {
-    std::vector<std::string> aliases;
-    aliases.push_back(source.displayPath);
-    aliases.push_back(source.placement.mapName + " " + source.displayPath);
-
-    std::string displayPathLeaf = source.displayPath;
-    size_t leafSeparatorPos = displayPathLeaf.find_last_of('/');
-    if (leafSeparatorPos != std::string::npos) {
-        displayPathLeaf = TrimCopy(displayPathLeaf.substr(leafSeparatorPos + 1));
-    }
-    if (!displayPathLeaf.empty() && displayPathLeaf != source.displayPath) {
-        aliases.push_back(displayPathLeaf);
-        aliases.push_back(source.placement.mapName + " " + displayPathLeaf);
-    }
-
-    std::string canonicalDisplayPath = BuildCanonicalAliasKey(source.displayPath);
-    if (!canonicalDisplayPath.empty() && canonicalDisplayPath != NormalizeForMatching(source.displayPath)) {
-        aliases.push_back(canonicalDisplayPath);
-        aliases.push_back(source.placement.mapName + " " + canonicalDisplayPath);
-    }
-
-    std::string canonicalDisplayPathLeaf = BuildCanonicalAliasKey(displayPathLeaf);
-    if (!canonicalDisplayPathLeaf.empty() && canonicalDisplayPathLeaf != NormalizeForMatching(displayPathLeaf)) {
-        aliases.push_back(canonicalDisplayPathLeaf);
-        aliases.push_back(source.placement.mapName + " " + canonicalDisplayPathLeaf);
-    }
-
-    std::filesystem::path sourcePath(source.sourceFile);
-    std::string sourceStem = sourcePath.stem().string();
-    aliases.push_back(sourceStem + " " + source.displayPath);
-
-    std::string canonicalSourceStem = BuildCanonicalAliasKey(sourceStem);
-    if (!canonicalSourceStem.empty()) {
-        aliases.push_back(canonicalSourceStem + " " + source.displayPath);
-        if (!canonicalDisplayPath.empty()) {
-            aliases.push_back(canonicalSourceStem + " " + canonicalDisplayPath);
-        }
-    }
-
-    for (const auto& visibilityKey : source.visibilityKeys) {
-        aliases.push_back(visibilityKey);
-        aliases.push_back(source.placement.mapName + " " + visibilityKey);
-
-        std::string asWords = visibilityKey;
-        std::replace(asWords.begin(), asWords.end(), '_', ' ' );
-        aliases.push_back(asWords);
-        aliases.push_back(source.placement.mapName + " " + asWords);
-
-        std::string canonicalVisibilityKey = BuildCanonicalAliasKey(visibilityKey);
-        if (!canonicalVisibilityKey.empty() && canonicalVisibilityKey != visibilityKey) {
-            aliases.push_back(canonicalVisibilityKey);
-            aliases.push_back(source.placement.mapName + " " + canonicalVisibilityKey);
-        }
-
-        std::vector<std::string> visibilityTokens = TokenizeForMatching(visibilityKey);
-        if (!visibilityTokens.empty() && !IsNumericToken(visibilityTokens.back())) {
-            std::string singleTokenTail = visibilityTokens.back();
-            aliases.push_back(singleTokenTail);
-            aliases.push_back(source.placement.mapName + " " + singleTokenTail);
-        }
-        if (visibilityTokens.size() >= 2 && !IsNumericToken(visibilityTokens[visibilityTokens.size() - 1]) &&
-            !IsNumericToken(visibilityTokens[visibilityTokens.size() - 2])) {
-            std::string twoTokenTail =
-                visibilityTokens[visibilityTokens.size() - 2] + "_" + visibilityTokens[visibilityTokens.size() - 1];
-            aliases.push_back(twoTokenTail);
-            aliases.push_back(source.placement.mapName + " " + twoTokenTail);
-        }
-    }
-
-    std::sort(aliases.begin(), aliases.end());
-    aliases.erase(std::unique(aliases.begin(), aliases.end()), aliases.end());
-    return aliases;
-}
-
 bool StringContainsMq(const std::string& value) {
     std::string normalized = NormalizeForMatching(value);
     return normalized.find("mq") != std::string::npos;
@@ -1776,89 +1011,6 @@ bool StringContainsHintToken(const std::string& value) {
         }
     }
     return false;
-}
-
-bool IsSourceMqRelated(const MapMarkerSource& source) {
-    if (StringContainsMq(source.sourceFile) || StringContainsMq(source.displayPath) ||
-        StringContainsMq(source.placement.mapName)) {
-        return true;
-    }
-    for (const auto& key : source.visibilityKeys) {
-        if (StringContainsMq(key)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-bool IsSourceHintRelated(const MapMarkerSource& source) {
-    if (source.isFromHintNamedNode) {
-        return true;
-    }
-    if (StringContainsHintToken(source.sourceFile) || StringContainsHintToken(source.displayPath) ||
-        StringContainsHintToken(source.placement.mapName)) {
-        return true;
-    }
-    for (const auto& key : source.visibilityKeys) {
-        if (StringContainsHintToken(key)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-struct SourceScoringContext {
-    std::vector<std::vector<std::string>> aliasTokens;
-    std::vector<std::string> normalizedVisibilityKeys;
-    std::optional<RandomizerCheckArea> sourceArea;
-    bool sourceAppearsMq = false;
-};
-
-SourceScoringContext BuildSourceScoringContext(const MapMarkerSource& source) {
-    SourceScoringContext context;
-
-    std::vector<std::string> sourceAliases = BuildSourceAliases(source);
-    context.aliasTokens.reserve(sourceAliases.size());
-    for (const auto& sourceAlias : sourceAliases) {
-        context.aliasTokens.push_back(TokenizeForMatching(sourceAlias));
-    }
-
-    context.normalizedVisibilityKeys.reserve(source.visibilityKeys.size() * 2);
-    for (const auto& key : source.visibilityKeys) {
-        std::string normalizedKey = NormalizeForMatching(key);
-        if (!normalizedKey.empty()) {
-            context.normalizedVisibilityKeys.push_back(normalizedKey);
-
-            std::string canonicalKey = BuildCanonicalAliasKey(normalizedKey);
-            if (!canonicalKey.empty() && canonicalKey != normalizedKey) {
-                context.normalizedVisibilityKeys.push_back(canonicalKey);
-            }
-
-            std::string reducedKey = BuildReducedAliasKey(normalizedKey);
-            if (!reducedKey.empty() && reducedKey != normalizedKey) {
-                context.normalizedVisibilityKeys.push_back(reducedKey);
-            }
-
-            if (!canonicalKey.empty()) {
-                std::string reducedCanonicalKey = BuildReducedAliasKey(canonicalKey);
-                if (!reducedCanonicalKey.empty() && reducedCanonicalKey != canonicalKey) {
-                    context.normalizedVisibilityKeys.push_back(reducedCanonicalKey);
-                }
-            }
-        }
-        if (StringContainsMq(key)) {
-            context.sourceAppearsMq = true;
-        }
-    }
-    std::sort(context.normalizedVisibilityKeys.begin(), context.normalizedVisibilityKeys.end());
-    context.normalizedVisibilityKeys.erase(
-        std::unique(context.normalizedVisibilityKeys.begin(), context.normalizedVisibilityKeys.end()),
-        context.normalizedVisibilityKeys.end());
-
-    context.sourceArea = DetermineSourceArea(source);
-    context.sourceAppearsMq =
-        context.sourceAppearsMq || StringContainsMq(source.displayPath) || StringContainsMq(source.placement.mapName);
-    return context;
 }
 
 std::vector<CheckDescriptor> BuildVisibleCheckDescriptors() {
@@ -1876,10 +1028,10 @@ std::vector<CheckDescriptor> BuildVisibleCheckDescriptors() {
             CheckDescriptor descriptor;
             descriptor.check = rc;
             descriptor.area = location->GetArea();
-            descriptor.quest = location->GetQuest();
             descriptor.checkDisplayName = GetCheckDisplayName(rc);
 
-            bool isHintCheckType = location->GetRCType() == RCTYPE_GOSSIP_STONE || location->GetRCType() == RCTYPE_STATIC_HINT;
+            bool isHintCheckType =
+                location->GetRCType() == RCTYPE_GOSSIP_STONE || location->GetRCType() == RCTYPE_STATIC_HINT;
             bool isHintNamedCheck = StringContainsHintToken(location->GetShortName()) ||
                                     StringContainsHintToken(location->GetName()) ||
                                     StringContainsHintToken(descriptor.checkDisplayName);
@@ -1887,93 +1039,9 @@ std::vector<CheckDescriptor> BuildVisibleCheckDescriptors() {
                 continue;
             }
 
-            if (descriptor.quest == RCQUEST_MQ || StringContainsMq(location->GetShortName()) ||
+            if (location->GetQuest() == RCQUEST_MQ || StringContainsMq(location->GetShortName()) ||
                 StringContainsMq(location->GetName()) || StringContainsMq(descriptor.checkDisplayName)) {
                 continue;
-            }
-
-            std::string areaName = RandomizerCheckObjects::GetRCAreaName(location->GetArea());
-            std::string areaPrefix = SohUtils::GetRandomizerCheckAreaPrefix(location->GetArea());
-            descriptor.aliases.push_back(location->GetShortName());
-            descriptor.aliases.push_back(location->GetName());
-            descriptor.aliases.push_back(descriptor.checkDisplayName);
-            descriptor.aliases.push_back(areaName + " " + location->GetShortName());
-            descriptor.aliases.push_back(areaPrefix + " " + location->GetShortName());
-            descriptor.aliases.push_back(areaPrefix + " " + location->GetName());
-
-            if (location->GetArea() == RCAREA_MARKET) {
-                descriptor.aliases.push_back("Temple of Time " + location->GetShortName());
-                descriptor.aliases.push_back("ToT " + location->GetShortName());
-            }
-            if (location->GetArea() == RCAREA_GERUDO_FORTRESS) {
-                descriptor.aliases.push_back("Hideout " + location->GetShortName());
-            }
-            if (location->GetArea() == RCAREA_DESERT_COLOSSUS) {
-                descriptor.aliases.push_back("Colossus " + location->GetShortName());
-            }
-            if (location->GetArea() == RCAREA_GANONS_CASTLE) {
-                descriptor.aliases.push_back("Ganons Tower " + location->GetShortName());
-            }
-
-            std::string gameCheckTag = GetGameCheckTag(rc);
-            if (!gameCheckTag.empty()) {
-                descriptor.aliases.push_back(gameCheckTag);
-            }
-
-            std::string canonicalShortName = BuildCanonicalAliasKey(location->GetShortName());
-            std::string canonicalLongName = BuildCanonicalAliasKey(location->GetName());
-            std::string canonicalPrefixedShortName = BuildCanonicalAliasKey(areaPrefix + " " + location->GetShortName());
-            std::string canonicalPrefixedLongName = BuildCanonicalAliasKey(areaPrefix + " " + location->GetName());
-
-            if (!canonicalShortName.empty()) {
-                descriptor.aliases.push_back(canonicalShortName);
-            }
-            if (!canonicalLongName.empty()) {
-                descriptor.aliases.push_back(canonicalLongName);
-            }
-            if (!canonicalPrefixedShortName.empty()) {
-                descriptor.aliases.push_back(canonicalPrefixedShortName);
-            }
-            if (!canonicalPrefixedLongName.empty()) {
-                descriptor.aliases.push_back(canonicalPrefixedLongName);
-            }
-
-            std::sort(descriptor.aliases.begin(), descriptor.aliases.end());
-            descriptor.aliases.erase(std::unique(descriptor.aliases.begin(), descriptor.aliases.end()),
-                                     descriptor.aliases.end());
-
-            std::unordered_set<std::string> seenNormalizedAliases;
-            auto addAliasVariant = [&](const std::string& aliasVariant) {
-                if (aliasVariant.empty()) {
-                    return;
-                }
-                if (!seenNormalizedAliases.insert(aliasVariant).second) {
-                    return;
-                }
-                descriptor.normalizedAliases.push_back(aliasVariant);
-                descriptor.aliasTokens.push_back(TokenizeForMatching(aliasVariant));
-            };
-
-            for (const auto& alias : descriptor.aliases) {
-                std::string normalizedAlias = NormalizeForMatching(alias);
-                addAliasVariant(normalizedAlias);
-
-                std::string canonicalAlias = BuildCanonicalAliasKey(normalizedAlias);
-                if (!canonicalAlias.empty() && canonicalAlias != normalizedAlias) {
-                    addAliasVariant(canonicalAlias);
-                }
-
-                std::string reducedAlias = BuildReducedAliasKey(normalizedAlias);
-                if (!reducedAlias.empty() && reducedAlias != normalizedAlias) {
-                    addAliasVariant(reducedAlias);
-                }
-
-                if (!canonicalAlias.empty()) {
-                    std::string reducedCanonicalAlias = BuildReducedAliasKey(canonicalAlias);
-                    if (!reducedCanonicalAlias.empty() && reducedCanonicalAlias != canonicalAlias) {
-                        addAliasVariant(reducedCanonicalAlias);
-                    }
-                }
             }
 
             descriptors.push_back(std::move(descriptor));
@@ -1981,363 +1049,6 @@ std::vector<CheckDescriptor> BuildVisibleCheckDescriptors() {
     }
 
     return descriptors;
-}
-
-RankedCheckCandidate ScoreSourceAgainstCheck(const SourceScoringContext& sourceContext, const CheckDescriptor& descriptor) {
-    RankedCheckCandidate result;
-    result.check = descriptor.check;
-
-    float bestAliasScore = 0.0f;
-    float bestTailScore = 0.0f;
-    float bestTerminalPenalty = 0.0f;
-    for (const auto& sourceTokens : sourceContext.aliasTokens) {
-        for (const auto& descriptorAliasTokens : descriptor.aliasTokens) {
-            float aliasScore = ScoreTokenVectors(sourceTokens, descriptorAliasTokens);
-            float tailScore = ComputeTailTokenSimilarity(sourceTokens, descriptorAliasTokens);
-            float terminalPenalty = 0.0f;
-            if (!sourceTokens.empty() && !descriptorAliasTokens.empty() &&
-                sourceTokens.back() != descriptorAliasTokens.back()) {
-                terminalPenalty -= 0.20f;
-            }
-            if (sourceTokens.size() >= 2 && descriptorAliasTokens.size() >= 2 &&
-                sourceTokens[sourceTokens.size() - 2] != descriptorAliasTokens[descriptorAliasTokens.size() - 2]) {
-                terminalPenalty -= 0.04f;
-            }
-
-            if (aliasScore > bestAliasScore ||
-                (std::abs(aliasScore - bestAliasScore) <= 0.0001f && tailScore > bestTailScore)) {
-                bestAliasScore = aliasScore;
-                bestTailScore = tailScore;
-                bestTerminalPenalty = terminalPenalty;
-            }
-        }
-    }
-
-    float score = bestAliasScore;
-    float areaAdjustment = 0.0f;
-    float mqAdjustment = 0.0f;
-    float visibilityExactBonus = 0.0f;
-    float visibilitySuffixBonus = 0.0f;
-
-    if (sourceContext.sourceArea.has_value()) {
-        if (sourceContext.sourceArea.value() == descriptor.area) {
-            areaAdjustment = 0.12f;
-        } else {
-            areaAdjustment = -0.08f;
-        }
-        score += areaAdjustment;
-    }
-
-    bool descriptorIsMq = descriptor.quest == RCQUEST_MQ || StringContainsMq(descriptor.checkDisplayName);
-    if (sourceContext.sourceAppearsMq == descriptorIsMq) {
-        mqAdjustment = 0.07f;
-    } else if (sourceContext.sourceAppearsMq != descriptorIsMq) {
-        mqAdjustment = -0.07f;
-    }
-    score += mqAdjustment;
-
-    for (const auto& normalizedKey : sourceContext.normalizedVisibilityKeys) {
-        for (const auto& normalizedAlias : descriptor.normalizedAliases) {
-            if (normalizedKey == normalizedAlias) {
-                visibilityExactBonus += 0.25f;
-                score += 0.25f;
-            } else if ((!normalizedAlias.empty() && EndsWith(normalizedKey, normalizedAlias)) ||
-                       (!normalizedKey.empty() && EndsWith(normalizedAlias, normalizedKey))) {
-                visibilitySuffixBonus += 0.08f;
-                score += 0.08f;
-            }
-        }
-    }
-
-    result.score = std::clamp(score, 0.0f, 1.0f);
-    result.reason = fmt::format(
-        "Rescore: alias={:.2f} aliasTail={:.2f} aliasTerminal={:+.2f} area={:+.2f} mq={:+.2f} visExact={:+.2f} "
-        "visSuffix={:+.2f} total={:.2f}",
-        bestAliasScore, bestTailScore, bestTerminalPenalty, areaAdjustment, mqAdjustment, visibilityExactBonus,
-        visibilitySuffixBonus, result.score);
-    return result;
-}
-
-SourceMatchInfo BuildMatchInfo(
-    const MapMarkerSource& source, const std::vector<CheckDescriptor>& descriptors,
-    const std::unordered_map<std::string, std::vector<size_t>>& descriptorIndicesByAlias,
-    const std::unordered_map<RandomizerCheckArea, std::vector<size_t>>& descriptorIndicesByArea,
-    const std::unordered_map<RandomizerCheck, size_t>& descriptorIndexByCheck) {
-    SourceMatchInfo matchInfo;
-    matchInfo.source = source;
-    SourceScoringContext sourceScoringContext = BuildSourceScoringContext(source);
-    if (sourceScoringContext.sourceAppearsMq) {
-        return matchInfo;
-    }
-
-    std::unordered_map<RandomizerCheck, RankedCheckCandidate> candidateByCheck;
-    auto addAliasMatches = [&](const std::string& aliasKey, float baseScore, const char* reason) {
-        if (aliasKey.empty()) {
-            return;
-        }
-        auto aliasIt = descriptorIndicesByAlias.find(aliasKey);
-        if (aliasIt == descriptorIndicesByAlias.end()) {
-            return;
-        }
-        for (size_t descriptorIndex : aliasIt->second) {
-            RandomizerCheck candidateCheck = descriptors[descriptorIndex].check;
-            auto existingIt = candidateByCheck.find(candidateCheck);
-            if (existingIt == candidateByCheck.end() || baseScore > existingIt->second.score) {
-                RankedCheckCandidate candidate;
-                candidate.check = candidateCheck;
-                candidate.score = baseScore;
-                candidate.reason =
-                    fmt::format("{} | key=\"{}\" | base={:.2f}", reason, TruncateReasonText(aliasKey), baseScore);
-                candidateByCheck[candidateCheck] = std::move(candidate);
-            }
-        }
-    };
-
-    for (const auto& key : source.visibilityKeys) {
-        std::string normalizedKey = NormalizeForMatching(key);
-        addAliasMatches(normalizedKey, 0.99f, "Exact visibility_rules match");
-
-        std::string canonicalKey = BuildCanonicalAliasKey(normalizedKey);
-        if (!canonicalKey.empty() && canonicalKey != normalizedKey) {
-            addAliasMatches(canonicalKey, 0.99f, "Canonical visibility_rules match");
-        }
-
-        std::string reducedKey = BuildReducedAliasKey(normalizedKey);
-        if (!reducedKey.empty() && reducedKey != normalizedKey) {
-            addAliasMatches(reducedKey, 0.96f, "Reduced visibility_rules match");
-        }
-        if (!canonicalKey.empty()) {
-            std::string reducedCanonicalKey = BuildReducedAliasKey(canonicalKey);
-            if (!reducedCanonicalKey.empty() && reducedCanonicalKey != canonicalKey) {
-                addAliasMatches(reducedCanonicalKey, 0.95f, "Reduced canonical visibility_rules match");
-            }
-        }
-    }
-
-    std::string normalizedMapPathAlias = NormalizeForMatching(source.placement.mapName + " " + source.displayPath);
-    addAliasMatches(normalizedMapPathAlias, 0.90f, "Exact map+path alias");
-    std::string canonicalMapPathAlias = BuildCanonicalAliasKey(normalizedMapPathAlias);
-    if (!canonicalMapPathAlias.empty() && canonicalMapPathAlias != normalizedMapPathAlias) {
-        addAliasMatches(canonicalMapPathAlias, 0.88f, "Canonical map+path alias");
-    }
-    std::string reducedMapPathAlias = BuildReducedAliasKey(normalizedMapPathAlias);
-    if (!reducedMapPathAlias.empty() && reducedMapPathAlias != normalizedMapPathAlias) {
-        addAliasMatches(reducedMapPathAlias, 0.86f, "Reduced map+path alias");
-    }
-
-    std::string normalizedPathAlias = NormalizeForMatching(source.displayPath);
-    addAliasMatches(normalizedPathAlias, 0.82f, "Exact path alias");
-    std::string canonicalPathAlias = BuildCanonicalAliasKey(normalizedPathAlias);
-    if (!canonicalPathAlias.empty() && canonicalPathAlias != normalizedPathAlias) {
-        addAliasMatches(canonicalPathAlias, 0.80f, "Canonical path alias");
-    }
-    std::string reducedPathAlias = BuildReducedAliasKey(normalizedPathAlias);
-    if (!reducedPathAlias.empty() && reducedPathAlias != normalizedPathAlias) {
-        addAliasMatches(reducedPathAlias, 0.78f, "Reduced path alias");
-    }
-
-    if (candidateByCheck.empty() && sourceScoringContext.sourceArea.has_value()) {
-        auto areaIt = descriptorIndicesByArea.find(sourceScoringContext.sourceArea.value());
-        if (areaIt != descriptorIndicesByArea.end()) {
-            std::vector<std::string> fallbackNeedles;
-            auto addFallbackNeedle = [&](const std::string& value) {
-                if (!value.empty()) {
-                    fallbackNeedles.push_back(value);
-                }
-            };
-            auto addFallbackNeedleVariants = [&](const std::string& value) {
-                addFallbackNeedle(value);
-                std::string reducedValue = BuildReducedAliasKey(value);
-                if (!reducedValue.empty() && reducedValue != value) {
-                    addFallbackNeedle(reducedValue);
-                }
-            };
-
-            addFallbackNeedleVariants(NormalizeForMatching(source.displayPath));
-            for (const auto& visibilityKey : sourceScoringContext.normalizedVisibilityKeys) {
-                addFallbackNeedleVariants(visibilityKey);
-            }
-            std::sort(fallbackNeedles.begin(), fallbackNeedles.end());
-            fallbackNeedles.erase(std::unique(fallbackNeedles.begin(), fallbackNeedles.end()), fallbackNeedles.end());
-
-            auto aliasMatchesNeedle = [](const std::string& aliasValue, const std::string& needleValue) {
-                std::string needlePrefix = needleValue.empty() ? "" : (needleValue + "_");
-                std::string aliasPrefix = aliasValue.empty() ? "" : (aliasValue + "_");
-                return aliasValue == needleValue || (!aliasValue.empty() && EndsWith(aliasValue, needleValue)) ||
-                       (!needleValue.empty() && EndsWith(needleValue, aliasValue)) ||
-                       (!needlePrefix.empty() && StartsWith(aliasValue, needlePrefix)) ||
-                       (!aliasPrefix.empty() && StartsWith(needleValue, aliasPrefix));
-            };
-
-            for (size_t descriptorIndex : areaIt->second) {
-                const auto& descriptor = descriptors[descriptorIndex];
-                for (const auto& alias : descriptor.normalizedAliases) {
-                    bool matchedFallback = false;
-                    std::string matchedNeedle;
-                    std::string matchedAlias;
-                    std::string reducedAlias = BuildReducedAliasKey(alias);
-                    for (const auto& needle : fallbackNeedles) {
-                        if (aliasMatchesNeedle(alias, needle)) {
-                            matchedFallback = true;
-                            matchedNeedle = needle;
-                            matchedAlias = alias;
-                            break;
-                        }
-                        if (!reducedAlias.empty() && aliasMatchesNeedle(reducedAlias, needle)) {
-                            matchedFallback = true;
-                            matchedNeedle = needle;
-                            matchedAlias = reducedAlias;
-                            break;
-                        }
-                    }
-
-                    if (matchedFallback) {
-                        RankedCheckCandidate candidate;
-                        candidate.check = descriptor.check;
-                        candidate.score = 0.58f;
-                        candidate.reason = fmt::format(
-                            "Area-local alias fallback | alias=\"{}\" | needle=\"{}\" | base=0.58",
-                            TruncateReasonText(matchedAlias), TruncateReasonText(matchedNeedle));
-                        candidateByCheck[candidate.check] = std::move(candidate);
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    float bestFastCandidateScore = 0.0f;
-    for (const auto& [candidateCheck, candidate] : candidateByCheck) {
-        (void)candidateCheck;
-        bestFastCandidateScore = std::max(bestFastCandidateScore, candidate.score);
-    }
-
-    bool runHighPrecisionPass = candidateByCheck.empty() || bestFastCandidateScore < CHECK_TRACKER_MAP_HIGH_PRECISION_TRIGGER_SCORE;
-    if (runHighPrecisionPass) {
-        std::vector<std::string> sourceAliases = BuildHighPrecisionSourceAliases(source);
-        std::vector<std::vector<std::string>> sourceAliasTokens;
-        sourceAliasTokens.reserve(sourceAliases.size());
-        for (const auto& sourceAlias : sourceAliases) {
-            sourceAliasTokens.push_back(TokenizeForMatching(sourceAlias));
-        }
-
-        std::vector<size_t> descriptorIndices;
-        if (sourceScoringContext.sourceArea.has_value()) {
-            auto areaIt = descriptorIndicesByArea.find(sourceScoringContext.sourceArea.value());
-            if (areaIt != descriptorIndicesByArea.end()) {
-                descriptorIndices = areaIt->second;
-            }
-        } else {
-            descriptorIndices.resize(descriptors.size());
-            std::iota(descriptorIndices.begin(), descriptorIndices.end(), 0);
-        }
-
-        if (!sourceAliases.empty() && !descriptorIndices.empty()) {
-            std::vector<RankedCheckCandidate> scoredHighPrecisionChecks;
-            scoredHighPrecisionChecks.reserve(descriptorIndices.size());
-
-            for (size_t descriptorIndex : descriptorIndices) {
-                const auto& descriptor = descriptors[descriptorIndex];
-                float bestHighPrecisionScore = 0.0f;
-                HighPrecisionAliasScoreDetails bestHighPrecisionDetails;
-                std::string bestSourceAlias;
-                std::string bestDescriptorAlias;
-                for (size_t sourceAliasIndex = 0; sourceAliasIndex < sourceAliases.size(); sourceAliasIndex++) {
-                    const std::string& sourceAlias = sourceAliases[sourceAliasIndex];
-                    const auto& sourceTokens = sourceAliasTokens[sourceAliasIndex];
-                    for (size_t descriptorAliasIndex = 0; descriptorAliasIndex < descriptor.normalizedAliases.size();
-                         descriptorAliasIndex++) {
-                        const std::string& descriptorAlias = descriptor.normalizedAliases[descriptorAliasIndex];
-                        const auto& descriptorTokens = descriptor.aliasTokens[descriptorAliasIndex];
-                        HighPrecisionAliasScoreDetails pairScore =
-                            ScoreHighPrecisionAliasPairDetailed(sourceAlias, sourceTokens, descriptorAlias, descriptorTokens);
-                        if (pairScore.totalScore > bestHighPrecisionScore) {
-                            bestHighPrecisionScore = pairScore.totalScore;
-                            bestHighPrecisionDetails = pairScore;
-                            bestSourceAlias = sourceAlias;
-                            bestDescriptorAlias = descriptorAlias;
-                        }
-                    }
-                }
-
-                if (bestHighPrecisionScore >= CHECK_TRACKER_MAP_HIGH_PRECISION_MIN_SCORE) {
-                    RankedCheckCandidate candidate;
-                    candidate.check = descriptor.check;
-                    candidate.score = bestHighPrecisionScore;
-                    candidate.reason = fmt::format(
-                        "High-precision fuzzy | src=\"{}\" | dst=\"{}\" | edit={:.2f} token={:.2f} tail={:.2f} "
-                        "prefix={:.0f} suffix={:.0f} terminal={:+.2f} | base={:.2f}",
-                        TruncateReasonText(bestSourceAlias), TruncateReasonText(bestDescriptorAlias),
-                        bestHighPrecisionDetails.editScore, bestHighPrecisionDetails.tokenScore,
-                        bestHighPrecisionDetails.tailTokenScore, bestHighPrecisionDetails.prefixScore,
-                        bestHighPrecisionDetails.suffixScore, bestHighPrecisionDetails.terminalPenalty,
-                        bestHighPrecisionScore);
-                    scoredHighPrecisionChecks.push_back(std::move(candidate));
-                }
-            }
-
-            std::sort(scoredHighPrecisionChecks.begin(), scoredHighPrecisionChecks.end(),
-                      [](const RankedCheckCandidate& left, const RankedCheckCandidate& right) {
-                          if (left.score == right.score) {
-                              return left.check < right.check;
-                          }
-                          return left.score > right.score;
-                      });
-            if (scoredHighPrecisionChecks.size() > CHECK_TRACKER_MAP_HIGH_PRECISION_MAX_RESULTS) {
-                scoredHighPrecisionChecks.resize(CHECK_TRACKER_MAP_HIGH_PRECISION_MAX_RESULTS);
-            }
-
-            for (auto& highPrecisionCandidate : scoredHighPrecisionChecks) {
-                auto existingIt = candidateByCheck.find(highPrecisionCandidate.check);
-                if (existingIt == candidateByCheck.end() || highPrecisionCandidate.score > existingIt->second.score) {
-                    candidateByCheck[highPrecisionCandidate.check] = std::move(highPrecisionCandidate);
-                }
-            }
-        }
-    }
-
-    matchInfo.rankedCandidates.reserve(candidateByCheck.size());
-    for (auto& [check, candidate] : candidateByCheck) {
-        (void)check;
-        float preBlendScore = candidate.score;
-        float rescoredValue = 0.0f;
-        std::string rescoredReason = "Rescore skipped";
-        auto descriptorIndexIt = descriptorIndexByCheck.find(candidate.check);
-        if (descriptorIndexIt != descriptorIndexByCheck.end()) {
-            RankedCheckCandidate rescoredCandidate =
-                ScoreSourceAgainstCheck(sourceScoringContext, descriptors[descriptorIndexIt->second]);
-            rescoredValue = rescoredCandidate.score;
-            rescoredReason = rescoredCandidate.reason;
-            candidate.score = std::clamp((candidate.score * 0.45f) + (rescoredValue * 0.75f), 0.0f, 1.0f);
-        }
-
-        bool areaPenaltyApplied = false;
-        if (sourceScoringContext.sourceArea.has_value()) {
-            const auto* location = Rando::StaticData::GetLocation(candidate.check);
-            if (location->GetArea() != sourceScoringContext.sourceArea.value()) {
-                candidate.score = std::max(0.0f, candidate.score - 0.18f);
-                areaPenaltyApplied = true;
-            }
-        }
-        candidate.reason = fmt::format("{} | {} | pre={:.2f} rescored={:.2f} final={:.2f}{}",
-                                       candidate.reason, rescoredReason, preBlendScore, rescoredValue, candidate.score,
-                                       areaPenaltyApplied ? " | area-penalty" : "");
-        if (candidate.score > 0.01f) {
-            matchInfo.rankedCandidates.push_back(std::move(candidate));
-        }
-    }
-
-    std::sort(matchInfo.rankedCandidates.begin(), matchInfo.rankedCandidates.end(),
-              [](const RankedCheckCandidate& left, const RankedCheckCandidate& right) {
-                  if (left.score == right.score) {
-                      return left.check < right.check;
-                  }
-                  return left.score > right.score;
-              });
-    if (matchInfo.rankedCandidates.size() > 8) {
-        matchInfo.rankedCandidates.resize(8);
-    }
-    return matchInfo;
 }
 
 void ResetMapTrackerState(bool unloadTextures) {
@@ -2369,11 +1080,6 @@ std::string ResolveMapImagePath(const std::string& mapName,
         }
     }
     return "";
-}
-
-std::string BuildIssueDetailsForSource(const MapMarkerSource& source, const std::string& reason) {
-    return "Map: " + source.placement.mapName + " | Path: " + source.displayPath + " | File: " + source.sourceFile + " | " +
-           reason;
 }
 
 void UpdateRequestedMapTabFromCurrentArea(bool force) {
@@ -2493,67 +1199,267 @@ void UpdateRequestedMapTabFromCurrentArea(bool force) {
     }
 }
 
+std::unordered_map<std::string, RandomizerCheck> BuildGameCheckLookupBySohId(std::vector<MapIssueEntry>& warnings) {
+    std::unordered_map<std::string, RandomizerCheck> checksBySohId;
+    checksBySohId.reserve(RC_MAX);
+
+    const auto& locationTable = Rando::StaticData::GetLocationTable();
+    for (int checkIndex = static_cast<int>(RC_UNKNOWN_CHECK) + 1; checkIndex < static_cast<int>(RC_MAX); checkIndex++) {
+        RandomizerCheck check = static_cast<RandomizerCheck>(checkIndex);
+        const auto& location = locationTable[check];
+        if (location.GetRandomizerCheck() != check) {
+            continue;
+        }
+
+        bool isHintCheckType = location.GetRCType() == RCTYPE_GOSSIP_STONE || location.GetRCType() == RCTYPE_STATIC_HINT;
+        bool isHintNamedCheck = StringContainsHintToken(location.GetShortName()) || StringContainsHintToken(location.GetName());
+        if (isHintCheckType || isHintNamedCheck) {
+            continue;
+        }
+
+        if (location.GetQuest() == RCQUEST_MQ || StringContainsMq(location.GetShortName()) ||
+            StringContainsMq(location.GetName())) {
+            continue;
+        }
+
+        std::string normalizedTag = NormalizeForMatching(GetGameCheckTag(check));
+        if (normalizedTag.empty()) {
+            continue;
+        }
+
+        auto existing = checksBySohId.find(normalizedTag);
+        if (existing != checksBySohId.end() && existing->second != check) {
+            warnings.push_back(
+                { "Duplicate in-game soh_id",
+                  fmt::format("Tag '{}' maps to both '{}' and '{}'. Keeping '{}'.", normalizedTag,
+                              GetCheckDisplayName(existing->second), GetCheckDisplayName(check),
+                              GetCheckDisplayName(existing->second)) });
+            continue;
+        }
+
+        checksBySohId[normalizedTag] = check;
+    }
+
+    return checksBySohId;
+}
+
+std::vector<MapPackAreaFileRef> CollectMapPackAreaFiles(const std::filesystem::path& packFolderPath, bool usingArchivePack,
+                                                        const std::string& resourcePathPrefix,
+                                                        std::vector<MapIssueEntry>& warnings) {
+    std::vector<MapPackAreaFileRef> areaFiles;
+    if (!usingArchivePack) {
+        std::filesystem::path areaDirPath = packFolderPath / CHECK_TRACKER_LOCATIONS_DIR;
+        if (!std::filesystem::exists(areaDirPath) || !std::filesystem::is_directory(areaDirPath)) {
+            warnings.push_back({ "Missing areas directory", "Expected directory: " + areaDirPath.string() });
+            return areaFiles;
+        }
+
+        for (const auto& directoryEntry : std::filesystem::directory_iterator(areaDirPath)) {
+            if (!directoryEntry.is_regular_file()) {
+                continue;
+            }
+
+            std::filesystem::path filePath = directoryEntry.path();
+            std::string extension = NormalizeForMatching(filePath.extension().string());
+            if (extension != "json" && extension != "jsonc") {
+                continue;
+            }
+
+            std::string relativeResourcePath =
+                (std::filesystem::path(CHECK_TRACKER_LOCATIONS_DIR) / filePath.filename()).lexically_normal().generic_string();
+            areaFiles.push_back(
+                { filePath, BuildMapTrackerResourcePath(resourcePathPrefix, relativeResourcePath), filePath.filename().string() });
+        }
+    } else {
+        auto context = Ship::Context::GetInstance();
+        if (context == nullptr || context->GetResourceManager() == nullptr ||
+            context->GetResourceManager()->GetArchiveManager() == nullptr) {
+            warnings.push_back({ "Archive manager unavailable", "Could not list map pack area files from archive." });
+            return areaFiles;
+        }
+
+        auto archiveManager = context->GetResourceManager()->GetArchiveManager();
+        std::unordered_set<std::string> seenResourcePaths;
+        for (const char* extensionPattern : { "*.json", "*.jsonc" }) {
+            std::string listPattern = BuildMapTrackerResourcePath(resourcePathPrefix,
+                                                                  fmt::format("{}/{}", CHECK_TRACKER_LOCATIONS_DIR,
+                                                                              extensionPattern));
+            auto matchedPaths = archiveManager->ListFiles(listPattern);
+            if (matchedPaths == nullptr) {
+                continue;
+            }
+
+            for (const auto& resourcePath : *matchedPaths) {
+                if (!seenResourcePaths.insert(resourcePath).second) {
+                    continue;
+                }
+                areaFiles.push_back({ {}, resourcePath, std::filesystem::path(resourcePath).filename().string() });
+            }
+        }
+    }
+
+    std::sort(areaFiles.begin(), areaFiles.end(), [](const MapPackAreaFileRef& left, const MapPackAreaFileRef& right) {
+        if (left.displayName == right.displayName) {
+            return left.resourcePath < right.resourcePath;
+        }
+        return left.displayName < right.displayName;
+    });
+
+    return areaFiles;
+}
+
+std::vector<MapMarker> ParseMapMarkersFromPackAreas(
+    const std::vector<MapPackAreaFileRef>& areaFiles, const std::unordered_map<std::string, RandomizerCheck>& checksBySohId,
+    std::unordered_set<RandomizerCheck>& outLinkedChecks, std::vector<MapIssueEntry>& warnings,
+    std::vector<MapIssueEntry>& unresolvedLinks) {
+    std::vector<MapMarker> mappedMarkers;
+    outLinkedChecks.clear();
+    std::unordered_set<std::string> seenMarkerKeys;
+
+    std::string parseError;
+    for (const auto& areaFile : areaFiles) {
+        json areaJson;
+        if (!LoadJsonFromMapPack(areaFile.diskPath, areaFile.resourcePath, areaJson, parseError)) {
+            warnings.push_back(
+                { "Failed to parse area file " + areaFile.displayName,
+                  "Parse error: " + parseError + " | Resource: " + areaFile.resourcePath });
+            continue;
+        }
+
+        if (!areaJson.is_object() || !areaJson.contains("checks") || !areaJson["checks"].is_array()) {
+            warnings.push_back(
+                { "Invalid area schema in " + areaFile.displayName,
+                  "Expected an object with a \"checks\" array. Resource: " + areaFile.resourcePath });
+            continue;
+        }
+
+        for (const auto& checkNode : areaJson["checks"]) {
+            if (!checkNode.is_object()) {
+                continue;
+            }
+
+            std::string checkName = checkNode.value("name", "");
+            std::string sohId = checkNode.value("soh_id", "");
+            std::string normalizedSohId = NormalizeForMatching(sohId);
+            if (normalizedSohId.empty()) {
+                unresolvedLinks.push_back({ "Missing soh_id in " + areaFile.displayName,
+                                            "Check \"" + checkName + "\" is missing a valid soh_id." });
+                continue;
+            }
+
+            auto checkMatch = checksBySohId.find(normalizedSohId);
+            if (checkMatch == checksBySohId.end()) {
+                unresolvedLinks.push_back(
+                    { "Unmapped soh_id: " + normalizedSohId,
+                      "Check \"" + checkName + "\" in " + areaFile.displayName +
+                          " has a soh_id that was not found in non-MQ/non-hint in-game checks." });
+                continue;
+            }
+
+            std::vector<MapPlacement> placements = ExtractPlacementsFromNode(checkNode, areaFile.displayName, warnings);
+            if (placements.empty()) {
+                warnings.push_back(
+                    { "Missing map_locations in " + areaFile.displayName,
+                      "Check \"" + checkName + "\" has no valid map_locations entries." });
+                continue;
+            }
+
+            for (const auto& placement : placements) {
+                MapMarker marker;
+                marker.check = checkMatch->second;
+                marker.mapName = NormalizeMapNameForMapTracker(placement.mapName);
+                if (marker.mapName.empty()) {
+                    warnings.push_back(
+                        { "Invalid marker map name in " + areaFile.displayName,
+                          "Check \"" + checkName + "\" has an empty/invalid map name after normalization." });
+                    continue;
+                }
+                marker.displayPath = checkName.empty() ? normalizedSohId : checkName;
+                marker.sourceFile = areaFile.displayName;
+                marker.x = placement.x;
+                marker.y = placement.y;
+                marker.size = placement.size;
+
+                int xQuantized = static_cast<int>(std::lround(marker.x * 100.0f));
+                int yQuantized = static_cast<int>(std::lround(marker.y * 100.0f));
+                int sizeQuantized = static_cast<int>(std::lround(marker.size * 100.0f));
+                std::string markerKey =
+                    fmt::format("{}|{}|{}|{}|{}", static_cast<int>(marker.check), NormalizeForMatching(marker.mapName),
+                                xQuantized, yQuantized, sizeQuantized);
+                if (!seenMarkerKeys.insert(markerKey).second) {
+                    continue;
+                }
+
+                mappedMarkers.push_back(marker);
+                outLinkedChecks.insert(marker.check);
+            }
+        }
+    }
+
+    return mappedMarkers;
+}
+
 void LoadMapTrackerData() {
     const auto loadStartTime = std::chrono::steady_clock::now();
     ResetMapTrackerState(true);
     mapTrackerState.attemptedLoad = true;
     mapTrackerState.loading = true;
-    mapTrackerState.loadingStatus = "Preparing map data...";
+    mapTrackerState.loadingStatus = "Loading map pack...";
     mapTrackerState.loadingCurrent = 0;
-    mapTrackerState.loadingTotal = 1;
-    mapTrackerState.cacheStatus.clear();
+    mapTrackerState.loadingTotal = 6;
     mapTrackerLoadContext.startTime = loadStartTime;
     mapTrackerState.assetsRoot = GetMapTrackerAssetsRoot();
-    mapTrackerState.cacheFilePath = GetMapTrackerMatchCachePath(mapTrackerState.assetsRoot);
-    SPDLOG_INFO("[CheckTrackerMapDiag] Load start. assetsRoot='{}' candidates='{}'", mapTrackerState.assetsRoot.string(),
+
+    const std::filesystem::path packFolderPath = mapTrackerState.assetsRoot;
+    std::filesystem::path packArchivePath = packFolderPath;
+    packArchivePath += ".zip";
+    bool packFolderExists = std::filesystem::exists(packFolderPath) && std::filesystem::is_directory(packFolderPath);
+    bool packArchiveExists = std::filesystem::exists(packArchivePath) && std::filesystem::is_regular_file(packArchivePath);
+    mapTrackerState.usingArchivePack = !packFolderExists && packArchiveExists;
+    mapTrackerState.assetsRoot = mapTrackerState.usingArchivePack ? packArchivePath : packFolderPath;
+
+    SPDLOG_INFO("[CheckTrackerMapDiag] Load start. assets='{}' candidates='{}'", mapTrackerState.assetsRoot.string(),
                 BuildMapTrackerAssetsRootCandidatesSummary());
 
-    std::filesystem::path mapsJsonPath = mapTrackerState.assetsRoot / CHECK_TRACKER_MAPS_JSON;
-    std::filesystem::path locationsDirPath = mapTrackerState.assetsRoot / CHECK_TRACKER_LOCATIONS_DIR;
-
-    if (!std::filesystem::exists(mapTrackerState.assetsRoot)) {
-        mapTrackerState.fatalErrors.push_back(
-            "Map assets folder not found. Expected folder: " + GetMapTrackerAssetsRootAbsoluteString());
+    if (!packFolderExists && !packArchiveExists) {
+        mapTrackerState.fatalErrors.push_back("Map pack not found.");
+        mapTrackerState.fatalErrors.push_back("Expected folder: " + packFolderPath.string());
+        mapTrackerState.fatalErrors.push_back("Or expected zip: " + packArchivePath.string());
         mapTrackerState.fatalErrors.push_back("Tried these candidate roots: " + BuildMapTrackerAssetsRootCandidatesSummary());
         mapTrackerState.fatalErrors.push_back(
-            "Extract the pack so these paths exist: " + (mapTrackerState.assetsRoot / "maps/maps.jsonc").string() + " and " +
-            (mapTrackerState.assetsRoot / "locations").string() + ".");
-        SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: assets root missing '{}'.", mapTrackerState.assetsRoot.string());
+            "Put soh-map-tracker-v0.1.zip inside mods/check_tracker_map_pack or extract soh-map-tracker-v0.1 there.");
+        SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: pack folder/zip not found. folder='{}' zip='{}'", packFolderPath.string(),
+                     packArchivePath.string());
         mapTrackerState.loading = false;
         return;
     }
+    mapTrackerState.loadingCurrent = 1;
 
-    std::string archiveMountError;
-    if (!EnsureMapTrackerArchiveMounted(mapTrackerState.assetsRoot, mapTrackerState.assetsArchiveMountRoot,
-                                        mapTrackerState.resourcePathPrefix, archiveMountError)) {
-        mapTrackerState.fatalErrors.push_back("Failed to mount map asset archive: " + archiveMountError);
-        SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: failed to mount map archive. assetsRoot='{}' error='{}'",
-                     mapTrackerState.assetsRoot.string(), archiveMountError);
+    std::string mountError;
+    if (mapTrackerState.usingArchivePack) {
+        std::string preferredPrefix = packFolderPath.filename().string();
+        if (!EnsureMapTrackerZipArchiveMounted(packArchivePath, preferredPrefix, mapTrackerState.assetsArchiveMountRoot,
+                                               mapTrackerState.resourcePathPrefix, mountError)) {
+            mapTrackerState.fatalErrors.push_back("Failed to mount map pack zip archive: " + mountError);
+            mapTrackerState.loading = false;
+            return;
+        }
+    } else if (!EnsureMapTrackerArchiveMounted(packFolderPath, mapTrackerState.assetsArchiveMountRoot,
+                                               mapTrackerState.resourcePathPrefix, mountError)) {
+        mapTrackerState.fatalErrors.push_back("Failed to mount map pack folder archive: " + mountError);
         mapTrackerState.loading = false;
         return;
     }
-    SPDLOG_INFO("[CheckTrackerMapDiag] Archive mounted. mountRoot='{}' resourcePrefix='{}'", mapTrackerState.assetsArchiveMountRoot.string(),
-                mapTrackerState.resourcePathPrefix);
-
-    if (!std::filesystem::exists(mapsJsonPath)) {
-        mapTrackerState.fatalErrors.push_back("Missing map metadata file: " + mapsJsonPath.string());
-    }
-    if (!std::filesystem::exists(locationsDirPath) || !std::filesystem::is_directory(locationsDirPath)) {
-        mapTrackerState.fatalErrors.push_back("Missing locations directory: " + locationsDirPath.string());
-    }
-    if (!mapTrackerState.fatalErrors.empty()) {
-        SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: required files missing. maps='{}' locations='{}'",
-                     mapsJsonPath.string(), locationsDirPath.string());
-        mapTrackerState.loading = false;
-        return;
-    }
+    mapTrackerState.loadingCurrent = 2;
 
     json mapsJson;
     std::string parseError;
-    if (!LoadJsonWithComments(mapsJsonPath, mapsJson, parseError)) {
-        mapTrackerState.fatalErrors.push_back("Could not parse " + mapsJsonPath.string() + ": " + parseError);
-        SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: failed to parse maps metadata '{}': {}",
-                     mapsJsonPath.string(), parseError);
+    std::filesystem::path mapsDiskPath = mapTrackerState.usingArchivePack ? std::filesystem::path{} : (packFolderPath / CHECK_TRACKER_MAPS_JSON);
+    std::string mapsResourcePath = BuildMapTrackerResourcePath(mapTrackerState.resourcePathPrefix, CHECK_TRACKER_MAPS_JSON);
+    if (!LoadJsonFromMapPack(mapsDiskPath, mapsResourcePath, mapsJson, parseError)) {
+        mapTrackerState.fatalErrors.push_back("Could not parse map metadata: " + parseError);
+        mapTrackerState.fatalErrors.push_back("Tried disk path: " + (packFolderPath / CHECK_TRACKER_MAPS_JSON).string());
+        mapTrackerState.fatalErrors.push_back("Tried resource path: " + mapsResourcePath);
         mapTrackerState.loading = false;
         return;
     }
@@ -2561,11 +1467,13 @@ void LoadMapTrackerData() {
     std::unordered_map<std::string, std::string> mapImagePathsByName;
     std::vector<std::string> orderedMapNames;
     if (!mapsJson.is_array()) {
-        mapTrackerState.fatalErrors.push_back("Expected an array in " + mapsJsonPath.string());
-        SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: maps metadata root is not an array: '{}'.", mapsJsonPath.string());
+        mapTrackerState.fatalErrors.push_back("Expected an array in maps.json.");
+        SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: maps metadata root is not an array. resource='{}' disk='{}'",
+                     mapsResourcePath, mapsDiskPath.string());
         mapTrackerState.loading = false;
         return;
     }
+    mapTrackerState.loadingCurrent = 3;
 
     for (const auto& mapEntry : mapsJson) {
         if (!mapEntry.is_object() || !mapEntry.contains("name") || !mapEntry["name"].is_string()) {
@@ -2585,308 +1493,53 @@ void LoadMapTrackerData() {
             mapImagePathsByName[normalizedMapName] = mapEntry["img"].get<std::string>();
         } else {
             mapTrackerState.warnings.push_back({ "Missing image path for map " + mapName,
-                                                 "The map entry in maps/maps.jsonc is missing an \"img\" value." });
+                                                 "The map entry in maps.json is missing an \"img\" value." });
         }
     }
     SPDLOG_INFO("[CheckTrackerMapDiag] Parsed maps metadata. rawEntries={} uniqueMaps={} warnings={}",
                 mapsJson.size(), orderedMapNames.size(), mapTrackerState.warnings.size());
-
-    std::vector<MapMarkerSource> markerSources;
-    size_t parsedLocationFileCount = 0;
-    size_t parsedLocationRootCount = 0;
-    for (const auto& directoryEntry : std::filesystem::directory_iterator(locationsDirPath)) {
-        if (!directoryEntry.is_regular_file() || directoryEntry.path().extension() != ".jsonc") {
-            continue;
-        }
-
-        json locationJson;
-        if (!LoadJsonWithComments(directoryEntry.path(), locationJson, parseError)) {
-            mapTrackerState.warnings.push_back(
-                { "Failed to parse location file " + directoryEntry.path().filename().string(),
-                  "Parse error: " + parseError + " | File: " + directoryEntry.path().string() });
-            continue;
-        }
-
-        if (!locationJson.is_array()) {
-            mapTrackerState.warnings.push_back(
-                { "Invalid location root in " + directoryEntry.path().filename().string(),
-                  "Expected a top-level array of nodes in " + directoryEntry.path().string() + "." });
-            continue;
-        }
-
-        parsedLocationFileCount++;
-        for (const auto& rootNode : locationJson) {
-            parsedLocationRootCount++;
-            CollectMarkerSourcesFromNode(rootNode, directoryEntry.path().filename().string(), {}, {}, markerSources,
-                                         mapTrackerState.warnings);
-        }
-    }
-    SPDLOG_INFO("[CheckTrackerMapDiag] Parsed location files. files={} roots={} markerSources={} warnings={}",
-                parsedLocationFileCount, parsedLocationRootCount, markerSources.size(), mapTrackerState.warnings.size());
-
-    size_t mqSourceDiscardCount = 0;
-    size_t hintSourceDiscardCount = 0;
-    std::vector<MapMarkerSource> filteredMarkerSources;
-    filteredMarkerSources.reserve(markerSources.size());
-    for (const auto& source : markerSources) {
-        if (IsSourceMqRelated(source)) {
-            mqSourceDiscardCount++;
-            continue;
-        }
-        if (IsSourceHintRelated(source)) {
-            hintSourceDiscardCount++;
-            continue;
-        }
-        filteredMarkerSources.push_back(source);
-    }
-    markerSources = std::move(filteredMarkerSources);
-    if (mqSourceDiscardCount > 0 || hintSourceDiscardCount > 0) {
-        SPDLOG_INFO("[CheckTrackerMapDiag] Discarded marker sources. mq={} hint={} remaining={}", mqSourceDiscardCount,
-                    hintSourceDiscardCount, markerSources.size());
-    }
-
-    if (markerSources.empty()) {
-        mapTrackerState.fatalErrors.push_back("No usable map markers were found in " + locationsDirPath.string() +
-                                              ". The pack may be incomplete or only contain MQ/hint markers.");
-        SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: no usable marker sources found in '{}'.", locationsDirPath.string());
+    if (orderedMapNames.empty()) {
+        mapTrackerState.fatalErrors.push_back("No maps were found in maps.json.");
         mapTrackerState.loading = false;
         return;
     }
+
+    std::vector<MapPackAreaFileRef> areaFiles =
+        CollectMapPackAreaFiles(packFolderPath, mapTrackerState.usingArchivePack, mapTrackerState.resourcePathPrefix,
+                                mapTrackerState.warnings);
+    if (areaFiles.empty()) {
+        mapTrackerState.fatalErrors.push_back("No area files found in map pack.");
+        mapTrackerState.fatalErrors.push_back("Expected folder/resource pattern: " +
+                                              BuildMapTrackerResourcePath(mapTrackerState.resourcePathPrefix,
+                                                                          std::string(CHECK_TRACKER_LOCATIONS_DIR) +
+                                                                              "/*.json"));
+        mapTrackerState.loading = false;
+        return;
+    }
+    mapTrackerState.loadingCurrent = 4;
+
+    std::unordered_map<std::string, RandomizerCheck> checksBySohId = BuildGameCheckLookupBySohId(mapTrackerState.warnings);
+    if (checksBySohId.empty()) {
+        mapTrackerState.fatalErrors.push_back("No in-game checks were available for soh_id mapping.");
+        mapTrackerState.loading = false;
+        return;
+    }
+    std::vector<MapMarker> mappedMarkers = ParseMapMarkersFromPackAreas(areaFiles, checksBySohId, mapTrackerState.linkedChecks,
+                                                                         mapTrackerState.warnings, mapTrackerState.unresolvedLinks);
+    mapTrackerState.loadingCurrent = 5;
 
     std::vector<CheckDescriptor> descriptors = BuildVisibleCheckDescriptors();
     if (descriptors.empty()) {
         mapTrackerState.fatalErrors.push_back("No visible checks available to map. Load a randomizer save first.");
-        SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: no visible check descriptors available.");
         mapTrackerState.loading = false;
         return;
     }
-    SPDLOG_INFO("[CheckTrackerMapDiag] Built descriptors. count={}", descriptors.size());
-
-    std::unordered_map<std::string, std::vector<size_t>> descriptorIndicesByAlias;
-    std::unordered_map<RandomizerCheckArea, std::vector<size_t>> descriptorIndicesByArea;
-    std::unordered_map<RandomizerCheck, size_t> descriptorIndexByCheck;
-    descriptorIndexByCheck.reserve(descriptors.size());
-    for (size_t descriptorIndex = 0; descriptorIndex < descriptors.size(); descriptorIndex++) {
-        const auto& descriptor = descriptors[descriptorIndex];
-        descriptorIndexByCheck[descriptor.check] = descriptorIndex;
-        descriptorIndicesByArea[descriptor.area].push_back(descriptorIndex);
-        for (const auto& alias : descriptor.normalizedAliases) {
-            if (!alias.empty()) {
-                AddUniqueIndex(descriptorIndicesByAlias[alias], descriptorIndex);
-            }
-        }
-    }
-    SPDLOG_INFO("[CheckTrackerMapDiag] Built fast indices. aliases={} areas={} checks={}", descriptorIndicesByAlias.size(),
-                descriptorIndicesByArea.size(), descriptorIndexByCheck.size());
-
-    mapTrackerLoadContext.active = true;
-    mapTrackerLoadContext.mapImagePathsByName = std::move(mapImagePathsByName);
-    mapTrackerLoadContext.orderedMapNames = std::move(orderedMapNames);
-    mapTrackerLoadContext.markerSources = std::move(markerSources);
-    mapTrackerLoadContext.descriptors = std::move(descriptors);
-    mapTrackerLoadContext.descriptorIndicesByAlias = std::move(descriptorIndicesByAlias);
-    mapTrackerLoadContext.descriptorIndicesByArea = std::move(descriptorIndicesByArea);
-    mapTrackerLoadContext.descriptorIndexByCheck = std::move(descriptorIndexByCheck);
-    mapTrackerLoadContext.markerSourcesSignature = BuildMarkerSourcesSignature(mapTrackerLoadContext.markerSources);
-    mapTrackerLoadContext.descriptorsSignature = BuildDescriptorsSignature(mapTrackerLoadContext.descriptors);
-    mapTrackerLoadContext.cacheFilePath = mapTrackerState.cacheFilePath;
-    mapTrackerLoadContext.matchInfos.clear();
-    mapTrackerLoadContext.matchInfos.reserve(mapTrackerLoadContext.markerSources.size());
-    mapTrackerLoadContext.nextMarkerSourceIndex = 0;
-    mapTrackerLoadContext.loadedFromCache = false;
-
-    std::string cacheStatus;
-    std::string cacheError;
-    std::vector<SourceMatchInfo> cachedMatchInfos;
-    if (TryLoadMatchInfosFromCache(
-            mapTrackerLoadContext.cacheFilePath, mapTrackerLoadContext.markerSourcesSignature,
-            mapTrackerLoadContext.descriptorsSignature, mapTrackerLoadContext.markerSources,
-            mapTrackerLoadContext.descriptorIndexByCheck, cachedMatchInfos, cacheStatus, cacheError)) {
-        mapTrackerLoadContext.matchInfos = std::move(cachedMatchInfos);
-        mapTrackerLoadContext.nextMarkerSourceIndex = mapTrackerLoadContext.markerSources.size();
-        mapTrackerLoadContext.loadedFromCache = true;
-        mapTrackerState.cacheStatus = cacheStatus;
-        mapTrackerState.loadingStatus = "Using cached matches...";
-        mapTrackerState.loadingCurrent = mapTrackerLoadContext.nextMarkerSourceIndex;
-        mapTrackerState.loadingTotal = mapTrackerLoadContext.markerSources.size();
-        SPDLOG_INFO("[CheckTrackerMapDiag] {}", cacheStatus);
-        return;
-    }
-    if (!cacheError.empty()) {
-        mapTrackerState.warnings.push_back(
-            { "Map match cache read failed", cacheError + " | File: " + mapTrackerLoadContext.cacheFilePath.string() });
-        SPDLOG_WARN("[CheckTrackerMapDiag] Cache read failed: {}", cacheError);
-        mapTrackerState.cacheStatus = "Cache read failed";
-    } else {
-        mapTrackerState.cacheStatus = cacheStatus.empty() ? "Cache miss" : cacheStatus;
-        SPDLOG_INFO("[CheckTrackerMapDiag] {}", mapTrackerState.cacheStatus);
-    }
-
-    mapTrackerState.loadingStatus = "Matching checks...";
-    mapTrackerState.loadingCurrent = 0;
-    mapTrackerState.loadingTotal = mapTrackerLoadContext.markerSources.size();
-}
-
-void FinalizeMapTrackerDataLoad() {
-    std::vector<SourceMatchInfo>& matchInfos = mapTrackerLoadContext.matchInfos;
-    const std::vector<CheckDescriptor>& descriptors = mapTrackerLoadContext.descriptors;
-    const std::vector<std::string>& orderedMapNames = mapTrackerLoadContext.orderedMapNames;
-    const std::unordered_map<std::string, std::string>& mapImagePathsByName = mapTrackerLoadContext.mapImagePathsByName;
-
-    std::sort(matchInfos.begin(), matchInfos.end(), [](const SourceMatchInfo& left, const SourceMatchInfo& right) {
-        float leftScore = left.rankedCandidates.empty() ? 0.0f : left.rankedCandidates.front().score;
-        float rightScore = right.rankedCandidates.empty() ? 0.0f : right.rankedCandidates.front().score;
-        return leftScore > rightScore;
-    });
-    SPDLOG_INFO("[CheckTrackerMapDiag] Match sorting complete. sources={}", matchInfos.size());
-
-    if (!mapTrackerLoadContext.loadedFromCache) {
-        std::string cacheWriteError;
-        if (SaveMatchInfosToCache(mapTrackerLoadContext.cacheFilePath, mapTrackerLoadContext.markerSourcesSignature,
-                                  mapTrackerLoadContext.descriptorsSignature, matchInfos,
-                                  mapTrackerLoadContext.descriptors, cacheWriteError)) {
-            mapTrackerState.cacheStatus = fmt::format("Cache saved ({})", mapTrackerLoadContext.cacheFilePath.string());
-            SPDLOG_INFO("[CheckTrackerMapDiag] {}", mapTrackerState.cacheStatus);
-        } else {
-            mapTrackerState.warnings.push_back(
-                { "Map match cache write failed",
-                  cacheWriteError + " | File: " + mapTrackerLoadContext.cacheFilePath.string() });
-            mapTrackerState.cacheStatus = "Cache write failed";
-            SPDLOG_WARN("[CheckTrackerMapDiag] Cache write failed: {}", cacheWriteError);
-        }
-    }
-
-    std::vector<MapMarker> mappedMarkers;
-    std::unordered_set<RandomizerCheck> assignedChecks;
-    std::unordered_map<RandomizerCheck, std::string> assignedPathByCheck;
-    std::unordered_map<RandomizerCheck, float> assignedScoreByCheck;
-    for (const auto& matchInfo : matchInfos) {
-        if (matchInfo.rankedCandidates.empty()) {
-            mapTrackerState.zeroScoreUnresolvedLinks.push_back(
-                { "Score 0 for " + matchInfo.source.displayPath,
-                  BuildIssueDetailsForSource(matchInfo.source, "No matching check candidates found.") });
-            continue;
-        }
-
-        float topScore = matchInfo.rankedCandidates.front().score;
-        float secondScore = matchInfo.rankedCandidates.size() > 1 ? matchInfo.rankedCandidates[1].score : 0.0f;
-        if (topScore < CHECK_TRACKER_MAP_SCORE_THRESHOLD) {
-            if (topScore <= CHECK_TRACKER_MAP_ZERO_SCORE_EPSILON) {
-                mapTrackerState.zeroScoreUnresolvedLinks.push_back(
-                    { "Score 0 for " + matchInfo.source.displayPath,
-                      BuildIssueDetailsForSource(matchInfo.source, fmt::format("Best score was {:.2f}.", topScore)) });
-            } else {
-                mapTrackerState.unresolvedLinks.push_back(
-                    { "Low score for " + matchInfo.source.displayPath,
-                      BuildIssueDetailsForSource(matchInfo.source, fmt::format("Best score was {:.2f}.", topScore)) });
-            }
-            continue;
-        }
-
-        auto buildMappedMarker = [&](const RankedCheckCandidate& candidate, const std::string& confidenceReason) {
-            MapMarker marker;
-            marker.check = candidate.check;
-            marker.mapName = NormalizeMapNameForMapTracker(matchInfo.source.placement.mapName);
-            marker.displayPath = matchInfo.source.displayPath;
-            marker.sourceFile = matchInfo.source.sourceFile;
-            marker.visibilityKey = matchInfo.source.visibilityKeys.empty() ? "" : matchInfo.source.visibilityKeys.front();
-            marker.confidence = candidate.score;
-            marker.confidenceReason = confidenceReason;
-            marker.x = matchInfo.source.placement.x;
-            marker.y = matchInfo.source.placement.y;
-            marker.size = matchInfo.source.placement.size;
-            marker.lowConfidence = (candidate.score < CHECK_TRACKER_MAP_LOW_CONFIDENCE_THRESHOLD) ||
-                                   ((topScore - secondScore) < CHECK_TRACKER_MAP_CLOSE_SCORE_DELTA);
-            return marker;
-        };
-
-        bool assigned = false;
-        std::vector<std::string> blockedByAssignedCandidates;
-        std::optional<RankedCheckCandidate> bestBlockedCandidate;
-        float bestBlockedAssignedScore = 0.0f;
-        for (const auto& candidate : matchInfo.rankedCandidates) {
-            if (candidate.score < CHECK_TRACKER_MAP_SCORE_THRESHOLD) {
-                break;
-            }
-            if (assignedChecks.contains(candidate.check)) {
-                std::string assignedPath = "(unknown)";
-                auto assignedPathIt = assignedPathByCheck.find(candidate.check);
-                if (assignedPathIt != assignedPathByCheck.end()) {
-                    assignedPath = assignedPathIt->second;
-                }
-
-                float assignedScore = 0.0f;
-                auto assignedScoreIt = assignedScoreByCheck.find(candidate.check);
-                if (assignedScoreIt != assignedScoreByCheck.end()) {
-                    assignedScore = assignedScoreIt->second;
-                }
-
-                blockedByAssignedCandidates.push_back(fmt::format(
-                    "{} already assigned to \"{}\" (score {:.2f})", GetCheckDisplayName(candidate.check), assignedPath,
-                    assignedScore));
-
-                if (!bestBlockedCandidate.has_value() || candidate.score > bestBlockedCandidate->score) {
-                    bestBlockedCandidate = candidate;
-                    bestBlockedAssignedScore = assignedScore;
-                }
-                continue;
-            }
-
-            MapMarker marker = buildMappedMarker(candidate, fmt::format("Top {:.2f} / Next {:.2f}", topScore, secondScore));
-            mappedMarkers.push_back(marker);
-            assignedChecks.insert(candidate.check);
-            assignedPathByCheck[candidate.check] = matchInfo.source.displayPath;
-            assignedScoreByCheck[candidate.check] = candidate.score;
-            mapTrackerState.linkedChecks.insert(candidate.check);
-            assigned = true;
-
-            if (marker.lowConfidence) {
-                mapTrackerState.lowConfidenceLinks.push_back(
-                    { "Low-confidence link for " + marker.displayPath,
-                      BuildIssueDetailsForSource(matchInfo.source,
-                                                 "Mapped to " + GetCheckDisplayName(marker.check) + " (" +
-                                                     marker.confidenceReason + ").") });
-            }
-            break;
-        }
-
-        if (!assigned && bestBlockedCandidate.has_value()) {
-            bool scoreHighEnough = bestBlockedCandidate->score >= CHECK_TRACKER_MAP_CONFLICT_DUPLICATE_THRESHOLD;
-            bool closeToExistingAssignment =
-                (bestBlockedCandidate->score + CHECK_TRACKER_MAP_CONFLICT_DUPLICATE_MAX_SCORE_GAP) >= bestBlockedAssignedScore;
-            if (scoreHighEnough && closeToExistingAssignment) {
-                MapMarker marker = buildMappedMarker(
-                    bestBlockedCandidate.value(), fmt::format("Conflict duplicate assignment ({:.2f})", bestBlockedCandidate->score));
-                mappedMarkers.push_back(marker);
-                mapTrackerState.linkedChecks.insert(marker.check);
-                assigned = true;
-
-                if (marker.lowConfidence) {
-                    mapTrackerState.lowConfidenceLinks.push_back(
-                        { "Low-confidence duplicate link for " + marker.displayPath,
-                          BuildIssueDetailsForSource(matchInfo.source,
-                                                     "Mapped to " + GetCheckDisplayName(marker.check) + " (" +
-                                                         marker.confidenceReason + ").") });
-                }
-            }
-        }
-
-        if (!assigned) {
-            std::string blockedDetails = blockedByAssignedCandidates.empty()
-                                             ? "All candidate checks were already assigned to stronger matches."
-                                             : "Blocked candidates: " + JoinWithCommaLimited(blockedByAssignedCandidates, 3);
-            mapTrackerState.unresolvedLinks.push_back(
-                { "Conflict for " + matchInfo.source.displayPath,
-                  BuildIssueDetailsForSource(matchInfo.source, blockedDetails) });
-        }
-    }
-
     for (const auto& descriptor : descriptors) {
         if (!mapTrackerState.linkedChecks.contains(descriptor.check)) {
             mapTrackerState.unassignedCheckIds.push_back(descriptor.check);
             mapTrackerState.unresolvedLinks.push_back(
-                { "Unlinked in-game check: " + descriptor.checkDisplayName,
-                  "No marker could be linked to this visible check in the pack. Area: " +
+                { "Unassigned in-game check: " + descriptor.checkDisplayName,
+                  "No map marker with matching soh_id was found in the pack. Area: " +
                       RandomizerCheckObjects::GetRCAreaName(descriptor.area) });
         }
     }
@@ -2898,16 +1551,15 @@ void FinalizeMapTrackerDataLoad() {
         std::unique(mapTrackerState.unassignedCheckIds.begin(), mapTrackerState.unassignedCheckIds.end()),
         mapTrackerState.unassignedCheckIds.end());
 
-    SPDLOG_INFO(
-        "[CheckTrackerMapDiag] Linking summary. mappedMarkers={} linkedChecks={} lowConfidence={} unresolved={} zeroScore={} unassigned={}",
-        mappedMarkers.size(), mapTrackerState.linkedChecks.size(), mapTrackerState.lowConfidenceLinks.size(),
-        mapTrackerState.unresolvedLinks.size(), mapTrackerState.zeroScoreUnresolvedLinks.size(),
-        mapTrackerState.unassignedCheckIds.size());
+    SPDLOG_INFO("[CheckTrackerMapDiag] soh_id mapping summary. mappedMarkers={} linkedChecks={} unresolved={} unassigned={}",
+                mappedMarkers.size(), mapTrackerState.linkedChecks.size(), mapTrackerState.unresolvedLinks.size(),
+                mapTrackerState.unassignedCheckIds.size());
 
     std::vector<std::string> mapNamesForTabs = orderedMapNames;
     for (const auto& marker : mappedMarkers) {
         std::string markerMapName = NormalizeMapNameForMapTracker(marker.mapName);
-        if (std::find(mapNamesForTabs.begin(), mapNamesForTabs.end(), markerMapName) == mapNamesForTabs.end()) {
+        if (!markerMapName.empty() &&
+            std::find(mapNamesForTabs.begin(), mapNamesForTabs.end(), markerMapName) == mapNamesForTabs.end()) {
             mapNamesForTabs.push_back(markerMapName);
         }
     }
@@ -2923,14 +1575,15 @@ void FinalizeMapTrackerDataLoad() {
         }
 
         if (!tab.imageRelativePath.empty()) {
-            tab.imageAbsolutePath = mapTrackerState.assetsRoot / tab.imageRelativePath;
-            tab.imageResourcePath =
-                (std::filesystem::path(mapTrackerState.resourcePathPrefix) / tab.imageRelativePath).lexically_normal().generic_string();
-            if (!std::filesystem::exists(tab.imageAbsolutePath)) {
+            if (!mapTrackerState.usingArchivePack) {
+                tab.imageAbsolutePath = packFolderPath / tab.imageRelativePath;
+            }
+            tab.imageResourcePath = BuildMapTrackerResourcePath(mapTrackerState.resourcePathPrefix, tab.imageRelativePath);
+            if (!mapTrackerState.usingArchivePack && !std::filesystem::exists(tab.imageAbsolutePath)) {
                 tab.imageError = "Image file not found: " + tab.imageAbsolutePath.string();
             }
         } else {
-            tab.imageError = "No image entry found in maps/maps.jsonc for map \"" + mapName + "\".";
+            tab.imageError = "No image entry found in maps.json for map \"" + mapName + "\".";
         }
 
         std::string normalizedMapName = NormalizeForMatching(mapName);
@@ -2982,10 +1635,12 @@ void FinalizeMapTrackerDataLoad() {
             continue;
         }
 
-        std::string imageValidationError;
-        if (!ValidateMapImageFile(tab.imageAbsolutePath, imageValidationError)) {
-            tab.imageError = imageValidationError;
-            continue;
+        if (!mapTrackerState.usingArchivePack) {
+            std::string imageValidationError;
+            if (!ValidateMapImageFile(tab.imageAbsolutePath, imageValidationError)) {
+                tab.imageError = imageValidationError;
+                continue;
+            }
         }
 
         if (!archiveManager->HasFile(tab.imageResourcePath)) {
@@ -3005,12 +1660,16 @@ void FinalizeMapTrackerDataLoad() {
             tab.textureSize = gui->GetTextureSize(tab.textureName);
             tab.imageLoaded = tab.texture != 0 && tab.textureSize.x > 0.0f && tab.textureSize.y > 0.0f;
             if (!tab.imageLoaded) {
-                tab.imageError = "Failed to load map texture from: " + tab.imageAbsolutePath.string() +
-                                 " | Resource path: " + tab.imageResourcePath;
+                tab.imageError = mapTrackerState.usingArchivePack
+                                     ? "Failed to load map texture from resource path: " + tab.imageResourcePath
+                                     : "Failed to load map texture from: " + tab.imageAbsolutePath.string() +
+                                           " | Resource path: " + tab.imageResourcePath;
             }
         } catch (...) {
-            tab.imageError = "Failed to load map texture from: " + tab.imageAbsolutePath.string() +
-                             " | Resource path: " + tab.imageResourcePath;
+            tab.imageError = mapTrackerState.usingArchivePack
+                                 ? "Failed to load map texture from resource path: " + tab.imageResourcePath
+                                 : "Failed to load map texture from: " + tab.imageAbsolutePath.string() +
+                                       " | Resource path: " + tab.imageResourcePath;
         }
     }
 
@@ -3025,53 +1684,7 @@ void FinalizeMapTrackerDataLoad() {
 }
 
 void StepMapTrackerDataLoad() {
-    if (!mapTrackerState.loading || !mapTrackerLoadContext.active) {
-        return;
-    }
-
-    const auto stepStartTime = std::chrono::steady_clock::now();
-    size_t processedThisStep = 0;
-    const size_t markerSourceCount = mapTrackerLoadContext.markerSources.size();
-    while (mapTrackerLoadContext.nextMarkerSourceIndex < markerSourceCount &&
-           processedThisStep < CHECK_TRACKER_MAP_MATCH_STEP_MAX_SOURCES) {
-        const auto& markerSource = mapTrackerLoadContext.markerSources[mapTrackerLoadContext.nextMarkerSourceIndex];
-        const auto sourceStartTime = std::chrono::steady_clock::now();
-        mapTrackerLoadContext.matchInfos.push_back(
-            BuildMatchInfo(markerSource, mapTrackerLoadContext.descriptors, mapTrackerLoadContext.descriptorIndicesByAlias,
-                           mapTrackerLoadContext.descriptorIndicesByArea, mapTrackerLoadContext.descriptorIndexByCheck));
-        const double sourceElapsedMs = GetElapsedMilliseconds(sourceStartTime);
-        if (sourceElapsedMs > 25.0) {
-            SPDLOG_INFO("[CheckTrackerMapDiag] Slow source match: {} ms | path='{}' file='{}'",
-                        sourceElapsedMs, markerSource.displayPath, markerSource.sourceFile);
-        }
-
-        mapTrackerLoadContext.nextMarkerSourceIndex++;
-        processedThisStep++;
-
-        const size_t processedCount = mapTrackerLoadContext.nextMarkerSourceIndex;
-        if ((processedCount % 250) == 0 || processedCount == markerSourceCount) {
-            const double totalElapsedMs = GetElapsedMilliseconds(mapTrackerLoadContext.startTime);
-            const double averageMsPerSource = totalElapsedMs / static_cast<double>(processedCount);
-            SPDLOG_INFO("[CheckTrackerMapDiag] Match progress {}/{} ({:.1f}%). elapsed={} ms avgPerSource={} ms",
-                        processedCount, markerSourceCount,
-                        100.0 * static_cast<double>(processedCount) / static_cast<double>(markerSourceCount),
-                        totalElapsedMs, averageMsPerSource);
-        }
-
-        const double stepElapsedMs = GetElapsedMilliseconds(stepStartTime);
-        if (stepElapsedMs >= CHECK_TRACKER_MAP_MATCH_STEP_BUDGET_MS && processedThisStep >= 8) {
-            break;
-        }
-    }
-
-    mapTrackerState.loadingCurrent = mapTrackerLoadContext.nextMarkerSourceIndex;
-    mapTrackerState.loadingTotal = markerSourceCount;
-    mapTrackerState.loadingStatus = "Matching checks...";
-
-    if (mapTrackerLoadContext.nextMarkerSourceIndex >= markerSourceCount) {
-        mapTrackerState.loadingStatus = "Finalizing map tabs...";
-        FinalizeMapTrackerDataLoad();
-    }
+    // The new map-pack format uses direct soh_id mapping and is fully resolved in LoadMapTrackerData.
 }
 
 bool IsCheckDoneForMapDisplay(RandomizerCheck rc) {
@@ -3191,7 +1804,10 @@ void DrawMapUnassignedCheckTagsSection() {
 
 void DrawMapTrackerIssuesTab() {
     if (showMapDebugDetails) {
-        ImGui::TextWrapped("Assets folder: %s", GetMapTrackerAssetsRootAbsoluteString().c_str());
+        std::string activeAssetsPath =
+            mapTrackerState.assetsRoot.empty() ? GetMapTrackerAssetsRootAbsoluteString() : mapTrackerState.assetsRoot.string();
+        ImGui::TextWrapped("Assets: %s", activeAssetsPath.c_str());
+        ImGui::TextDisabled("Source: %s", mapTrackerState.usingArchivePack ? "Zip archive" : "Folder");
         ImGui::Separator();
     }
 
@@ -3216,15 +1832,10 @@ void DrawMapTrackerIssuesTab() {
     };
 
     drawIssueCategory("Warnings", mapTrackerState.warnings, "No warnings.", ImVec4(1.0f, 0.85f, 0.45f, 1.0f));
-    drawIssueCategory("Low-confidence links", mapTrackerState.lowConfidenceLinks, "No low-confidence links.",
-                      ImVec4(1.0f, 0.75f, 0.35f, 1.0f));
-    drawIssueCategory("Unlinked checks (Score 0)", mapTrackerState.zeroScoreUnresolvedLinks, "No score-0 unlinked checks.",
-                      ImVec4(1.0f, 0.65f, 0.5f, 1.0f));
     drawIssueCategory("Unlinked checks", mapTrackerState.unresolvedLinks, "No unlinked checks.",
                       ImVec4(1.0f, 0.5f, 0.5f, 1.0f));
 
-    if (mapTrackerState.warnings.empty() && mapTrackerState.lowConfidenceLinks.empty() &&
-        mapTrackerState.zeroScoreUnresolvedLinks.empty() && mapTrackerState.unresolvedLinks.empty()) {
+    if (mapTrackerState.warnings.empty() && mapTrackerState.unresolvedLinks.empty()) {
         ImGui::Separator();
         ImGui::TextUnformatted("No issues found.");
     }
@@ -3296,7 +1907,7 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
         }
 
         auto* itemLocation = OTRGlobals::Instance->gRandoContext->GetItemLocation(marker.check);
-        if (enableAvailableChecks && onlyShowAvailable && !itemLocation->IsAvailable()) {
+        if (!IsMapModeEnabled() && enableAvailableChecks && onlyShowAvailable && !itemLocation->IsAvailable()) {
             return false;
         }
 
@@ -3405,7 +2016,6 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
         bool hasAvailable = false;
         bool hasUnavailable = false;
         bool hasDone = false;
-        bool hasLowConfidence = false;
         for (const auto& renderableMarker : renderableMarkers) {
             if (renderableMarker.isDone) {
                 hasDone = true;
@@ -3414,7 +2024,6 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
             } else {
                 hasUnavailable = true;
             }
-            hasLowConfidence = hasLowConfidence || renderableMarker.marker->lowConfidence;
         }
 
         std::vector<ImU32> segmentColors;
@@ -3444,8 +2053,7 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
             }
         }
 
-        ImU32 borderColor = hasLowConfidence ? CHECK_TRACKER_MAP_COLOR_LOW_CONFIDENCE_BORDER : CHECK_TRACKER_MAP_COLOR_BORDER;
-        drawList->AddRect(markerMin, markerMax, borderColor, 1.0f, 0, 1.5f);
+        drawList->AddRect(markerMin, markerMax, CHECK_TRACKER_MAP_COLOR_BORDER, 1.0f, 0, 1.5f);
 
         if (isMultiMarkerCluster) {
             if (hovered) {
@@ -3487,9 +2095,6 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
                 clusterPopupState.keepAliveUntil = std::max(clusterPopupState.keepAliveUntil, nowTime + 0.16);
             }
 
-            ImGui::Text("%zu checks", popupClusterIt->second.size());
-            ImGui::Separator();
-
             for (size_t clusterIndex = 0; clusterIndex < popupClusterIt->second.size(); clusterIndex++) {
                 const auto& renderableMarker = popupClusterIt->second[clusterIndex];
                 const MapMarker& marker = *renderableMarker.marker;
@@ -3500,22 +2105,31 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
                 std::string checkSelectableLabel = checkName + "##Select";
 
                 ImGui::PushID(markerRowId.c_str());
-                ImGui::ColorButton("##status", ImGui::ColorConvertU32ToFloat4(renderableMarker.fillColor),
-                                   ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop, ImVec2(10.0f, 10.0f));
-                ImGui::SameLine();
+                float popupRowHeight = std::max(14.0f, ImGui::GetTextLineHeight() + 1.0f);
 
                 if (!canToggle) {
                     ImGui::BeginDisabled();
                 }
-                if (ImGui::Selectable(checkSelectableLabel.c_str(), false, ImGuiSelectableFlags_AllowDoubleClick)) {
+
+                bool statusPressed = ImGui::ColorButton("##status", ImGui::ColorConvertU32ToFloat4(renderableMarker.fillColor),
+                                                        ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop,
+                                                        ImVec2(popupRowHeight, popupRowHeight));
+                bool statusHovered = ImGui::IsItemHovered();
+                ImGui::SameLine();
+
+                bool labelPressed = ImGui::Selectable(checkSelectableLabel.c_str(), false, ImGuiSelectableFlags_AllowDoubleClick,
+                                                      ImVec2(0.0f, popupRowHeight));
+                bool labelHovered = ImGui::IsItemHovered();
+                if ((statusPressed || labelPressed) && canToggle) {
                     ToggleSkippedStateForCheck(marker.check);
                     clusterPopupState.keepAliveUntil = std::max(clusterPopupState.keepAliveUntil, ImGui::GetTime() + 0.16);
                 }
+
                 if (!canToggle) {
                     ImGui::EndDisabled();
                 }
 
-                if (ImGui::IsItemHovered()) {
+                if (statusHovered || labelHovered) {
                     ImGui::BeginTooltip();
                     ImGui::TextUnformatted(checkName.c_str());
                     bool hasTooltipDetails = false;
@@ -3577,13 +2191,10 @@ void DrawMapTrackerContent() {
         if (mapTrackerState.loadingTotal > 0) {
             progress = static_cast<float>(mapTrackerState.loadingCurrent) / static_cast<float>(mapTrackerState.loadingTotal);
         }
-        std::string statusText = mapTrackerState.loadingStatus.empty() ? "Matching checks..." : mapTrackerState.loadingStatus;
+        std::string statusText = mapTrackerState.loadingStatus.empty() ? "Loading map pack..." : mapTrackerState.loadingStatus;
         ImGui::TextUnformatted(statusText.c_str());
         ImGui::ProgressBar(progress, ImVec2(ImGui::GetContentRegionAvail().x, 0.0f));
         ImGui::TextDisabled("%zu / %zu", mapTrackerState.loadingCurrent, mapTrackerState.loadingTotal);
-        if (!mapTrackerState.cacheStatus.empty()) {
-            ImGui::TextDisabled("%s", mapTrackerState.cacheStatus.c_str());
-        }
         return;
     }
 
@@ -3728,11 +2339,13 @@ uint16_t GetTotalChecksGotten() {
 }
 
 bool IsCheckHidden(RandomizerCheck rc) {
+    if (IsMapModeEnabled()) {
+        return false;
+    }
+
     Rando::ItemLocation* itemLocation = OTRGlobals::Instance->gRandoContext->GetItemLocation(rc);
     RandomizerCheckStatus status = itemLocation->GetCheckStatus();
-    bool available = itemLocation->IsAvailable();
     bool skipped = itemLocation->GetIsSkipped();
-    bool obtained = itemLocation->HasObtained();
     bool seen = status == RCSHOW_SEEN || status == RCSHOW_IDENTIFIED;
     bool scummed = status == RCSHOW_SCUMMED;
     bool unchecked = status == RCSHOW_UNCHECKED;
@@ -4518,17 +3131,27 @@ void CheckTrackerWindow::DrawElement() {
                 ImGui::TextUnformatted(totalChecksText.c_str());
             }
 
+            {
+                float checkboxWidth = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x +
+                                      ImGui::CalcTextSize("Show Map Debug").x;
+                float nextLineX = ImGui::GetCursorPosX() + ImGui::GetStyle().ItemSpacing.x;
+                float rightPadding = ImGui::GetStyle().WindowPadding.x + ImGui::GetStyle().ItemSpacing.x + 6.0f;
+                float rightAlignedX = ImGui::GetWindowContentRegionMax().x - checkboxWidth - rightPadding;
+                ImGui::SameLine(std::max(nextLineX, rightAlignedX));
+            }
+            UIWidgets::CVarCheckbox(
+                "Show Map Debug", CHECK_TRACKER_MAP_DEBUG_CVAR,
+                UIWidgets::CheckboxOptions(
+                    { { .tooltip = "Show map hover debug details and the unassigned in-game tag list." } })
+                    .Color(THEME_COLOR));
+            showMapDebugDetails = CVarGetInteger(CHECK_TRACKER_MAP_DEBUG_CVAR, 0);
+
             if (showMapDebugDetails) {
-                std::string assetsText = "Assets: " + GetMapTrackerAssetsRootAbsoluteString();
+                std::string activeAssetsPath =
+                    mapTrackerState.assetsRoot.empty() ? GetMapTrackerAssetsRootAbsoluteString() : mapTrackerState.assetsRoot.string();
+                std::string assetsText = "Assets: " + activeAssetsPath;
                 ImGui::TextWrapped("%s", assetsText.c_str());
-                std::string cachePathText =
-                    "Match Cache: " + (mapTrackerState.cacheFilePath.empty()
-                                           ? GetMapTrackerMatchCachePath(GetMapTrackerAssetsRoot()).string()
-                                           : mapTrackerState.cacheFilePath.string());
-                ImGui::TextWrapped("%s", cachePathText.c_str());
-                if (!mapTrackerState.cacheStatus.empty()) {
-                    ImGui::TextDisabled("%s", mapTrackerState.cacheStatus.c_str());
-                }
+                ImGui::TextDisabled("Source: %s", mapTrackerState.usingArchivePack ? "Zip archive" : "Folder");
             }
         }
         bool hasInlineHeaderToggle = false;
@@ -4539,7 +3162,7 @@ void CheckTrackerWindow::DrawElement() {
             hasInlineHeaderToggle = true;
         };
 
-        bool showHiddenItemsToggleVisible = CVarGetInteger(CVAR_TRACKER_CHECK("HiddenItemsToggleVisible"), 1);
+        bool showHiddenItemsToggleVisible = !mapMode && CVarGetInteger(CVAR_TRACKER_CHECK("HiddenItemsToggleVisible"), 1);
         if (showHiddenItemsToggleVisible) {
             beginInlineHeaderToggle();
             if (UIWidgets::CVarCheckbox(
@@ -4555,7 +3178,7 @@ void CheckTrackerWindow::DrawElement() {
         }
 
         bool showAvailableChecksToggleVisible =
-            enableAvailableChecks && CVarGetInteger(CVAR_TRACKER_CHECK("AvailableChecksToggleVisible"), 1);
+            !mapMode && enableAvailableChecks && CVarGetInteger(CVAR_TRACKER_CHECK("AvailableChecksToggleVisible"), 1);
         if (showAvailableChecksToggleVisible) {
             beginInlineHeaderToggle();
             if (UIWidgets::CVarCheckbox(
@@ -4566,16 +3189,6 @@ void CheckTrackerWindow::DrawElement() {
                 doAreaScroll = true;
                 RecalculateAllAreaTotals();
             }
-        }
-
-        if (mapMode) {
-            beginInlineHeaderToggle();
-            UIWidgets::CVarCheckbox(
-                "Show Map Debug", CHECK_TRACKER_MAP_DEBUG_CVAR,
-                UIWidgets::CheckboxOptions(
-                    { { .tooltip = "Show map hover debug details and the unassigned in-game tag list." } })
-                    .Color(THEME_COLOR));
-            showMapDebugDetails = CVarGetInteger(CHECK_TRACKER_MAP_DEBUG_CVAR, 0);
         }
 
         if (!mapMode && CVarGetInteger(CVAR_TRACKER_CHECK("ExpandCollapseButtonsVisible"), 0)) {
