@@ -306,7 +306,7 @@ std::array<bool, RC_MAX> filterChecksHidden = { 0 };
 
 constexpr const char* CHECK_TRACKER_MAP_MODE_CVAR = CVAR_TRACKER_CHECK("MapMode");
 constexpr const char* CHECK_TRACKER_MAP_DEBUG_CVAR = CVAR_TRACKER_CHECK("MapDebugInfo");
-constexpr const char* CHECK_TRACKER_MAP_ASSETS_ROOT = "mods/check_tracker_map_pack/soh-map-tracker-v0.1";
+constexpr const char* CHECK_TRACKER_MAP_ASSETS_ROOT = "mods/check_tracker_map_pack";
 constexpr const char* CHECK_TRACKER_MAPS_JSON = "maps.json";
 constexpr const char* CHECK_TRACKER_LOCATIONS_DIR = "areas";
 constexpr ImU32 CHECK_TRACKER_MAP_COLOR_DONE = IM_COL32(130, 130, 130, 220);
@@ -339,6 +339,7 @@ struct MapMarker {
 
 struct MapTabData {
     std::string mapName;
+    std::string groupName = "Ungrouped";
     std::string imageRelativePath;
     std::string imageResourcePath;
     std::filesystem::path imageAbsolutePath;
@@ -378,6 +379,9 @@ struct MapTrackerState {
     std::vector<RandomizerCheck> unassignedCheckIds;
     std::vector<MapTabData> tabs;
     std::unordered_map<std::string, size_t> tabIndexByName;
+    std::vector<std::string> mapGroups;
+    std::unordered_map<std::string, std::vector<int>> tabIndicesByGroup;
+    std::string selectedGroupName;
     std::unordered_set<RandomizerCheck> linkedChecks;
     std::string requestedTabName;
     int selectedTabIndex = 0;
@@ -731,6 +735,38 @@ std::filesystem::path GetMapTrackerAssetsRoot() {
     return std::filesystem::path(CHECK_TRACKER_MAP_ASSETS_ROOT);
 }
 
+std::vector<std::filesystem::path> FindMapPackZipFiles(const std::filesystem::path& packFolderPath) {
+    std::vector<std::filesystem::path> zipFiles;
+    std::error_code ec;
+    if (!std::filesystem::exists(packFolderPath, ec) || !std::filesystem::is_directory(packFolderPath, ec)) {
+        return zipFiles;
+    }
+
+    for (const auto& directoryEntry : std::filesystem::directory_iterator(packFolderPath, ec)) {
+        if (ec || !directoryEntry.is_regular_file()) {
+            continue;
+        }
+
+        std::string extension = NormalizeForMatching(directoryEntry.path().extension().string());
+        if (extension == "zip") {
+            zipFiles.push_back(directoryEntry.path());
+        }
+    }
+
+    std::sort(zipFiles.begin(), zipFiles.end(), [](const std::filesystem::path& left, const std::filesystem::path& right) {
+        return left.filename().string() < right.filename().string();
+    });
+    return zipFiles;
+}
+
+std::filesystem::path GetFirstMapPackZip(const std::filesystem::path& packFolderPath) {
+    auto zipFiles = FindMapPackZipFiles(packFolderPath);
+    if (zipFiles.empty()) {
+        return {};
+    }
+    return zipFiles.front();
+}
+
 std::string GetMapTrackerAssetsRootAbsoluteString() {
     const std::filesystem::path resolvedRoot = GetMapTrackerAssetsRoot();
     std::error_code ec;
@@ -813,7 +849,7 @@ bool EnsureMapTrackerZipArchiveMounted(const std::filesystem::path& archivePath,
     }
 
     std::string fallbackPrefix;
-    std::string preferredListPattern = "soh-map-tracker-v*/maps.json";
+    std::string preferredListPattern = "*/maps.json";
     auto preferredMatches = archiveManager->ListFiles(preferredListPattern);
     if (preferredMatches != nullptr) {
         for (const auto& resourcePath : *preferredMatches) {
@@ -914,7 +950,7 @@ bool ValidateMapImageFile(const std::filesystem::path& imagePath, std::string& o
 }
 
 bool IsMapModeEnabled() {
-    return CVarGetInteger(CHECK_TRACKER_MAP_MODE_CVAR, 0) != 0;
+    return CVarGetInteger(CHECK_TRACKER_MAP_MODE_CVAR, 1) != 0;
 }
 
 void SetMapModeEnabled(bool enabled) {
@@ -1411,42 +1447,40 @@ void LoadMapTrackerData() {
     mapTrackerState.assetsRoot = GetMapTrackerAssetsRoot();
 
     const std::filesystem::path packFolderPath = mapTrackerState.assetsRoot;
-    std::filesystem::path packArchivePath = packFolderPath;
-    packArchivePath += ".zip";
     bool packFolderExists = std::filesystem::exists(packFolderPath) && std::filesystem::is_directory(packFolderPath);
-    bool packArchiveExists = std::filesystem::exists(packArchivePath) && std::filesystem::is_regular_file(packArchivePath);
-    mapTrackerState.usingArchivePack = !packFolderExists && packArchiveExists;
-    mapTrackerState.assetsRoot = mapTrackerState.usingArchivePack ? packArchivePath : packFolderPath;
 
     SPDLOG_INFO("[CheckTrackerMapDiag] Load start. assets='{}' candidates='{}'", mapTrackerState.assetsRoot.string(),
                 BuildMapTrackerAssetsRootCandidatesSummary());
 
-    if (!packFolderExists && !packArchiveExists) {
+    if (!packFolderExists) {
         mapTrackerState.fatalErrors.push_back("Map pack not found.");
         mapTrackerState.fatalErrors.push_back("Expected folder: " + packFolderPath.string());
-        mapTrackerState.fatalErrors.push_back("Or expected zip: " + packArchivePath.string());
         mapTrackerState.fatalErrors.push_back("Tried these candidate roots: " + BuildMapTrackerAssetsRootCandidatesSummary());
-        mapTrackerState.fatalErrors.push_back(
-            "Put soh-map-tracker-v0.1.zip inside mods/check_tracker_map_pack or extract soh-map-tracker-v0.1 there.");
-        SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: pack folder/zip not found. folder='{}' zip='{}'", packFolderPath.string(),
-                     packArchivePath.string());
+        mapTrackerState.fatalErrors.push_back("Put a map pack zip in mods/check_tracker_map_pack.");
+        SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: pack folder not found. folder='{}'", packFolderPath.string());
         mapTrackerState.loading = false;
         return;
     }
+
+    const std::filesystem::path packArchivePath = GetFirstMapPackZip(packFolderPath);
+    if (packArchivePath.empty()) {
+        mapTrackerState.fatalErrors.push_back("No map pack zip found.");
+        mapTrackerState.fatalErrors.push_back("Expected at least one .zip in: " + packFolderPath.string());
+        mapTrackerState.fatalErrors.push_back("Any zip filename is supported.");
+        SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: no zip found in folder='{}'", packFolderPath.string());
+        mapTrackerState.loading = false;
+        return;
+    }
+    mapTrackerState.usingArchivePack = true;
+    mapTrackerState.assetsRoot = packArchivePath;
+
     mapTrackerState.loadingCurrent = 1;
 
     std::string mountError;
-    if (mapTrackerState.usingArchivePack) {
-        std::string preferredPrefix = packFolderPath.filename().string();
-        if (!EnsureMapTrackerZipArchiveMounted(packArchivePath, preferredPrefix, mapTrackerState.assetsArchiveMountRoot,
-                                               mapTrackerState.resourcePathPrefix, mountError)) {
-            mapTrackerState.fatalErrors.push_back("Failed to mount map pack zip archive: " + mountError);
-            mapTrackerState.loading = false;
-            return;
-        }
-    } else if (!EnsureMapTrackerArchiveMounted(packFolderPath, mapTrackerState.assetsArchiveMountRoot,
-                                               mapTrackerState.resourcePathPrefix, mountError)) {
-        mapTrackerState.fatalErrors.push_back("Failed to mount map pack folder archive: " + mountError);
+    std::string preferredPrefix = packArchivePath.stem().string();
+    if (!EnsureMapTrackerZipArchiveMounted(packArchivePath, preferredPrefix, mapTrackerState.assetsArchiveMountRoot,
+                                           mapTrackerState.resourcePathPrefix, mountError)) {
+        mapTrackerState.fatalErrors.push_back("Failed to mount map pack zip archive: " + mountError);
         mapTrackerState.loading = false;
         return;
     }
@@ -1454,7 +1488,7 @@ void LoadMapTrackerData() {
 
     json mapsJson;
     std::string parseError;
-    std::filesystem::path mapsDiskPath = mapTrackerState.usingArchivePack ? std::filesystem::path{} : (packFolderPath / CHECK_TRACKER_MAPS_JSON);
+    std::filesystem::path mapsDiskPath;
     std::string mapsResourcePath = BuildMapTrackerResourcePath(mapTrackerState.resourcePathPrefix, CHECK_TRACKER_MAPS_JSON);
     if (!LoadJsonFromMapPack(mapsDiskPath, mapsResourcePath, mapsJson, parseError)) {
         mapTrackerState.fatalErrors.push_back("Could not parse map metadata: " + parseError);
@@ -1465,6 +1499,7 @@ void LoadMapTrackerData() {
     }
 
     std::unordered_map<std::string, std::string> mapImagePathsByName;
+    std::unordered_map<std::string, std::string> mapGroupByName;
     std::vector<std::string> orderedMapNames;
     if (!mapsJson.is_array()) {
         mapTrackerState.fatalErrors.push_back("Expected an array in maps.json.");
@@ -1487,6 +1522,22 @@ void LoadMapTrackerData() {
         std::string normalizedMapName = NormalizeForMatching(mapName);
         if (!mapImagePathsByName.contains(normalizedMapName)) {
             orderedMapNames.push_back(mapName);
+        }
+
+        std::string mapGroup = "Ungrouped";
+        if (mapEntry.contains("group") && mapEntry["group"].is_string()) {
+            mapGroup = TrimCopy(mapEntry["group"].get<std::string>());
+        } else if (mapEntry.contains("Group") && mapEntry["Group"].is_string()) {
+            mapGroup = TrimCopy(mapEntry["Group"].get<std::string>());
+        } else if (mapEntry.contains("groups") && mapEntry["groups"].is_array() && !mapEntry["groups"].empty() &&
+                   mapEntry["groups"][0].is_string()) {
+            mapGroup = TrimCopy(mapEntry["groups"][0].get<std::string>());
+        }
+        if (mapGroup.empty()) {
+            mapGroup = "Ungrouped";
+        }
+        if (!mapGroupByName.contains(normalizedMapName)) {
+            mapGroupByName[normalizedMapName] = mapGroup;
         }
 
         if (mapEntry.contains("img") && mapEntry["img"].is_string()) {
@@ -1567,6 +1618,13 @@ void LoadMapTrackerData() {
     for (const auto& mapName : mapNamesForTabs) {
         MapTabData tab;
         tab.mapName = mapName;
+        std::string normalizedMapName = NormalizeForMatching(mapName);
+        if (mapGroupByName.contains(normalizedMapName)) {
+            tab.groupName = mapGroupByName[normalizedMapName];
+            if (tab.groupName.empty()) {
+                tab.groupName = "Ungrouped";
+            }
+        }
 
         std::string resolutionInfo;
         tab.imageRelativePath = ResolveMapImagePath(mapName, mapImagePathsByName, resolutionInfo);
@@ -1586,9 +1644,23 @@ void LoadMapTrackerData() {
             tab.imageError = "No image entry found in maps.json for map \"" + mapName + "\".";
         }
 
-        std::string normalizedMapName = NormalizeForMatching(mapName);
         mapTrackerState.tabIndexByName[normalizedMapName] = mapTrackerState.tabs.size();
         mapTrackerState.tabs.push_back(std::move(tab));
+    }
+
+    for (size_t tabIndex = 0; tabIndex < mapTrackerState.tabs.size(); tabIndex++) {
+        std::string groupName = TrimCopy(mapTrackerState.tabs[tabIndex].groupName);
+        if (groupName.empty()) {
+            groupName = "Ungrouped";
+        }
+        mapTrackerState.tabs[tabIndex].groupName = groupName;
+        if (!mapTrackerState.tabIndicesByGroup.contains(groupName)) {
+            mapTrackerState.mapGroups.push_back(groupName);
+        }
+        mapTrackerState.tabIndicesByGroup[groupName].push_back(static_cast<int>(tabIndex));
+    }
+    if (!mapTrackerState.mapGroups.empty()) {
+        mapTrackerState.selectedGroupName = mapTrackerState.mapGroups.front();
     }
 
     for (const auto& marker : mappedMarkers) {
@@ -2216,11 +2288,30 @@ void DrawMapTrackerContent() {
         auto findIt = mapTrackerState.tabIndexByName.find(mapTrackerState.requestedTabName);
         if (findIt != mapTrackerState.tabIndexByName.end()) {
             mapTrackerState.selectedTabIndex = static_cast<int>(findIt->second);
+            if (mapTrackerState.selectedTabIndex >= 0 &&
+                mapTrackerState.selectedTabIndex < static_cast<int>(mapTrackerState.tabs.size())) {
+                mapTrackerState.selectedGroupName = mapTrackerState.tabs[mapTrackerState.selectedTabIndex].groupName;
+            }
         }
     }
     mapTrackerState.requestedTabName.clear();
 
-    int maxSelectableTabIndex = showIssuesTab ? issuesTabIndex : std::max(0, static_cast<int>(mapTrackerState.tabs.size()) - 1);
+    if (mapTrackerState.mapGroups.empty() && !mapTrackerState.tabs.empty()) {
+        mapTrackerState.mapGroups = { "Ungrouped" };
+        mapTrackerState.tabIndicesByGroup.clear();
+        for (int tabIndex = 0; tabIndex < static_cast<int>(mapTrackerState.tabs.size()); tabIndex++) {
+            mapTrackerState.tabIndicesByGroup["Ungrouped"].push_back(tabIndex);
+            mapTrackerState.tabs[tabIndex].groupName = "Ungrouped";
+        }
+    }
+    if (!mapTrackerState.mapGroups.empty() &&
+        (!mapTrackerState.tabIndicesByGroup.contains(mapTrackerState.selectedGroupName) ||
+         mapTrackerState.selectedGroupName.empty())) {
+        mapTrackerState.selectedGroupName = mapTrackerState.mapGroups.front();
+    }
+
+    int maxSelectableTabIndex =
+        showIssuesTab ? issuesTabIndex : std::max(0, static_cast<int>(mapTrackerState.tabs.size()) - 1);
     mapTrackerState.selectedTabIndex = std::clamp(mapTrackerState.selectedTabIndex, 0, maxSelectableTabIndex);
 
     if (showMapDebugDetails) {
@@ -2234,12 +2325,47 @@ void DrawMapTrackerContent() {
         tabVisualSummaries[tabIndex] = BuildMapTabVisualSummary(mapTrackerState.tabs[tabIndex], mqSpoilers);
     }
 
+    ImGui::PushStyleColor(ImGuiCol_Tab, IM_COL32(34, 74, 160, 235));
+    ImGui::PushStyleColor(ImGuiCol_TabActive, IM_COL32(56, 118, 230, 255));
+    ImGui::PushStyleColor(ImGuiCol_TabHovered, IM_COL32(80, 145, 255, 255));
+    ImGui::PushStyleColor(ImGuiCol_TabUnfocused, IM_COL32(32, 58, 120, 210));
+    ImGui::PushStyleColor(ImGuiCol_TabUnfocusedActive, IM_COL32(43, 88, 176, 230));
+    if (ImGui::BeginTabBar("CheckTrackerMapGroups",
+                           ImGuiTabBarFlags_FittingPolicyScroll | ImGuiTabBarFlags_NoCloseWithMiddleMouseButton)) {
+        for (const auto& groupName : mapTrackerState.mapGroups) {
+            if (ImGui::BeginTabItem(groupName.c_str())) {
+                mapTrackerState.selectedGroupName = groupName;
+                ImGui::EndTabItem();
+            }
+        }
+        ImGui::EndTabBar();
+    }
+    ImGui::PopStyleColor(5);
+
+    std::vector<int> visibleTabIndices;
+    if (mapTrackerState.tabIndicesByGroup.contains(mapTrackerState.selectedGroupName)) {
+        visibleTabIndices = mapTrackerState.tabIndicesByGroup[mapTrackerState.selectedGroupName];
+    } else {
+        for (int tabIndex = 0; tabIndex < static_cast<int>(mapTrackerState.tabs.size()); tabIndex++) {
+            visibleTabIndices.push_back(tabIndex);
+        }
+    }
+    if (!visibleTabIndices.empty() && mapTrackerState.selectedTabIndex != issuesTabIndex &&
+        std::find(visibleTabIndices.begin(), visibleTabIndices.end(), mapTrackerState.selectedTabIndex) ==
+            visibleTabIndices.end()) {
+        mapTrackerState.selectedTabIndex = visibleTabIndices.front();
+    }
+
     float tabsRowStartX = ImGui::GetCursorPosX();
     float tabsRowMaxX = tabsRowStartX + ImGui::GetContentRegionAvail().x;
     bool hasPreviousTabButton = false;
+    const ImVec2 compactMapButtonPadding =
+        ImVec2(std::max(2.0f, ImGui::GetStyle().FramePadding.x * 0.78f),
+               std::max(2.0f, ImGui::GetStyle().FramePadding.y * 0.85f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, compactMapButtonPadding);
     auto drawTabButton = [&](const std::string& label, int tabIndex, const std::optional<ImVec4>& baseColor) {
         ImVec2 textSize = ImGui::CalcTextSize(label.c_str());
-        float buttonWidth = textSize.x + (ImGui::GetStyle().FramePadding.x * 2.0f) + 12.0f;
+        float buttonWidth = textSize.x + (ImGui::GetStyle().FramePadding.x * 2.0f) + 6.0f;
         buttonWidth = std::min(buttonWidth, std::max(1.0f, tabsRowMaxX - tabsRowStartX));
         if (hasPreviousTabButton) {
             ImGui::SameLine();
@@ -2281,13 +2407,14 @@ void DrawMapTrackerContent() {
         hasPreviousTabButton = true;
     };
 
-    for (size_t tabIndex = 0; tabIndex < mapTrackerState.tabs.size(); tabIndex++) {
-        ImVec4 mapTabColor = GetMapTabBaseColor(tabVisualSummaries[tabIndex]);
-        drawTabButton(mapTrackerState.tabs[tabIndex].mapName, static_cast<int>(tabIndex), mapTabColor);
+    for (const int tabIndex : visibleTabIndices) {
+        ImVec4 mapTabColor = GetMapTabBaseColor(tabVisualSummaries[static_cast<size_t>(tabIndex)]);
+        drawTabButton(mapTrackerState.tabs[static_cast<size_t>(tabIndex)].mapName, tabIndex, mapTabColor);
     }
     if (showIssuesTab) {
         drawTabButton("Unlinked / Issues", issuesTabIndex, std::nullopt);
     }
+    ImGui::PopStyleVar();
 
     ImGui::Separator();
     ImVec2 mapBodySize = ImGui::GetContentRegionAvail();
@@ -3121,7 +3248,11 @@ void CheckTrackerWindow::DrawElement() {
             }
 
             ImGui::SameLine();
-            if (UIWidgets::Button("Reload Data", UIWidgets::ButtonOptions().Color(THEME_COLOR).Size({ 110.0f, 0.0f }))) {
+            const char* reloadDataLabel = "Reload Data";
+            const float reloadDataWidth =
+                ImGui::CalcTextSize(reloadDataLabel).x + ImGui::GetStyle().FramePadding.x * 2.0f + 16.0f;
+            if (UIWidgets::Button(
+                    reloadDataLabel, UIWidgets::ButtonOptions().Color(THEME_COLOR).Size({ reloadDataWidth, 0.0f }))) {
                 SPDLOG_INFO("[CheckTrackerMapDiag] Manual reload requested.");
                 LoadMapTrackerData();
             }
