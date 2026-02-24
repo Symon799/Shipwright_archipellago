@@ -309,10 +309,10 @@ constexpr const char* CHECK_TRACKER_MAP_DEBUG_CVAR = CVAR_TRACKER_CHECK("MapDebu
 constexpr const char* CHECK_TRACKER_MAP_ASSETS_ROOT = "mods/check_tracker_map_pack";
 constexpr const char* CHECK_TRACKER_MAPS_JSON = "maps.json";
 constexpr const char* CHECK_TRACKER_LOCATIONS_DIR = "areas";
-constexpr ImU32 CHECK_TRACKER_MAP_COLOR_DONE = IM_COL32(130, 130, 130, 220);
-constexpr ImU32 CHECK_TRACKER_MAP_COLOR_AVAILABLE = IM_COL32(55, 185, 85, 220);
-constexpr ImU32 CHECK_TRACKER_MAP_COLOR_UNAVAILABLE = IM_COL32(200, 65, 65, 220);
-constexpr ImU32 CHECK_TRACKER_MAP_COLOR_BORDER = IM_COL32(255, 255, 255, 245);
+constexpr ImU32 CHECK_TRACKER_MAP_COLOR_DONE = IM_COL32(130, 130, 130, 255);
+constexpr ImU32 CHECK_TRACKER_MAP_COLOR_AVAILABLE = IM_COL32(55, 185, 85, 255);
+constexpr ImU32 CHECK_TRACKER_MAP_COLOR_UNAVAILABLE = IM_COL32(200, 65, 65, 255);
+constexpr ImU32 CHECK_TRACKER_MAP_COLOR_BORDER = IM_COL32(255, 255, 255, 255);
 
 struct MapPlacement {
     std::string mapName;
@@ -382,6 +382,8 @@ struct MapTrackerState {
     std::vector<std::string> mapGroups;
     std::unordered_map<std::string, std::vector<int>> tabIndicesByGroup;
     std::string selectedGroupName;
+    std::unordered_map<RandomizerCheck, std::vector<int>> tabIndicesByCheck;
+    std::unordered_map<std::string, int> lastSelectedTabByGroup;
     std::unordered_set<RandomizerCheck> linkedChecks;
     std::string requestedTabName;
     int selectedTabIndex = 0;
@@ -1659,6 +1661,11 @@ void LoadMapTrackerData() {
         }
         mapTrackerState.tabIndicesByGroup[groupName].push_back(static_cast<int>(tabIndex));
     }
+    for (const auto& [groupName, groupTabIndices] : mapTrackerState.tabIndicesByGroup) {
+        if (!groupTabIndices.empty()) {
+            mapTrackerState.lastSelectedTabByGroup[groupName] = groupTabIndices.front();
+        }
+    }
     if (!mapTrackerState.mapGroups.empty()) {
         mapTrackerState.selectedGroupName = mapTrackerState.mapGroups.front();
     }
@@ -1672,7 +1679,13 @@ void LoadMapTrackerData() {
                       GetCheckDisplayName(marker.check) + "." });
             continue;
         }
-        mapTrackerState.tabs[mapTrackerState.tabIndexByName[tabKey]].markers.push_back(marker);
+        int markerTabIndex = static_cast<int>(mapTrackerState.tabIndexByName[tabKey]);
+        mapTrackerState.tabs[static_cast<size_t>(markerTabIndex)].markers.push_back(marker);
+
+        auto& checkTabIndices = mapTrackerState.tabIndicesByCheck[marker.check];
+        if (std::find(checkTabIndices.begin(), checkTabIndices.end(), markerTabIndex) == checkTabIndices.end()) {
+            checkTabIndices.push_back(markerTabIndex);
+        }
     }
 
     auto gui = Ship::Context::GetInstance()->GetWindow()->GetGui();
@@ -1879,7 +1892,6 @@ void DrawMapTrackerIssuesTab() {
         std::string activeAssetsPath =
             mapTrackerState.assetsRoot.empty() ? GetMapTrackerAssetsRootAbsoluteString() : mapTrackerState.assetsRoot.string();
         ImGui::TextWrapped("Assets: %s", activeAssetsPath.c_str());
-        ImGui::TextDisabled("Source: %s", mapTrackerState.usingArchivePack ? "Zip archive" : "Folder");
         ImGui::Separator();
     }
 
@@ -1907,10 +1919,62 @@ void DrawMapTrackerIssuesTab() {
     drawIssueCategory("Unlinked checks", mapTrackerState.unresolvedLinks, "No unlinked checks.",
                       ImVec4(1.0f, 0.5f, 0.5f, 1.0f));
 
-    if (mapTrackerState.warnings.empty() && mapTrackerState.unresolvedLinks.empty()) {
+    DrawMapUnassignedCheckTagsSection();
+
+    if (mapTrackerState.warnings.empty() && mapTrackerState.unresolvedLinks.empty() &&
+        mapTrackerState.unassignedCheckIds.empty()) {
         ImGui::Separator();
         ImGui::TextUnformatted("No issues found.");
     }
+}
+
+std::optional<int> FindClusterNavigationTargetTabIndex(const std::vector<RandomizerCheck>& clusterChecks,
+                                                       int currentTabIndex) {
+    if (clusterChecks.empty()) {
+        return std::nullopt;
+    }
+
+    std::vector<int> sharedTargetTabIndices;
+    bool hasIntersection = false;
+    std::unordered_set<RandomizerCheck> seenChecks;
+
+    for (RandomizerCheck check : clusterChecks) {
+        if (!seenChecks.insert(check).second) {
+            continue;
+        }
+
+        auto checkTabIndicesIt = mapTrackerState.tabIndicesByCheck.find(check);
+        if (checkTabIndicesIt == mapTrackerState.tabIndicesByCheck.end()) {
+            return std::nullopt;
+        }
+
+        std::vector<int> filteredCandidates;
+        for (int tabIndex : checkTabIndicesIt->second) {
+            if (tabIndex != currentTabIndex &&
+                std::find(filteredCandidates.begin(), filteredCandidates.end(), tabIndex) == filteredCandidates.end()) {
+                filteredCandidates.push_back(tabIndex);
+            }
+        }
+
+        if (!hasIntersection) {
+            sharedTargetTabIndices = std::move(filteredCandidates);
+            hasIntersection = true;
+        } else {
+            sharedTargetTabIndices.erase(
+                std::remove_if(sharedTargetTabIndices.begin(), sharedTargetTabIndices.end(), [&](int tabIndex) {
+                    return std::find(filteredCandidates.begin(), filteredCandidates.end(), tabIndex) ==
+                           filteredCandidates.end();
+                }),
+                sharedTargetTabIndices.end());
+        }
+
+        if (sharedTargetTabIndices.empty()) {
+            return std::nullopt;
+        }
+    }
+
+    return hasIntersection && sharedTargetTabIndices.size() == 1 ? std::optional<int>(sharedTargetTabIndices.front())
+                                                                  : std::nullopt;
 }
 
 void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
@@ -1973,6 +2037,12 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
         clusterPopupState.keepAliveUntil = 0.0;
     }
 
+    int currentTabIndex = -1;
+    if (auto tabIndexIt = mapTrackerState.tabIndexByName.find(NormalizeForMatching(tab.mapName));
+        tabIndexIt != mapTrackerState.tabIndexByName.end()) {
+        currentTabIndex = static_cast<int>(tabIndexIt->second);
+    }
+
     auto shouldRenderMarker = [&](const MapMarker& marker) {
         if (!IsVisibleInCheckTracker(marker.check)) {
             return false;
@@ -2023,6 +2093,13 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
     }
 
     auto drawSingleMarkerTooltip = [&](const RenderableMarker& renderableMarker) {
+        std::string logicString = showLogicTooltip ? GetCheckLogicString(renderableMarker.marker->check) : "";
+        if (!logicString.empty()) {
+            ImGui::SetNextWindowSizeConstraints(ImVec2(560.0f, 0.0f),
+                                              ImVec2(std::numeric_limits<float>::max(),
+                                                     std::numeric_limits<float>::max()));
+        }
+
         ImGui::BeginTooltip();
         ImGui::TextUnformatted(GetCheckDisplayName(renderableMarker.marker->check).c_str());
         bool hasTooltipDetails = false;
@@ -2039,13 +2116,10 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
             hasTooltipDetails = true;
         }
 
-        if (showLogicTooltip) {
-            std::string logicString = GetCheckLogicString(renderableMarker.marker->check);
-            if (!logicString.empty()) {
-                ImGui::Separator();
-                ImGui::TextWrapped("%s", logicString.c_str());
-                hasTooltipDetails = true;
-            }
+        if (!logicString.empty()) {
+            ImGui::Separator();
+            ImGui::TextWrapped("%s", logicString.c_str());
+            hasTooltipDetails = true;
         }
 
         if (showMapDebugDetails) {
@@ -2128,6 +2202,24 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
         drawList->AddRect(markerMin, markerMax, CHECK_TRACKER_MAP_COLOR_BORDER, 1.0f, 0, 1.5f);
 
         if (isMultiMarkerCluster) {
+            if (clicked && currentTabIndex >= 0) {
+                std::vector<RandomizerCheck> clusterChecks;
+                clusterChecks.reserve(renderableMarkers.size());
+                for (const auto& renderableMarker : renderableMarkers) {
+                    clusterChecks.push_back(renderableMarker.marker->check);
+                }
+
+                auto navigationTargetTabIndex = FindClusterNavigationTargetTabIndex(clusterChecks, currentTabIndex);
+                if (navigationTargetTabIndex.has_value() && *navigationTargetTabIndex >= 0 &&
+                    *navigationTargetTabIndex < static_cast<int>(mapTrackerState.tabs.size())) {
+                    mapTrackerState.selectedTabIndex = *navigationTargetTabIndex;
+                    mapTrackerState.selectedGroupName =
+                        mapTrackerState.tabs[static_cast<size_t>(*navigationTargetTabIndex)].groupName;
+                    mapTrackerState.lastSelectedTabByGroup[mapTrackerState.selectedGroupName] = *navigationTargetTabIndex;
+                    clusterPopupState.open = false;
+                    continue;
+                }
+            }
             if (hovered) {
                 markerHoveredForPopup = true;
                 clusterPopupState.open = true;
@@ -2202,16 +2294,19 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
                 }
 
                 if (statusHovered || labelHovered) {
+                    std::string logicString = showLogicTooltip ? GetCheckLogicString(marker.check) : "";
+                    if (!logicString.empty()) {
+                        ImGui::SetNextWindowSizeConstraints(ImVec2(560.0f, 0.0f),
+                                                          ImVec2(std::numeric_limits<float>::max(),
+                                                                 std::numeric_limits<float>::max()));
+                    }
                     ImGui::BeginTooltip();
                     ImGui::TextUnformatted(checkName.c_str());
                     bool hasTooltipDetails = false;
-                    if (showLogicTooltip) {
-                        std::string logicString = GetCheckLogicString(marker.check);
-                        if (!logicString.empty()) {
-                            ImGui::Separator();
-                            ImGui::TextWrapped("%s", logicString.c_str());
-                            hasTooltipDetails = true;
-                        }
+                    if (!logicString.empty()) {
+                        ImGui::Separator();
+                        ImGui::TextWrapped("%s", logicString.c_str());
+                        hasTooltipDetails = true;
                     }
                     if (showMapDebugDetails) {
                         if (hasTooltipDetails) {
@@ -2281,9 +2376,11 @@ void DrawMapTrackerContent() {
 
     UpdateRequestedMapTabFromCurrentArea(false);
     bool mqSpoilers = CVarGetInteger(CVAR_TRACKER_CHECK("MQSpoilers"), 0);
-    bool showIssuesTab = showMapDebugDetails;
+    constexpr const char* issuesGroupName = "Unlinked / Issues";
 
-    int issuesTabIndex = showIssuesTab ? static_cast<int>(mapTrackerState.tabs.size()) : -1;
+    bool showIssuesTab = showMapDebugDetails;
+    bool requestGroupTabSelection = false;
+
     if (!mapTrackerState.requestedTabName.empty()) {
         auto findIt = mapTrackerState.tabIndexByName.find(mapTrackerState.requestedTabName);
         if (findIt != mapTrackerState.tabIndexByName.end()) {
@@ -2291,6 +2388,8 @@ void DrawMapTrackerContent() {
             if (mapTrackerState.selectedTabIndex >= 0 &&
                 mapTrackerState.selectedTabIndex < static_cast<int>(mapTrackerState.tabs.size())) {
                 mapTrackerState.selectedGroupName = mapTrackerState.tabs[mapTrackerState.selectedTabIndex].groupName;
+                mapTrackerState.lastSelectedTabByGroup[mapTrackerState.selectedGroupName] = mapTrackerState.selectedTabIndex;
+                requestGroupTabSelection = true;
             }
         }
     }
@@ -2304,20 +2403,30 @@ void DrawMapTrackerContent() {
             mapTrackerState.tabs[tabIndex].groupName = "Ungrouped";
         }
     }
-    if (!mapTrackerState.mapGroups.empty() &&
-        (!mapTrackerState.tabIndicesByGroup.contains(mapTrackerState.selectedGroupName) ||
-         mapTrackerState.selectedGroupName.empty())) {
+
+    if (mapTrackerState.selectedGroupName.empty()) {
+        if (!mapTrackerState.mapGroups.empty()) {
+            mapTrackerState.selectedGroupName = mapTrackerState.mapGroups.front();
+        } else if (showIssuesTab) {
+            mapTrackerState.selectedGroupName = issuesGroupName;
+        }
+    }
+
+    if (!showIssuesTab && mapTrackerState.selectedGroupName == issuesGroupName) {
+        if (!mapTrackerState.mapGroups.empty()) {
+            mapTrackerState.selectedGroupName = mapTrackerState.mapGroups.front();
+        } else {
+            mapTrackerState.selectedGroupName.clear();
+        }
+    }
+
+    if (mapTrackerState.selectedGroupName != issuesGroupName && !mapTrackerState.mapGroups.empty() &&
+        !mapTrackerState.tabIndicesByGroup.contains(mapTrackerState.selectedGroupName)) {
         mapTrackerState.selectedGroupName = mapTrackerState.mapGroups.front();
     }
 
-    int maxSelectableTabIndex =
-        showIssuesTab ? issuesTabIndex : std::max(0, static_cast<int>(mapTrackerState.tabs.size()) - 1);
+    int maxSelectableTabIndex = std::max(0, static_cast<int>(mapTrackerState.tabs.size()) - 1);
     mapTrackerState.selectedTabIndex = std::clamp(mapTrackerState.selectedTabIndex, 0, maxSelectableTabIndex);
-
-    if (showMapDebugDetails) {
-        DrawMapUnassignedCheckTagsSection();
-        ImGui::Separator();
-    }
 
     ImVec4 selectedTabColor = ImGui::ColorConvertU32ToFloat4(THEME_COLOR);
     std::vector<MapTabVisualSummary> tabVisualSummaries(mapTrackerState.tabs.size());
@@ -2333,8 +2442,17 @@ void DrawMapTrackerContent() {
     if (ImGui::BeginTabBar("CheckTrackerMapGroups",
                            ImGuiTabBarFlags_FittingPolicyScroll | ImGuiTabBarFlags_NoCloseWithMiddleMouseButton)) {
         for (const auto& groupName : mapTrackerState.mapGroups) {
-            if (ImGui::BeginTabItem(groupName.c_str())) {
+            ImGuiTabItemFlags groupTabFlags =
+                requestGroupTabSelection && mapTrackerState.selectedGroupName == groupName ? ImGuiTabItemFlags_SetSelected
+                                                                                           : ImGuiTabItemFlags_None;
+            if (ImGui::BeginTabItem(groupName.c_str(), nullptr, groupTabFlags)) {
                 mapTrackerState.selectedGroupName = groupName;
+                ImGui::EndTabItem();
+            }
+        }
+        if (showIssuesTab) {
+            if (ImGui::BeginTabItem(issuesGroupName)) {
+                mapTrackerState.selectedGroupName = issuesGroupName;
                 ImGui::EndTabItem();
             }
         }
@@ -2342,96 +2460,113 @@ void DrawMapTrackerContent() {
     }
     ImGui::PopStyleColor(5);
 
-    std::vector<int> visibleTabIndices;
-    if (mapTrackerState.tabIndicesByGroup.contains(mapTrackerState.selectedGroupName)) {
-        visibleTabIndices = mapTrackerState.tabIndicesByGroup[mapTrackerState.selectedGroupName];
-    } else {
-        for (int tabIndex = 0; tabIndex < static_cast<int>(mapTrackerState.tabs.size()); tabIndex++) {
-            visibleTabIndices.push_back(tabIndex);
-        }
-    }
-    if (!visibleTabIndices.empty() && mapTrackerState.selectedTabIndex != issuesTabIndex &&
-        std::find(visibleTabIndices.begin(), visibleTabIndices.end(), mapTrackerState.selectedTabIndex) ==
-            visibleTabIndices.end()) {
-        mapTrackerState.selectedTabIndex = visibleTabIndices.front();
-    }
+    bool showingIssuesTab = showIssuesTab && (mapTrackerState.selectedGroupName == issuesGroupName);
 
-    float tabsRowStartX = ImGui::GetCursorPosX();
-    float tabsRowMaxX = tabsRowStartX + ImGui::GetContentRegionAvail().x;
-    bool hasPreviousTabButton = false;
-    const ImVec2 compactMapButtonPadding =
-        ImVec2(std::max(2.0f, ImGui::GetStyle().FramePadding.x * 0.78f),
-               std::max(2.0f, ImGui::GetStyle().FramePadding.y * 0.85f));
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, compactMapButtonPadding);
-    auto drawTabButton = [&](const std::string& label, int tabIndex, const std::optional<ImVec4>& baseColor) {
-        ImVec2 textSize = ImGui::CalcTextSize(label.c_str());
-        float buttonWidth = textSize.x + (ImGui::GetStyle().FramePadding.x * 2.0f) + 6.0f;
-        buttonWidth = std::min(buttonWidth, std::max(1.0f, tabsRowMaxX - tabsRowStartX));
-        if (hasPreviousTabButton) {
-            ImGui::SameLine();
-            if (ImGui::GetCursorPosX() + buttonWidth > tabsRowMaxX) {
-                ImGui::NewLine();
+    std::vector<int> visibleTabIndices;
+    if (!showingIssuesTab) {
+        if (mapTrackerState.tabIndicesByGroup.contains(mapTrackerState.selectedGroupName)) {
+            visibleTabIndices = mapTrackerState.tabIndicesByGroup[mapTrackerState.selectedGroupName];
+        } else {
+            for (int tabIndex = 0; tabIndex < static_cast<int>(mapTrackerState.tabs.size()); tabIndex++) {
+                visibleTabIndices.push_back(tabIndex);
             }
         }
-        bool isSelected = (mapTrackerState.selectedTabIndex == tabIndex);
-        if (baseColor.has_value()) {
-            ImVec4 buttonColor = *baseColor;
-            ImGui::PushStyleColor(ImGuiCol_Button, buttonColor);
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ScaleMapTabColor(buttonColor, 1.08f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ScaleMapTabColor(buttonColor, 0.9f));
-            ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
-            ImGui::PushStyleColor(ImGuiCol_Border, isSelected ? selectedTabColor : ScaleMapTabColor(buttonColor, 0.72f));
-        } else if (isSelected) {
-            ImGui::PushStyleColor(ImGuiCol_Button, selectedTabColor);
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, selectedTabColor);
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, selectedTabColor);
+        if (!visibleTabIndices.empty()) {
+            bool selectedTabVisible =
+                std::find(visibleTabIndices.begin(), visibleTabIndices.end(), mapTrackerState.selectedTabIndex) !=
+                visibleTabIndices.end();
+            if (!selectedTabVisible) {
+                auto rememberedTabIndexIt = mapTrackerState.lastSelectedTabByGroup.find(mapTrackerState.selectedGroupName);
+                if (rememberedTabIndexIt != mapTrackerState.lastSelectedTabByGroup.end() &&
+                    std::find(visibleTabIndices.begin(), visibleTabIndices.end(), rememberedTabIndexIt->second) !=
+                        visibleTabIndices.end()) {
+                    mapTrackerState.selectedTabIndex = rememberedTabIndexIt->second;
+                } else {
+                    mapTrackerState.selectedTabIndex = visibleTabIndices.front();
+                }
+            }
+            mapTrackerState.lastSelectedTabByGroup[mapTrackerState.selectedGroupName] = mapTrackerState.selectedTabIndex;
         }
-        if (ImGui::Button(label.c_str(), ImVec2(buttonWidth, 0.0f))) {
-            mapTrackerState.selectedTabIndex = tabIndex;
-        }
-        if (isSelected) {
-            ImDrawList* tabDrawList = ImGui::GetWindowDrawList();
-            ImVec2 rectMin = ImGui::GetItemRectMin();
-            ImVec2 rectMax = ImGui::GetItemRectMax();
-            float rounding = ImGui::GetStyle().FrameRounding;
-            tabDrawList->AddRect(rectMin, rectMax, IM_COL32(255, 255, 255, 255), rounding, 0, 2.0f);
-            tabDrawList->AddRect(ImVec2(rectMin.x + 1.0f, rectMin.y + 1.0f), ImVec2(rectMax.x - 1.0f, rectMax.y - 1.0f),
-                                 IM_COL32(15, 15, 15, 220), rounding, 0, 1.0f);
-        }
-        if (baseColor.has_value()) {
-            ImGui::PopStyleColor(4);
-            ImGui::PopStyleVar();
-        } else if (isSelected) {
-            ImGui::PopStyleColor(3);
-        }
-        hasPreviousTabButton = true;
-    };
+    }
 
-    for (const int tabIndex : visibleTabIndices) {
-        ImVec4 mapTabColor = GetMapTabBaseColor(tabVisualSummaries[static_cast<size_t>(tabIndex)]);
-        drawTabButton(mapTrackerState.tabs[static_cast<size_t>(tabIndex)].mapName, tabIndex, mapTabColor);
+    if (!showingIssuesTab) {
+        float tabsRowStartX = ImGui::GetCursorPosX();
+        float tabsRowMaxX = tabsRowStartX + ImGui::GetContentRegionAvail().x;
+        bool hasPreviousTabButton = false;
+        const ImVec2 compactMapButtonPadding =
+            ImVec2(std::max(2.0f, ImGui::GetStyle().FramePadding.x * 0.78f),
+                   std::max(2.0f, ImGui::GetStyle().FramePadding.y * 0.85f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, compactMapButtonPadding);
+        auto drawTabButton = [&](const std::string& label, int tabIndex, const std::optional<ImVec4>& baseColor) {
+            ImVec2 textSize = ImGui::CalcTextSize(label.c_str());
+            float buttonWidth = textSize.x + (ImGui::GetStyle().FramePadding.x * 2.0f) + 6.0f;
+            buttonWidth = std::min(buttonWidth, std::max(1.0f, tabsRowMaxX - tabsRowStartX));
+            if (hasPreviousTabButton) {
+                ImGui::SameLine();
+                if (ImGui::GetCursorPosX() + buttonWidth > tabsRowMaxX) {
+                    ImGui::NewLine();
+                }
+            }
+            bool isSelected = (mapTrackerState.selectedTabIndex == tabIndex);
+            if (baseColor.has_value()) {
+                ImVec4 buttonColor = *baseColor;
+                ImGui::PushStyleColor(ImGuiCol_Button, buttonColor);
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ScaleMapTabColor(buttonColor, 1.08f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ScaleMapTabColor(buttonColor, 0.9f));
+                ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
+                ImGui::PushStyleColor(ImGuiCol_Border, isSelected ? selectedTabColor : ScaleMapTabColor(buttonColor, 0.72f));
+            } else if (isSelected) {
+                ImGui::PushStyleColor(ImGuiCol_Button, selectedTabColor);
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, selectedTabColor);
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, selectedTabColor);
+            }
+            if (ImGui::Button(label.c_str(), ImVec2(buttonWidth, 0.0f))) {
+                mapTrackerState.selectedTabIndex = tabIndex;
+                mapTrackerState.lastSelectedTabByGroup[mapTrackerState.selectedGroupName] = tabIndex;
+            }
+            if (isSelected) {
+                ImDrawList* tabDrawList = ImGui::GetWindowDrawList();
+                ImVec2 rectMin = ImGui::GetItemRectMin();
+                ImVec2 rectMax = ImGui::GetItemRectMax();
+                float rounding = ImGui::GetStyle().FrameRounding;
+                tabDrawList->AddRect(rectMin, rectMax, IM_COL32(255, 255, 255, 255), rounding, 0, 2.0f);
+                tabDrawList->AddRect(ImVec2(rectMin.x + 1.0f, rectMin.y + 1.0f), ImVec2(rectMax.x - 1.0f, rectMax.y - 1.0f),
+                                     IM_COL32(15, 15, 15, 220), rounding, 0, 1.0f);
+            }
+            if (baseColor.has_value()) {
+                ImGui::PopStyleColor(4);
+                ImGui::PopStyleVar();
+            } else if (isSelected) {
+                ImGui::PopStyleColor(3);
+            }
+            hasPreviousTabButton = true;
+        };
+
+        for (const int tabIndex : visibleTabIndices) {
+            ImVec4 mapTabColor = GetMapTabBaseColor(tabVisualSummaries[static_cast<size_t>(tabIndex)]);
+            drawTabButton(mapTrackerState.tabs[static_cast<size_t>(tabIndex)].mapName, tabIndex, mapTabColor);
+        }
+        ImGui::PopStyleVar();
     }
-    if (showIssuesTab) {
-        drawTabButton("Unlinked / Issues", issuesTabIndex, std::nullopt);
-    }
-    ImGui::PopStyleVar();
 
     ImGui::Separator();
     ImVec2 mapBodySize = ImGui::GetContentRegionAvail();
     mapBodySize.y = std::max(1.0f, mapBodySize.y - ImGui::GetStyle().ItemSpacing.y);
 
     ImGuiWindowFlags mapBodyFlags = ImGuiWindowFlags_None;
-    if (mapTrackerState.selectedTabIndex != issuesTabIndex) {
+    if (!showingIssuesTab) {
         mapBodyFlags |= ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
     }
 
     if (ImGui::BeginChild("CheckTrackerMapBody", mapBodySize, false, mapBodyFlags)) {
-        if (showIssuesTab && mapTrackerState.selectedTabIndex == issuesTabIndex) {
+        if (showingIssuesTab) {
             DrawMapTrackerIssuesTab();
         } else if (!mapTrackerState.tabs.empty() &&
                    mapTrackerState.selectedTabIndex >= 0 &&
                    mapTrackerState.selectedTabIndex < static_cast<int>(mapTrackerState.tabs.size())) {
             DrawMapTabContent(mapTrackerState.tabs[mapTrackerState.selectedTabIndex], mqSpoilers);
+        } else {
+            ImGui::TextUnformatted("No map tabs available for this group.");
         }
     }
     ImGui::EndChild();
@@ -3231,7 +3366,17 @@ void CheckTrackerWindow::DrawElement() {
             totalChecksText = totalChecksSS.str();
         }
         std::string modeButtonLabel = mapMode ? "Mode: Map" : "Mode: Legacy";
-        float modeButtonWidth = mapMode ? 120.0f : ImGui::GetContentRegionAvail().x;
+        const char* focusPlayerLabel = "Focus Player";
+        const char* reloadDataLabel = "Reload Data";
+        float mapHeaderButtonWidth = ImGui::GetContentRegionAvail().x;
+        if (mapMode) {
+            float longestHeaderButtonText =
+                std::max(std::max(ImGui::CalcTextSize(modeButtonLabel.c_str()).x, ImGui::CalcTextSize(focusPlayerLabel).x),
+                         ImGui::CalcTextSize(reloadDataLabel).x);
+            mapHeaderButtonWidth = longestHeaderButtonText + (ImGui::GetStyle().FramePadding.x * 2.0f) + 20.0f;
+        }
+
+        float modeButtonWidth = mapMode ? mapHeaderButtonWidth : ImGui::GetContentRegionAvail().x;
         if (UIWidgets::Button(modeButtonLabel.c_str(),
                               UIWidgets::ButtonOptions().Color(THEME_COLOR).Size({ modeButtonWidth, 0.0f }))) {
             mapMode = !mapMode;
@@ -3243,16 +3388,14 @@ void CheckTrackerWindow::DrawElement() {
         }
         if (mapMode) {
             ImGui::SameLine();
-            if (UIWidgets::Button("Focus Player", UIWidgets::ButtonOptions().Color(THEME_COLOR).Size({ 120.0f, 0.0f }))) {
+            if (UIWidgets::Button(focusPlayerLabel,
+                                  UIWidgets::ButtonOptions().Color(THEME_COLOR).Size({ mapHeaderButtonWidth, 0.0f }))) {
                 UpdateRequestedMapTabFromCurrentArea(true);
             }
 
             ImGui::SameLine();
-            const char* reloadDataLabel = "Reload Data";
-            const float reloadDataWidth =
-                ImGui::CalcTextSize(reloadDataLabel).x + ImGui::GetStyle().FramePadding.x * 2.0f + 16.0f;
-            if (UIWidgets::Button(
-                    reloadDataLabel, UIWidgets::ButtonOptions().Color(THEME_COLOR).Size({ reloadDataWidth, 0.0f }))) {
+            if (UIWidgets::Button(reloadDataLabel,
+                                  UIWidgets::ButtonOptions().Color(THEME_COLOR).Size({ mapHeaderButtonWidth, 0.0f }))) {
                 SPDLOG_INFO("[CheckTrackerMapDiag] Manual reload requested.");
                 LoadMapTrackerData();
             }
@@ -3264,14 +3407,14 @@ void CheckTrackerWindow::DrawElement() {
 
             {
                 float checkboxWidth = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x +
-                                      ImGui::CalcTextSize("Show Map Debug").x;
+                                      ImGui::CalcTextSize("Debug").x;
                 float nextLineX = ImGui::GetCursorPosX() + ImGui::GetStyle().ItemSpacing.x;
                 float rightPadding = ImGui::GetStyle().WindowPadding.x + ImGui::GetStyle().ItemSpacing.x + 6.0f;
                 float rightAlignedX = ImGui::GetWindowContentRegionMax().x - checkboxWidth - rightPadding;
                 ImGui::SameLine(std::max(nextLineX, rightAlignedX));
             }
             UIWidgets::CVarCheckbox(
-                "Show Map Debug", CHECK_TRACKER_MAP_DEBUG_CVAR,
+                "Debug", CHECK_TRACKER_MAP_DEBUG_CVAR,
                 UIWidgets::CheckboxOptions(
                     { { .tooltip = "Show map hover debug details and the unassigned in-game tag list." } })
                     .Color(THEME_COLOR));
@@ -3282,7 +3425,6 @@ void CheckTrackerWindow::DrawElement() {
                     mapTrackerState.assetsRoot.empty() ? GetMapTrackerAssetsRootAbsoluteString() : mapTrackerState.assetsRoot.string();
                 std::string assetsText = "Assets: " + activeAssetsPath;
                 ImGui::TextWrapped("%s", assetsText.c_str());
-                ImGui::TextDisabled("Source: %s", mapTrackerState.usingArchivePack ? "Zip archive" : "Folder");
             }
         }
         bool hasInlineHeaderToggle = false;
@@ -4679,3 +4821,5 @@ void RegisterCheckTrackerWidgets() {
 
 static RegisterMenuInitFunc menuInitFunc(RegisterCheckTrackerWidgets);
 } // namespace CheckTracker
+
+
