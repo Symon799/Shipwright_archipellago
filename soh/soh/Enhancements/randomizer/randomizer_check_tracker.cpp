@@ -206,6 +206,9 @@ bool ToggleSkippedStateForCheck(RandomizerCheck rc);
 std::string GetCheckDisplayName(RandomizerCheck rc);
 std::string GetCheckExtraInfoText(RandomizerCheck rc);
 std::string GetCheckLogicString(RandomizerCheck rc);
+enum class CheckAgeRequirement { Any, ChildOnly, AdultOnly };
+CheckAgeRequirement GetCheckAgeRequirement(RandomizerCheck rc);
+bool IsCheckAvailableButWrongAge(RandomizerCheck rc);
 Color_RGBA8 GetLegacyCheckExtraColor(RandomizerCheck rc);
 std::string BuildCanonicalAliasKey(const std::string& input);
 bool LoadJsonWithComments(const std::filesystem::path& filePath, json& outJson, std::string& outError);
@@ -311,6 +314,7 @@ constexpr const char* CHECK_TRACKER_MAPS_JSON = "maps.json";
 constexpr const char* CHECK_TRACKER_LOCATIONS_DIR = "areas";
 constexpr ImU32 CHECK_TRACKER_MAP_COLOR_DONE = IM_COL32(130, 130, 130, 255);
 constexpr ImU32 CHECK_TRACKER_MAP_COLOR_AVAILABLE = IM_COL32(55, 185, 85, 255);
+constexpr ImU32 CHECK_TRACKER_MAP_COLOR_AGE_MISMATCH = IM_COL32(235, 205, 70, 255);
 constexpr ImU32 CHECK_TRACKER_MAP_COLOR_UNAVAILABLE = IM_COL32(200, 65, 65, 255);
 constexpr ImU32 CHECK_TRACKER_MAP_COLOR_BORDER = IM_COL32(255, 255, 255, 255);
 
@@ -407,25 +411,8 @@ std::string TrimCopy(const std::string& value) {
     return value.substr(start, end - start + 1);
 }
 
-std::string StripHintSuffix(const std::string& value) {
-    std::string trimmed = TrimCopy(value);
-    const std::string hintSuffix = " - hint";
-    if (trimmed.length() >= hintSuffix.length() &&
-        trimmed.rfind(hintSuffix) == (trimmed.length() - hintSuffix.length())) {
-        trimmed.erase(trimmed.length() - hintSuffix.length());
-    }
-    return trimmed;
-}
-
-bool HasHintSuffix(const std::string& value) {
-    std::string trimmed = TrimCopy(value);
-    const std::string hintSuffix = " - hint";
-    return trimmed.length() >= hintSuffix.length() &&
-           trimmed.rfind(hintSuffix) == (trimmed.length() - hintSuffix.length());
-}
-
 std::string NormalizeMapNameForMapTracker(const std::string& rawMapName) {
-    std::string normalizedName = TrimCopy(StripHintSuffix(rawMapName));
+    std::string normalizedName = TrimCopy(rawMapName);
     std::string normalizedKey;
     normalizedKey.reserve(normalizedName.size());
     bool previousWasUnderscore = false;
@@ -444,14 +431,6 @@ std::string NormalizeMapNameForMapTracker(const std::string& rawMapName) {
     }
     while (!normalizedKey.empty() && normalizedKey.back() == '_') {
         normalizedKey.pop_back();
-    }
-    if (normalizedKey.rfind("mq_", 0) == 0 || normalizedKey == "mq") {
-        size_t splitPos = normalizedName.find_first_of(" _-");
-        if (splitPos != std::string::npos) {
-            normalizedName = TrimCopy(normalizedName.substr(splitPos + 1));
-        } else {
-            normalizedName.clear();
-        }
     }
     return normalizedName;
 }
@@ -978,7 +957,7 @@ std::vector<MapPlacement> ExtractPlacementsFromNode(const json& node, const std:
         }
 
         MapPlacement placement;
-        placement.mapName = StripHintSuffix(mapLoc["map"].get<std::string>());
+        placement.mapName = TrimCopy(mapLoc["map"].get<std::string>());
         if (placement.mapName.empty()) {
             warnings.push_back({ "Invalid map location in " + sourceFile, "A map_locations entry has an empty map name." });
             continue;
@@ -1012,11 +991,6 @@ std::vector<std::string> BuildMapImageLookupKeys(const std::string& mapName) {
     if (!normalized.empty()) {
         keys.push_back(normalized);
     }
-
-    if (normalized.rfind("mq_", 0) == 0) {
-        keys.push_back(normalized.substr(3));
-    }
-
     if (normalized == "colossus") {
         keys.push_back("desert_colossus");
     } else if (normalized == "desert_colossus") {
@@ -1036,21 +1010,6 @@ std::vector<std::string> BuildMapImageLookupKeys(const std::string& mapName) {
     return keys;
 }
 
-bool StringContainsMq(const std::string& value) {
-    std::string normalized = NormalizeForMatching(value);
-    return normalized.find("mq") != std::string::npos;
-}
-
-bool StringContainsHintToken(const std::string& value) {
-    std::vector<std::string> tokens = TokenizeForMatching(value);
-    for (const auto& token : tokens) {
-        if (token == "hint" || token == "hints" || token == "gossip") {
-            return true;
-        }
-    }
-    return false;
-}
-
 std::vector<CheckDescriptor> BuildVisibleCheckDescriptors() {
     std::vector<CheckDescriptor> descriptors;
     std::unordered_set<RandomizerCheck> seenChecks;
@@ -1067,21 +1026,6 @@ std::vector<CheckDescriptor> BuildVisibleCheckDescriptors() {
             descriptor.check = rc;
             descriptor.area = location->GetArea();
             descriptor.checkDisplayName = GetCheckDisplayName(rc);
-
-            bool isHintCheckType =
-                location->GetRCType() == RCTYPE_GOSSIP_STONE || location->GetRCType() == RCTYPE_STATIC_HINT;
-            bool isHintNamedCheck = StringContainsHintToken(location->GetShortName()) ||
-                                    StringContainsHintToken(location->GetName()) ||
-                                    StringContainsHintToken(descriptor.checkDisplayName);
-            if (isHintCheckType || isHintNamedCheck) {
-                continue;
-            }
-
-            if (location->GetQuest() == RCQUEST_MQ || StringContainsMq(location->GetShortName()) ||
-                StringContainsMq(location->GetName()) || StringContainsMq(descriptor.checkDisplayName)) {
-                continue;
-            }
-
             descriptors.push_back(std::move(descriptor));
         }
     }
@@ -1118,6 +1062,34 @@ std::string ResolveMapImagePath(const std::string& mapName,
         }
     }
     return "";
+}
+
+static CheckAgeRequirement GetCheckAgeRequirementFromLogicString(const std::string& logicString) {
+    bool requiresAdult = logicString.find("IsAdult") != std::string::npos;
+    bool requiresChild = logicString.find("IsChild") != std::string::npos;
+
+    if (requiresAdult && !requiresChild) {
+        return CheckAgeRequirement::AdultOnly;
+    }
+    if (requiresChild && !requiresAdult) {
+        return CheckAgeRequirement::ChildOnly;
+    }
+    return CheckAgeRequirement::Any;
+}
+
+CheckAgeRequirement GetCheckAgeRequirement(RandomizerCheck rc) {
+    return GetCheckAgeRequirementFromLogicString(GetCheckLogicString(rc));
+}
+
+bool IsCheckAvailableButWrongAge(RandomizerCheck rc) {
+    switch (GetCheckAgeRequirement(rc)) {
+        case CheckAgeRequirement::AdultOnly:
+            return !LINK_IS_ADULT;
+        case CheckAgeRequirement::ChildOnly:
+            return LINK_IS_ADULT;
+        default:
+            return false;
+    }
 }
 
 std::vector<std::string> BuildPreferredMapNamesForArea(RandomizerCheckArea area) {
@@ -1202,12 +1174,26 @@ std::optional<std::string> ResolvePreferredMapTabNameForArea(RandomizerCheckArea
 }
 
 void UpdateRequestedMapTabFromCurrentArea(bool force) {
-    if (!force && currentArea == mapTrackerState.lastFocusedArea) {
+    RandomizerCheckArea focusArea = currentArea;
+
+    // Keep auto-focus robust even if transition hooks are delayed/missed for a frame.
+    if (gPlayState != nullptr) {
+        RandomizerCheckArea liveArea = GetCheckArea();
+        if (liveArea != RCAREA_INVALID) {
+            if (liveArea != currentArea) {
+                previousArea = currentArea;
+                currentArea = liveArea;
+            }
+            focusArea = liveArea;
+        }
+    }
+
+    if (!force && focusArea == mapTrackerState.lastFocusedArea) {
         return;
     }
-    mapTrackerState.lastFocusedArea = currentArea;
+    mapTrackerState.lastFocusedArea = focusArea;
 
-    auto preferredTabName = ResolvePreferredMapTabNameForArea(currentArea);
+    auto preferredTabName = ResolvePreferredMapTabNameForArea(focusArea);
     if (preferredTabName.has_value()) {
         mapTrackerState.requestedTabName = *preferredTabName;
     }
@@ -1223,18 +1209,6 @@ std::unordered_map<std::string, RandomizerCheck> BuildGameCheckLookupBySohId(std
         if (location.GetRandomizerCheck() != check) {
             continue;
         }
-
-        bool isHintCheckType = location.GetRCType() == RCTYPE_GOSSIP_STONE || location.GetRCType() == RCTYPE_STATIC_HINT;
-        bool isHintNamedCheck = StringContainsHintToken(location.GetShortName()) || StringContainsHintToken(location.GetName());
-        if (isHintCheckType || isHintNamedCheck) {
-            continue;
-        }
-
-        if (location.GetQuest() == RCQUEST_MQ || StringContainsMq(location.GetShortName()) ||
-            StringContainsMq(location.GetName())) {
-            continue;
-        }
-
         std::string normalizedTag = NormalizeForMatching(GetGameCheckTag(check));
         if (normalizedTag.empty()) {
             continue;
@@ -1365,7 +1339,7 @@ std::vector<MapMarker> ParseMapMarkersFromPackAreas(
                 unresolvedLinks.push_back(
                     { "Unmapped soh_id: " + normalizedSohId,
                       "Check \"" + checkName + "\" in " + areaFile.displayName +
-                          " has a soh_id that was not found in non-MQ/non-hint in-game checks." });
+                          " has a soh_id that was not found in in-game checks." });
                 continue;
             }
 
@@ -1783,20 +1757,12 @@ MapTabVisualSummary BuildMapTabVisualSummary(const MapTabData& tab, bool mqSpoil
     MapTabVisualSummary summary;
 
     for (const auto& marker : tab.markers) {
-        if (!IsVisibleInCheckTracker(marker.check)) {
-            continue;
-        }
-
-        if (IsCheckHidden(marker.check)) {
+        if (!IsVisibleInCheckTracker(marker.check) || IsCheckHidden(marker.check)) {
             continue;
         }
 
         auto* location = Rando::StaticData::GetLocation(marker.check);
-        if (location == nullptr) {
-            continue;
-        }
-
-        if (!(IsAreaSpoiled(location->GetArea()) || mqSpoilers)) {
+        if (location == nullptr || !(IsAreaSpoiled(location->GetArea()) || mqSpoilers)) {
             continue;
         }
 
@@ -1806,13 +1772,14 @@ MapTabVisualSummary BuildMapTabVisualSummary(const MapTabData& tab, bool mqSpoil
         }
 
         summary.hasVisibleChecks = true;
+
         bool isDone = IsCheckDoneForMapDisplay(marker.check);
+        bool isAvailable = itemLocation->IsAvailable();
+
         if (isDone) {
             summary.hasDoneChecks = true;
-            continue;
-        }
-
-        if (itemLocation->IsAvailable()) {
+        } else if (isAvailable) {
+            // Age-mismatch checks are still logically available, they are rendered yellow in-map.
             summary.hasAvailableChecks = true;
         } else {
             summary.hasUnavailableChecks = true;
@@ -1822,77 +1789,28 @@ MapTabVisualSummary BuildMapTabVisualSummary(const MapTabData& tab, bool mqSpoil
     return summary;
 }
 
-ImVec4 ScaleMapTabColor(const ImVec4& color, float rgbScale, float alphaScale = 1.0f) {
-    return ImVec4(std::clamp(color.x * rgbScale, 0.0f, 1.0f), std::clamp(color.y * rgbScale, 0.0f, 1.0f),
-                  std::clamp(color.z * rgbScale, 0.0f, 1.0f), std::clamp(color.w * alphaScale, 0.0f, 1.0f));
-}
-
 ImVec4 GetMapTabBaseColor(const MapTabVisualSummary& summary) {
+    if (!summary.hasVisibleChecks) {
+        return ImVec4(0.38f, 0.38f, 0.38f, 0.95f);
+    }
     if (summary.hasAvailableChecks) {
         return ImGui::ColorConvertU32ToFloat4(CHECK_TRACKER_MAP_COLOR_AVAILABLE);
     }
-
-    bool allVisibleChecksAreDone = summary.hasVisibleChecks && summary.hasDoneChecks && !summary.hasUnavailableChecks;
-    if (allVisibleChecksAreDone || !summary.hasVisibleChecks) {
+    if (summary.hasUnavailableChecks) {
+        return ImGui::ColorConvertU32ToFloat4(CHECK_TRACKER_MAP_COLOR_UNAVAILABLE);
+    }
+    if (summary.hasDoneChecks) {
         return ImGui::ColorConvertU32ToFloat4(CHECK_TRACKER_MAP_COLOR_DONE);
     }
-
-    return ImGui::ColorConvertU32ToFloat4(CHECK_TRACKER_MAP_COLOR_UNAVAILABLE);
+    return ImVec4(0.38f, 0.38f, 0.38f, 0.95f);
 }
 
-void DrawMapIssueList(const std::vector<MapIssueEntry>& issues, const char* emptyText) {
-    if (issues.empty()) {
-        ImGui::TextUnformatted(emptyText);
-        return;
-    }
-
-    for (size_t issueIndex = 0; issueIndex < issues.size(); issueIndex++) {
-        const auto& issue = issues[issueIndex];
-        std::string nodeLabel = fmt::format("{}##Issue_{}", issue.summary, issueIndex);
-        ImGuiTreeNodeFlags nodeFlags = ImGuiTreeNodeFlags_SpanAvailWidth;
-        if (issue.details.empty()) {
-            nodeFlags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
-        }
-
-        bool open = ImGui::TreeNodeEx(nodeLabel.c_str(), nodeFlags);
-        if (!issue.details.empty() && open) {
-            ImGui::TextWrapped("%s", issue.details.c_str());
-            ImGui::TreePop();
-        }
-    }
-}
-
-void DrawMapUnassignedCheckTagsSection() {
-    std::string unassignedHeaderLabel =
-        fmt::format("Unassigned In-Game Check Tags ({})", mapTrackerState.unassignedCheckIds.size());
-    if (ImGui::CollapsingHeader(unassignedHeaderLabel.c_str())) {
-        if (mapTrackerState.unassignedCheckIds.empty()) {
-            ImGui::TextUnformatted("All visible checks were assigned.");
-        } else {
-            for (RandomizerCheck unassignedCheck : mapTrackerState.unassignedCheckIds) {
-                std::string gameTag = GetGameCheckTag(unassignedCheck);
-                ImGui::Text("%s", gameTag.c_str());
-            }
-        }
-    }
+ImVec4 ScaleMapTabColor(const ImVec4& color, float scale) {
+    return ImVec4(std::clamp(color.x * scale, 0.0f, 1.0f), std::clamp(color.y * scale, 0.0f, 1.0f),
+                  std::clamp(color.z * scale, 0.0f, 1.0f), color.w);
 }
 
 void DrawMapTrackerIssuesTab() {
-    if (showMapDebugDetails) {
-        std::string activeAssetsPath =
-            mapTrackerState.assetsRoot.empty() ? GetMapTrackerAssetsRootAbsoluteString() : mapTrackerState.assetsRoot.string();
-        ImGui::TextWrapped("Assets: %s", activeAssetsPath.c_str());
-        ImGui::Separator();
-    }
-
-    if (!mapTrackerState.fatalErrors.empty()) {
-        ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "Fatal setup errors:");
-        for (const auto& error : mapTrackerState.fatalErrors) {
-            ImGui::TextWrapped("- %s", error.c_str());
-        }
-        return;
-    }
-
     auto drawIssueCategory = [](const char* categoryName, const std::vector<MapIssueEntry>& issues, const char* emptyText,
                                 const ImVec4& color) {
         std::string headerLabel = fmt::format("{} ({})", categoryName, issues.size());
@@ -1900,8 +1818,26 @@ void DrawMapTrackerIssuesTab() {
         bool open = ImGui::CollapsingHeader(headerLabel.c_str());
         ImGui::PopStyleColor();
 
-        if (open) {
-            DrawMapIssueList(issues, emptyText);
+        if (!open) {
+            return;
+        }
+
+        if (issues.empty()) {
+            ImGui::TextDisabled("%s", emptyText);
+            return;
+        }
+
+        for (size_t issueIndex = 0; issueIndex < issues.size(); issueIndex++) {
+            const auto& issue = issues[issueIndex];
+            ImGui::PushID(static_cast<int>(issueIndex));
+            ImGui::TextUnformatted(issue.summary.c_str());
+            if (!issue.details.empty()) {
+                ImGui::TextDisabled("%s", issue.details.c_str());
+            }
+            if (issueIndex + 1 < issues.size()) {
+                ImGui::Separator();
+            }
+            ImGui::PopID();
         }
     };
 
@@ -1909,7 +1845,18 @@ void DrawMapTrackerIssuesTab() {
     drawIssueCategory("Unlinked checks", mapTrackerState.unresolvedLinks, "No unlinked checks.",
                       ImVec4(1.0f, 0.5f, 0.5f, 1.0f));
 
-    DrawMapUnassignedCheckTagsSection();
+    std::string unassignedHeader = fmt::format("Unassigned in-game tags ({})", mapTrackerState.unassignedCheckIds.size());
+    if (ImGui::CollapsingHeader(unassignedHeader.c_str())) {
+        if (mapTrackerState.unassignedCheckIds.empty()) {
+            ImGui::TextDisabled("No unassigned checks.");
+        } else {
+            for (RandomizerCheck rc : mapTrackerState.unassignedCheckIds) {
+                ImGui::TextUnformatted(GetCheckDisplayName(rc).c_str());
+                ImGui::SameLine();
+                ImGui::TextDisabled("(%s)", GetGameCheckTag(rc).c_str());
+            }
+        }
+    }
 
     if (mapTrackerState.warnings.empty() && mapTrackerState.unresolvedLinks.empty() &&
         mapTrackerState.unassignedCheckIds.empty()) {
@@ -2008,6 +1955,7 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
         const MapMarker* marker = nullptr;
         bool isDone = false;
         bool isAvailable = false;
+        bool isAgeMismatch = false;
         ImU32 fillColor = CHECK_TRACKER_MAP_COLOR_UNAVAILABLE;
     };
 
@@ -2075,10 +2023,13 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
         auto* itemLocation = OTRGlobals::Instance->gRandoContext->GetItemLocation(marker.check);
         bool isDone = IsCheckDoneForMapDisplay(marker.check);
         bool isAvailable = itemLocation->IsAvailable();
+        bool isAgeMismatch = isAvailable && !isDone && IsCheckAvailableButWrongAge(marker.check);
 
         ImU32 fillColor = CHECK_TRACKER_MAP_COLOR_UNAVAILABLE;
         if (isDone) {
             fillColor = CHECK_TRACKER_MAP_COLOR_DONE;
+        } else if (isAgeMismatch) {
+            fillColor = CHECK_TRACKER_MAP_COLOR_AGE_MISMATCH;
         } else if (isAvailable) {
             fillColor = CHECK_TRACKER_MAP_COLOR_AVAILABLE;
         }
@@ -2087,15 +2038,15 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
         if (!renderableMarkersByStackKey.contains(stackKey)) {
             stackOrder.push_back(stackKey);
         }
-        renderableMarkersByStackKey[stackKey].push_back({ &marker, isDone, isAvailable, fillColor });
+        renderableMarkersByStackKey[stackKey].push_back({ &marker, isDone, isAvailable, isAgeMismatch, fillColor });
     }
 
     auto drawSingleMarkerTooltip = [&](const RenderableMarker& renderableMarker) {
         std::string logicString = showLogicTooltip ? GetCheckLogicString(renderableMarker.marker->check) : "";
         if (!logicString.empty()) {
             ImGui::SetNextWindowSizeConstraints(ImVec2(560.0f, 0.0f),
-                                              ImVec2(std::numeric_limits<float>::max(),
-                                                     std::numeric_limits<float>::max()));
+                                                ImVec2(std::numeric_limits<float>::max(),
+                                                       std::numeric_limits<float>::max()));
         }
 
         ImGui::BeginTooltip();
@@ -2158,11 +2109,14 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
         ImGui::PopID();
 
         bool hasAvailable = false;
+        bool hasAgeMismatch = false;
         bool hasUnavailable = false;
         bool hasDone = false;
         for (const auto& renderableMarker : renderableMarkers) {
             if (renderableMarker.isDone) {
                 hasDone = true;
+            } else if (renderableMarker.isAgeMismatch) {
+                hasAgeMismatch = true;
             } else if (renderableMarker.isAvailable) {
                 hasAvailable = true;
             } else {
@@ -2173,6 +2127,9 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
         std::vector<ImU32> segmentColors;
         if (hasAvailable) {
             segmentColors.push_back(CHECK_TRACKER_MAP_COLOR_AVAILABLE);
+        }
+        if (hasAgeMismatch) {
+            segmentColors.push_back(CHECK_TRACKER_MAP_COLOR_AGE_MISMATCH);
         }
         if (hasUnavailable) {
             segmentColors.push_back(CHECK_TRACKER_MAP_COLOR_UNAVAILABLE);
@@ -2318,16 +2275,18 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
                     ImGui::BeginDisabled();
                 }
 
-                bool statusPressed = ImGui::ColorButton("##status", ImGui::ColorConvertU32ToFloat4(renderableMarker.fillColor),
-                                                        ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop,
-                                                        ImVec2(popupRowHeight, popupRowHeight));
+                ImVec2 statusSize(std::max(10.0f, popupRowHeight - 2.0f), std::max(10.0f, popupRowHeight - 2.0f));
+                bool statusPressed =
+                    ImGui::ColorButton("##Status", ImGui::ColorConvertU32ToFloat4(renderableMarker.fillColor),
+                                       ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop, statusSize);
                 bool statusHovered = ImGui::IsItemHovered();
-                ImGui::SameLine();
+                ImGui::SameLine(0.0f, 6.0f);
 
-                bool labelPressed = ImGui::Selectable(checkSelectableLabel.c_str(), false, ImGuiSelectableFlags_AllowDoubleClick,
-                                                      ImVec2(0.0f, popupRowHeight));
-                bool labelHovered = ImGui::IsItemHovered();
-                if ((statusPressed || labelPressed) && canToggle) {
+                bool selected = false;
+                bool rowPressed = ImGui::Selectable(checkSelectableLabel.c_str(), &selected,
+                                                    ImGuiSelectableFlags_AllowDoubleClick, ImVec2(0.0f, popupRowHeight));
+                bool rowHovered = ImGui::IsItemHovered();
+                if ((statusPressed || rowPressed) && canToggle) {
                     ToggleSkippedStateForCheck(marker.check);
                     clusterPopupState.keepAliveUntil = std::max(clusterPopupState.keepAliveUntil, ImGui::GetTime() + 0.16);
                 }
@@ -2336,16 +2295,12 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
                     ImGui::EndDisabled();
                 }
 
-                if (statusHovered || labelHovered) {
-                    std::string logicString = showLogicTooltip ? GetCheckLogicString(marker.check) : "";
-                    if (!logicString.empty()) {
-                        ImGui::SetNextWindowSizeConstraints(ImVec2(560.0f, 0.0f),
-                                                          ImVec2(std::numeric_limits<float>::max(),
-                                                                 std::numeric_limits<float>::max()));
-                    }
+                if (statusHovered || rowHovered) {
+                    bool hasTooltipDetails = false;
                     ImGui::BeginTooltip();
                     ImGui::TextUnformatted(checkName.c_str());
-                    bool hasTooltipDetails = false;
+
+                    std::string logicString = showLogicTooltip ? GetCheckLogicString(marker.check) : "";
                     if (!logicString.empty()) {
                         ImGui::Separator();
                         ImGui::TextWrapped("%s", logicString.c_str());
@@ -2385,7 +2340,6 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
         clusterPopupState.open = false;
     }
 }
-
 void DrawMapTrackerContent() {
     if (!mapTrackerState.attemptedLoad) {
         SPDLOG_INFO("[CheckTrackerMapDiag] First map render requested load.");
@@ -2480,7 +2434,11 @@ void DrawMapTrackerContent() {
                         ? ImGuiTabItemFlags_SetSelected
                         : ImGuiTabItemFlags_None;
                 if (ImGui::BeginTabItem(debugNoGroupName, nullptr, groupTabFlags)) {
-                    mapTrackerState.selectedGroupName = debugNoGroupName;
+                    bool useThisTabSelection = !requestGroupTabSelection || groupSelectionForUi == debugNoGroupName ||
+                                               ImGui::IsItemActivated();
+                    if (useThisTabSelection) {
+                        mapTrackerState.selectedGroupName = debugNoGroupName;
+                    }
                     ImGui::EndTabItem();
                 }
             }
@@ -2489,7 +2447,11 @@ void DrawMapTrackerContent() {
                     requestGroupTabSelection && groupSelectionForUi == groupName ? ImGuiTabItemFlags_SetSelected
                                                                                                : ImGuiTabItemFlags_None;
                 if (ImGui::BeginTabItem(groupName.c_str(), nullptr, groupTabFlags)) {
-                    mapTrackerState.selectedGroupName = groupName;
+                    bool useThisTabSelection = !requestGroupTabSelection || groupSelectionForUi == groupName ||
+                                               ImGui::IsItemActivated();
+                    if (useThisTabSelection) {
+                        mapTrackerState.selectedGroupName = groupName;
+                    }
                     ImGui::EndTabItem();
                 }
             }
@@ -2499,7 +2461,11 @@ void DrawMapTrackerContent() {
                         ? ImGuiTabItemFlags_SetSelected
                         : ImGuiTabItemFlags_None;
                 if (ImGui::BeginTabItem(issuesGroupName, nullptr, issuesTabFlags)) {
-                    mapTrackerState.selectedGroupName = issuesGroupName;
+                    bool useThisTabSelection = !requestGroupTabSelection || groupSelectionForUi == issuesGroupName ||
+                                               ImGui::IsItemActivated();
+                    if (useThisTabSelection) {
+                        mapTrackerState.selectedGroupName = issuesGroupName;
+                    }
                     ImGui::EndTabItem();
                 }
             }
@@ -4892,6 +4858,14 @@ void RegisterCheckTrackerWidgets() {
 
 static RegisterMenuInitFunc menuInitFunc(RegisterCheckTrackerWidgets);
 } // namespace CheckTracker
+
+
+
+
+
+
+
+
 
 
 
