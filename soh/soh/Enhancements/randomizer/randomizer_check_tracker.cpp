@@ -339,7 +339,7 @@ struct MapMarker {
 
 struct MapTabData {
     std::string mapName;
-    std::string groupName = "Ungrouped";
+    std::string groupName;
     std::string imageRelativePath;
     std::string imageResourcePath;
     std::filesystem::path imageAbsolutePath;
@@ -1120,123 +1120,98 @@ std::string ResolveMapImagePath(const std::string& mapName,
     return "";
 }
 
+std::vector<std::string> BuildPreferredMapNamesForArea(RandomizerCheckArea area) {
+    switch (area) {
+        case RCAREA_KOKIRI_FOREST:
+            return { "Kokiri Forest", "KF" };
+        case RCAREA_LOST_WOODS:
+            return { "Lost Woods", "LW" };
+        case RCAREA_SACRED_FOREST_MEADOW:
+            return { "SFM", "Sacred Forest Meadow" };
+        case RCAREA_HYRULE_FIELD:
+            return { "Hyrule Fields", "HF", "Overworld" };
+        case RCAREA_LAKE_HYLIA:
+            return { "Lake Hylia", "LH", "Overworld" };
+        case RCAREA_GERUDO_VALLEY:
+            return { "Gerudo Valley", "GV", "Overworld" };
+        case RCAREA_GERUDO_FORTRESS:
+            return { "Gerudo Fortress", "Hideout", "GF", "Overworld" };
+        case RCAREA_WASTELAND:
+            return { "Wasteland", "Overworld" };
+        case RCAREA_DESERT_COLOSSUS:
+            return { "Colossus", "Desert Colossus", "Overworld" };
+        case RCAREA_MARKET:
+            return { "Market", "ToT", "Temple of Time", "Overworld" };
+        case RCAREA_HYRULE_CASTLE:
+            return { "Hyrule Castle", "HC", "Overworld" };
+        case RCAREA_KAKARIKO_VILLAGE:
+            return { "Kakariko Village", "Kak", "Overworld" };
+        case RCAREA_GRAVEYARD:
+            return { "Graveyard", "Overworld" };
+        case RCAREA_DEATH_MOUNTAIN_TRAIL:
+            return { "DMT", "Death Mountain Trail", "Overworld" };
+        case RCAREA_GORON_CITY:
+            return { "Goron City", "GC", "Overworld" };
+        case RCAREA_DEATH_MOUNTAIN_CRATER:
+            return { "DMC", "Death Mountain Crater", "Overworld" };
+        case RCAREA_ZORAS_RIVER:
+            return { "Zora River", "ZR", "Overworld" };
+        case RCAREA_ZORAS_DOMAIN:
+            return { "Zoras Domain", "ZD", "Overworld" };
+        case RCAREA_ZORAS_FOUNTAIN:
+            return { "Zoras Fountain", "ZF", "Overworld" };
+        case RCAREA_LON_LON_RANCH:
+            return { "Lon Lon Ranch", "LLR", "Overworld" };
+        case RCAREA_DEKU_TREE:
+            return { "Deku Tree" };
+        case RCAREA_DODONGOS_CAVERN:
+            return { "Dodongos Cavern" };
+        case RCAREA_JABU_JABUS_BELLY:
+            return { "Jabu Jabus Belly" };
+        case RCAREA_FOREST_TEMPLE:
+            return { "Forest Temple" };
+        case RCAREA_FIRE_TEMPLE:
+            return { "Fire Temple" };
+        case RCAREA_WATER_TEMPLE:
+            return { "Water Temple" };
+        case RCAREA_SPIRIT_TEMPLE:
+            return { "Spirit Temple" };
+        case RCAREA_SHADOW_TEMPLE:
+            return { "Shadow Temple" };
+        case RCAREA_BOTTOM_OF_THE_WELL:
+            return { "Bottom of the Well" };
+        case RCAREA_ICE_CAVERN:
+            return { "Ice Cavern" };
+        case RCAREA_GERUDO_TRAINING_GROUND:
+            return { "Gerudo Training Ground" };
+        case RCAREA_GANONS_CASTLE:
+            return { "Ganons Castle", "Ganons Tower" };
+        default:
+            return {};
+    }
+}
+
+std::optional<std::string> ResolvePreferredMapTabNameForArea(RandomizerCheckArea area) {
+    for (const auto& preferredName : BuildPreferredMapNamesForArea(area)) {
+        std::string normalized = NormalizeForMatching(preferredName);
+        if (mapTrackerState.tabIndexByName.contains(normalized)) {
+            return normalized;
+        }
+    }
+    return std::nullopt;
+}
+
 void UpdateRequestedMapTabFromCurrentArea(bool force) {
     if (!force && currentArea == mapTrackerState.lastFocusedArea) {
         return;
     }
     mapTrackerState.lastFocusedArea = currentArea;
 
-    std::vector<std::string> preferredNames;
-    switch (currentArea) {
-        case RCAREA_KOKIRI_FOREST:
-            preferredNames = { "Kokiri Forest", "KF" };
-            break;
-        case RCAREA_LOST_WOODS:
-            preferredNames = { "Lost Woods", "LW" };
-            break;
-        case RCAREA_SACRED_FOREST_MEADOW:
-            preferredNames = { "SFM", "Sacred Forest Meadow" };
-            break;
-        case RCAREA_HYRULE_FIELD:
-            preferredNames = { "Hyrule Fields", "HF", "Overworld" };
-            break;
-        case RCAREA_LAKE_HYLIA:
-            preferredNames = { "Lake Hylia", "LH", "Overworld" };
-            break;
-        case RCAREA_GERUDO_VALLEY:
-            preferredNames = { "Gerudo Valley", "GV", "Overworld" };
-            break;
-        case RCAREA_GERUDO_FORTRESS:
-            preferredNames = { "Gerudo Fortress", "Hideout", "GF", "Overworld" };
-            break;
-        case RCAREA_WASTELAND:
-            preferredNames = { "Wasteland", "Overworld" };
-            break;
-        case RCAREA_DESERT_COLOSSUS:
-            preferredNames = { "Colossus", "Desert Colossus", "Overworld" };
-            break;
-        case RCAREA_MARKET:
-            preferredNames = { "Market", "ToT", "Temple of Time", "Overworld" };
-            break;
-        case RCAREA_HYRULE_CASTLE:
-            preferredNames = { "Hyrule Castle", "HC", "Overworld" };
-            break;
-        case RCAREA_KAKARIKO_VILLAGE:
-            preferredNames = { "Kakariko Village", "Kak", "Overworld" };
-            break;
-        case RCAREA_GRAVEYARD:
-            preferredNames = { "Graveyard", "Overworld" };
-            break;
-        case RCAREA_DEATH_MOUNTAIN_TRAIL:
-            preferredNames = { "DMT", "Death Mountain Trail", "Overworld" };
-            break;
-        case RCAREA_GORON_CITY:
-            preferredNames = { "Goron City", "GC", "Overworld" };
-            break;
-        case RCAREA_DEATH_MOUNTAIN_CRATER:
-            preferredNames = { "DMC", "Death Mountain Crater", "Overworld" };
-            break;
-        case RCAREA_ZORAS_RIVER:
-            preferredNames = { "Zora River", "ZR", "Overworld" };
-            break;
-        case RCAREA_ZORAS_DOMAIN:
-            preferredNames = { "Zoras Domain", "ZD", "Overworld" };
-            break;
-        case RCAREA_ZORAS_FOUNTAIN:
-            preferredNames = { "Zoras Fountain", "ZF", "Overworld" };
-            break;
-        case RCAREA_LON_LON_RANCH:
-            preferredNames = { "Lon Lon Ranch", "LLR", "Overworld" };
-            break;
-        case RCAREA_DEKU_TREE:
-            preferredNames = { "Deku Tree" };
-            break;
-        case RCAREA_DODONGOS_CAVERN:
-            preferredNames = { "Dodongos Cavern" };
-            break;
-        case RCAREA_JABU_JABUS_BELLY:
-            preferredNames = { "Jabu Jabus Belly" };
-            break;
-        case RCAREA_FOREST_TEMPLE:
-            preferredNames = { "Forest Temple" };
-            break;
-        case RCAREA_FIRE_TEMPLE:
-            preferredNames = { "Fire Temple" };
-            break;
-        case RCAREA_WATER_TEMPLE:
-            preferredNames = { "Water Temple" };
-            break;
-        case RCAREA_SPIRIT_TEMPLE:
-            preferredNames = { "Spirit Temple" };
-            break;
-        case RCAREA_SHADOW_TEMPLE:
-            preferredNames = { "Shadow Temple" };
-            break;
-        case RCAREA_BOTTOM_OF_THE_WELL:
-            preferredNames = { "Bottom of the Well" };
-            break;
-        case RCAREA_ICE_CAVERN:
-            preferredNames = { "Ice Cavern" };
-            break;
-        case RCAREA_GERUDO_TRAINING_GROUND:
-            preferredNames = { "Gerudo Training Ground" };
-            break;
-        case RCAREA_GANONS_CASTLE:
-            preferredNames = { "Ganons Castle", "Ganons Tower" };
-            break;
-        default:
-            break;
-    }
-
-    for (const auto& preferredName : preferredNames) {
-        std::string normalized = NormalizeForMatching(preferredName);
-        if (mapTrackerState.tabIndexByName.contains(normalized)) {
-            mapTrackerState.requestedTabName = normalized;
-            return;
-        }
+    auto preferredTabName = ResolvePreferredMapTabNameForArea(currentArea);
+    if (preferredTabName.has_value()) {
+        mapTrackerState.requestedTabName = *preferredTabName;
     }
 }
-
 std::unordered_map<std::string, RandomizerCheck> BuildGameCheckLookupBySohId(std::vector<MapIssueEntry>& warnings) {
     std::unordered_map<std::string, RandomizerCheck> checksBySohId;
     checksBySohId.reserve(RC_MAX);
@@ -1503,6 +1478,7 @@ void LoadMapTrackerData() {
     std::unordered_map<std::string, std::string> mapImagePathsByName;
     std::unordered_map<std::string, std::string> mapGroupByName;
     std::vector<std::string> orderedMapNames;
+    bool hasNamedGroupsInMetadata = false;
     if (!mapsJson.is_array()) {
         mapTrackerState.fatalErrors.push_back("Expected an array in maps.json.");
         SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: maps metadata root is not an array. resource='{}' disk='{}'",
@@ -1526,7 +1502,7 @@ void LoadMapTrackerData() {
             orderedMapNames.push_back(mapName);
         }
 
-        std::string mapGroup = "Ungrouped";
+        std::string mapGroup;
         if (mapEntry.contains("group") && mapEntry["group"].is_string()) {
             mapGroup = TrimCopy(mapEntry["group"].get<std::string>());
         } else if (mapEntry.contains("Group") && mapEntry["Group"].is_string()) {
@@ -1535,8 +1511,8 @@ void LoadMapTrackerData() {
                    mapEntry["groups"][0].is_string()) {
             mapGroup = TrimCopy(mapEntry["groups"][0].get<std::string>());
         }
-        if (mapGroup.empty()) {
-            mapGroup = "Ungrouped";
+        if (!mapGroup.empty()) {
+            hasNamedGroupsInMetadata = true;
         }
         if (!mapGroupByName.contains(normalizedMapName)) {
             mapGroupByName[normalizedMapName] = mapGroup;
@@ -1623,9 +1599,6 @@ void LoadMapTrackerData() {
         std::string normalizedMapName = NormalizeForMatching(mapName);
         if (mapGroupByName.contains(normalizedMapName)) {
             tab.groupName = mapGroupByName[normalizedMapName];
-            if (tab.groupName.empty()) {
-                tab.groupName = "Ungrouped";
-            }
         }
 
         std::string resolutionInfo;
@@ -1650,12 +1623,27 @@ void LoadMapTrackerData() {
         mapTrackerState.tabs.push_back(std::move(tab));
     }
 
-    for (size_t tabIndex = 0; tabIndex < mapTrackerState.tabs.size(); tabIndex++) {
-        std::string groupName = TrimCopy(mapTrackerState.tabs[tabIndex].groupName);
-        if (groupName.empty()) {
-            groupName = "Ungrouped";
+    bool hasNamedGroups = hasNamedGroupsInMetadata;
+    for (auto& tab : mapTrackerState.tabs) {
+        tab.groupName = TrimCopy(tab.groupName);
+        if (!tab.groupName.empty()) {
+            hasNamedGroups = true;
         }
-        mapTrackerState.tabs[tabIndex].groupName = groupName;
+    }
+
+    if (hasNamedGroups) {
+        for (auto& tab : mapTrackerState.tabs) {
+            if (tab.groupName.empty()) {
+                tab.groupName = "Others";
+            }
+        }
+    }
+
+    for (size_t tabIndex = 0; tabIndex < mapTrackerState.tabs.size(); tabIndex++) {
+        const std::string groupName = mapTrackerState.tabs[tabIndex].groupName;
+        if (groupName.empty()) {
+            continue;
+        }
         if (!mapTrackerState.tabIndicesByGroup.contains(groupName)) {
             mapTrackerState.mapGroups.push_back(groupName);
         }
@@ -1668,6 +1656,8 @@ void LoadMapTrackerData() {
     }
     if (!mapTrackerState.mapGroups.empty()) {
         mapTrackerState.selectedGroupName = mapTrackerState.mapGroups.front();
+    } else {
+        mapTrackerState.selectedGroupName.clear();
     }
 
     for (const auto& marker : mappedMarkers) {
@@ -2043,6 +2033,14 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
         currentTabIndex = static_cast<int>(tabIndexIt->second);
     }
 
+    std::optional<int> playerFocusTargetTabIndex;
+    if (auto focusTargetTabName = ResolvePreferredMapTabNameForArea(currentArea); focusTargetTabName.has_value()) {
+        auto focusTargetTabIndexIt = mapTrackerState.tabIndexByName.find(*focusTargetTabName);
+        if (focusTargetTabIndexIt != mapTrackerState.tabIndexByName.end()) {
+            playerFocusTargetTabIndex = static_cast<int>(focusTargetTabIndexIt->second);
+        }
+    }
+
     auto shouldRenderMarker = [&](const MapMarker& marker) {
         if (!IsVisibleInCheckTracker(marker.check)) {
             return false;
@@ -2186,39 +2184,84 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
             segmentColors.push_back(CHECK_TRACKER_MAP_COLOR_UNAVAILABLE);
         }
 
-        if (segmentColors.size() == 1) {
-            drawList->AddRectFilled(markerMin, markerMax, segmentColors.front(), 1.0f);
-        } else {
-            float markerWidth = markerMax.x - markerMin.x;
-            for (size_t segmentIndex = 0; segmentIndex < segmentColors.size(); segmentIndex++) {
-                float leftX = markerMin.x + (markerWidth * static_cast<float>(segmentIndex) /
-                                             static_cast<float>(segmentColors.size()));
-                float rightX = markerMin.x + (markerWidth * static_cast<float>(segmentIndex + 1) /
-                                              static_cast<float>(segmentColors.size()));
-                drawList->AddRectFilled(ImVec2(leftX, markerMin.y), ImVec2(rightX, markerMax.y), segmentColors[segmentIndex]);
+        std::optional<int> navigationTargetTabIndex;
+        if (isMultiMarkerCluster && currentTabIndex >= 0) {
+            std::vector<RandomizerCheck> clusterChecks;
+            clusterChecks.reserve(renderableMarkers.size());
+            for (const auto& renderableMarker : renderableMarkers) {
+                clusterChecks.push_back(renderableMarker.marker->check);
             }
+            navigationTargetTabIndex = FindClusterNavigationTargetTabIndex(clusterChecks, currentTabIndex);
         }
 
-        drawList->AddRect(markerMin, markerMax, CHECK_TRACKER_MAP_COLOR_BORDER, 1.0f, 0, 1.5f);
+        bool isPlayerFocusClusterTarget =
+            isMultiMarkerCluster && navigationTargetTabIndex.has_value() && playerFocusTargetTabIndex.has_value() &&
+            (*navigationTargetTabIndex == *playerFocusTargetTabIndex);
 
         if (isMultiMarkerCluster) {
-            if (clicked && currentTabIndex >= 0) {
-                std::vector<RandomizerCheck> clusterChecks;
-                clusterChecks.reserve(renderableMarkers.size());
-                for (const auto& renderableMarker : renderableMarkers) {
-                    clusterChecks.push_back(renderableMarker.marker->check);
-                }
+            float markerRadius = halfSize;
+            if (segmentColors.size() == 1) {
+                drawList->AddCircleFilled(center, markerRadius, segmentColors.front(), 16);
+            } else {
+                float startAngle = -IM_PI * 0.5f;
+                float fullCircle = IM_PI * 2.0f;
+                for (size_t segmentIndex = 0; segmentIndex < segmentColors.size(); segmentIndex++) {
+                    float segmentStart =
+                        startAngle + (fullCircle * static_cast<float>(segmentIndex) / static_cast<float>(segmentColors.size()));
+                    float segmentEnd = startAngle +
+                                       (fullCircle * static_cast<float>(segmentIndex + 1) /
+                                        static_cast<float>(segmentColors.size()));
 
-                auto navigationTargetTabIndex = FindClusterNavigationTargetTabIndex(clusterChecks, currentTabIndex);
-                if (navigationTargetTabIndex.has_value() && *navigationTargetTabIndex >= 0 &&
-                    *navigationTargetTabIndex < static_cast<int>(mapTrackerState.tabs.size())) {
-                    mapTrackerState.selectedTabIndex = *navigationTargetTabIndex;
-                    mapTrackerState.selectedGroupName =
-                        mapTrackerState.tabs[static_cast<size_t>(*navigationTargetTabIndex)].groupName;
-                    mapTrackerState.lastSelectedTabByGroup[mapTrackerState.selectedGroupName] = *navigationTargetTabIndex;
-                    clusterPopupState.open = false;
-                    continue;
+                    drawList->PathClear();
+                    drawList->PathLineTo(center);
+                    drawList->PathArcTo(center, markerRadius, segmentStart, segmentEnd, 12);
+                    drawList->PathLineTo(center);
+                    drawList->PathFillConvex(segmentColors[segmentIndex]);
                 }
+            }
+            drawList->AddCircle(center, markerRadius, CHECK_TRACKER_MAP_COLOR_BORDER, 16, 1.5f);
+            if (isPlayerFocusClusterTarget) {
+                float highlightRadius = markerRadius + std::max(2.0f, markerRadius * 0.22f);
+                drawList->AddCircle(center, highlightRadius, IM_COL32(255, 255, 255, 255), 20, 3.0f);
+
+                float arrowHalfWidth = std::max(3.0f, markerRadius * 0.32f);
+                float arrowHeight = std::max(4.0f, markerRadius * 0.50f);
+                ImVec2 arrowTip(center.x, center.y - highlightRadius - 1.0f);
+                ImVec2 arrowLeft(center.x - arrowHalfWidth, arrowTip.y - arrowHeight);
+                ImVec2 arrowRight(center.x + arrowHalfWidth, arrowTip.y - arrowHeight);
+                drawList->AddTriangleFilled(arrowTip, arrowLeft, arrowRight, IM_COL32(255, 255, 255, 245));
+            }
+        } else {
+            if (segmentColors.size() == 1) {
+                drawList->AddRectFilled(markerMin, markerMax, segmentColors.front(), 1.0f);
+            } else {
+                float markerWidth = markerMax.x - markerMin.x;
+                for (size_t segmentIndex = 0; segmentIndex < segmentColors.size(); segmentIndex++) {
+                    float leftX = markerMin.x + (markerWidth * static_cast<float>(segmentIndex) /
+                                                 static_cast<float>(segmentColors.size()));
+                    float rightX = markerMin.x + (markerWidth * static_cast<float>(segmentIndex + 1) /
+                                                  static_cast<float>(segmentColors.size()));
+                    drawList->AddRectFilled(ImVec2(leftX, markerMin.y), ImVec2(rightX, markerMax.y),
+                                            segmentColors[segmentIndex]);
+                }
+            }
+            drawList->AddRect(markerMin, markerMax, CHECK_TRACKER_MAP_COLOR_BORDER, 1.0f, 0, 1.5f);
+        }
+
+        if (isMultiMarkerCluster) {
+            if (clicked && navigationTargetTabIndex.has_value() && *navigationTargetTabIndex >= 0 &&
+                *navigationTargetTabIndex < static_cast<int>(mapTrackerState.tabs.size())) {
+                int targetTabIndex = *navigationTargetTabIndex;
+                mapTrackerState.selectedTabIndex = targetTabIndex;
+                const MapTabData& targetTab = mapTrackerState.tabs[static_cast<size_t>(targetTabIndex)];
+                mapTrackerState.selectedGroupName = targetTab.groupName;
+                if (!mapTrackerState.selectedGroupName.empty()) {
+                    mapTrackerState.lastSelectedTabByGroup[mapTrackerState.selectedGroupName] = targetTabIndex;
+                }
+                // Force tab bar group selection on next frame so cross-group navigation is visible and stable.
+                mapTrackerState.requestedTabName = NormalizeForMatching(targetTab.mapName);
+                clusterPopupState.open = false;
+                continue;
             }
             if (hovered) {
                 markerHoveredForPopup = true;
@@ -2377,6 +2420,7 @@ void DrawMapTrackerContent() {
     UpdateRequestedMapTabFromCurrentArea(false);
     bool mqSpoilers = CVarGetInteger(CVAR_TRACKER_CHECK("MQSpoilers"), 0);
     constexpr const char* issuesGroupName = "Unlinked / Issues";
+    constexpr const char* debugNoGroupName = "Others";
 
     bool showIssuesTab = showMapDebugDetails;
     bool requestGroupTabSelection = false;
@@ -2388,41 +2432,28 @@ void DrawMapTrackerContent() {
             if (mapTrackerState.selectedTabIndex >= 0 &&
                 mapTrackerState.selectedTabIndex < static_cast<int>(mapTrackerState.tabs.size())) {
                 mapTrackerState.selectedGroupName = mapTrackerState.tabs[mapTrackerState.selectedTabIndex].groupName;
-                mapTrackerState.lastSelectedTabByGroup[mapTrackerState.selectedGroupName] = mapTrackerState.selectedTabIndex;
                 requestGroupTabSelection = true;
             }
         }
     }
     mapTrackerState.requestedTabName.clear();
 
-    if (mapTrackerState.mapGroups.empty() && !mapTrackerState.tabs.empty()) {
-        mapTrackerState.mapGroups = { "Ungrouped" };
-        mapTrackerState.tabIndicesByGroup.clear();
-        for (int tabIndex = 0; tabIndex < static_cast<int>(mapTrackerState.tabs.size()); tabIndex++) {
-            mapTrackerState.tabIndicesByGroup["Ungrouped"].push_back(tabIndex);
-            mapTrackerState.tabs[tabIndex].groupName = "Ungrouped";
-        }
-    }
-
-    if (mapTrackerState.selectedGroupName.empty()) {
-        if (!mapTrackerState.mapGroups.empty()) {
+    bool hasNoNamedGroups = mapTrackerState.mapGroups.empty();
+    bool showDebugFallbackGroup = hasNoNamedGroups && showIssuesTab;
+    bool showGroupTabs = mapTrackerState.mapGroups.size() > 1 || showDebugFallbackGroup;
+    if (showGroupTabs) {
+        if (showDebugFallbackGroup) {
+            if (mapTrackerState.selectedGroupName.empty() ||
+                (mapTrackerState.selectedGroupName != issuesGroupName &&
+                 mapTrackerState.selectedGroupName != debugNoGroupName)) {
+                mapTrackerState.selectedGroupName = debugNoGroupName;
+            }
+        } else if (mapTrackerState.selectedGroupName.empty() ||
+                   !mapTrackerState.tabIndicesByGroup.contains(mapTrackerState.selectedGroupName)) {
             mapTrackerState.selectedGroupName = mapTrackerState.mapGroups.front();
-        } else if (showIssuesTab) {
-            mapTrackerState.selectedGroupName = issuesGroupName;
         }
-    }
-
-    if (!showIssuesTab && mapTrackerState.selectedGroupName == issuesGroupName) {
-        if (!mapTrackerState.mapGroups.empty()) {
-            mapTrackerState.selectedGroupName = mapTrackerState.mapGroups.front();
-        } else {
-            mapTrackerState.selectedGroupName.clear();
-        }
-    }
-
-    if (mapTrackerState.selectedGroupName != issuesGroupName && !mapTrackerState.mapGroups.empty() &&
-        !mapTrackerState.tabIndicesByGroup.contains(mapTrackerState.selectedGroupName)) {
-        mapTrackerState.selectedGroupName = mapTrackerState.mapGroups.front();
+    } else if (!showIssuesTab && mapTrackerState.selectedGroupName == issuesGroupName) {
+        mapTrackerState.selectedGroupName.clear();
     }
 
     int maxSelectableTabIndex = std::max(0, static_cast<int>(mapTrackerState.tabs.size()) - 1);
@@ -2434,62 +2465,101 @@ void DrawMapTrackerContent() {
         tabVisualSummaries[tabIndex] = BuildMapTabVisualSummary(mapTrackerState.tabs[tabIndex], mqSpoilers);
     }
 
-    ImGui::PushStyleColor(ImGuiCol_Tab, IM_COL32(34, 74, 160, 235));
-    ImGui::PushStyleColor(ImGuiCol_TabActive, IM_COL32(56, 118, 230, 255));
-    ImGui::PushStyleColor(ImGuiCol_TabHovered, IM_COL32(80, 145, 255, 255));
-    ImGui::PushStyleColor(ImGuiCol_TabUnfocused, IM_COL32(32, 58, 120, 210));
-    ImGui::PushStyleColor(ImGuiCol_TabUnfocusedActive, IM_COL32(43, 88, 176, 230));
-    if (ImGui::BeginTabBar("CheckTrackerMapGroups",
-                           ImGuiTabBarFlags_FittingPolicyScroll | ImGuiTabBarFlags_NoCloseWithMiddleMouseButton)) {
-        for (const auto& groupName : mapTrackerState.mapGroups) {
-            ImGuiTabItemFlags groupTabFlags =
-                requestGroupTabSelection && mapTrackerState.selectedGroupName == groupName ? ImGuiTabItemFlags_SetSelected
-                                                                                           : ImGuiTabItemFlags_None;
-            if (ImGui::BeginTabItem(groupName.c_str(), nullptr, groupTabFlags)) {
-                mapTrackerState.selectedGroupName = groupName;
-                ImGui::EndTabItem();
+    if (showGroupTabs) {
+        ImGui::PushStyleColor(ImGuiCol_Tab, IM_COL32(34, 74, 160, 235));
+        ImGui::PushStyleColor(ImGuiCol_TabActive, IM_COL32(56, 118, 230, 255));
+        ImGui::PushStyleColor(ImGuiCol_TabHovered, IM_COL32(80, 145, 255, 255));
+        ImGui::PushStyleColor(ImGuiCol_TabUnfocused, IM_COL32(32, 58, 120, 210));
+        ImGui::PushStyleColor(ImGuiCol_TabUnfocusedActive, IM_COL32(43, 88, 176, 230));
+        const std::string groupSelectionForUi = mapTrackerState.selectedGroupName;
+        if (ImGui::BeginTabBar("CheckTrackerMapGroups",
+                               ImGuiTabBarFlags_FittingPolicyScroll | ImGuiTabBarFlags_NoCloseWithMiddleMouseButton)) {
+            if (showDebugFallbackGroup) {
+                ImGuiTabItemFlags groupTabFlags =
+                    requestGroupTabSelection && groupSelectionForUi == debugNoGroupName
+                        ? ImGuiTabItemFlags_SetSelected
+                        : ImGuiTabItemFlags_None;
+                if (ImGui::BeginTabItem(debugNoGroupName, nullptr, groupTabFlags)) {
+                    mapTrackerState.selectedGroupName = debugNoGroupName;
+                    ImGui::EndTabItem();
+                }
             }
-        }
-        if (showIssuesTab) {
-            if (ImGui::BeginTabItem(issuesGroupName)) {
-                mapTrackerState.selectedGroupName = issuesGroupName;
-                ImGui::EndTabItem();
+            for (const auto& groupName : mapTrackerState.mapGroups) {
+                ImGuiTabItemFlags groupTabFlags =
+                    requestGroupTabSelection && groupSelectionForUi == groupName ? ImGuiTabItemFlags_SetSelected
+                                                                                               : ImGuiTabItemFlags_None;
+                if (ImGui::BeginTabItem(groupName.c_str(), nullptr, groupTabFlags)) {
+                    mapTrackerState.selectedGroupName = groupName;
+                    ImGui::EndTabItem();
+                }
             }
+            if (showIssuesTab) {
+                ImGuiTabItemFlags issuesTabFlags =
+                    requestGroupTabSelection && groupSelectionForUi == issuesGroupName
+                        ? ImGuiTabItemFlags_SetSelected
+                        : ImGuiTabItemFlags_None;
+                if (ImGui::BeginTabItem(issuesGroupName, nullptr, issuesTabFlags)) {
+                    mapTrackerState.selectedGroupName = issuesGroupName;
+                    ImGui::EndTabItem();
+                }
+            }
+            ImGui::EndTabBar();
         }
-        ImGui::EndTabBar();
+        ImGui::PopStyleColor(5);
     }
-    ImGui::PopStyleColor(5);
 
-    bool showingIssuesTab = showIssuesTab && (mapTrackerState.selectedGroupName == issuesGroupName);
+    bool showingIssuesTab = showGroupTabs && showIssuesTab && (mapTrackerState.selectedGroupName == issuesGroupName);
 
     std::vector<int> visibleTabIndices;
     if (!showingIssuesTab) {
-        if (mapTrackerState.tabIndicesByGroup.contains(mapTrackerState.selectedGroupName)) {
+        if (showDebugFallbackGroup && mapTrackerState.selectedGroupName == debugNoGroupName) {
+            for (int tabIndex = 0; tabIndex < static_cast<int>(mapTrackerState.tabs.size()); tabIndex++) {
+                visibleTabIndices.push_back(tabIndex);
+            }
+        } else if (showGroupTabs && mapTrackerState.tabIndicesByGroup.contains(mapTrackerState.selectedGroupName)) {
             visibleTabIndices = mapTrackerState.tabIndicesByGroup[mapTrackerState.selectedGroupName];
         } else {
             for (int tabIndex = 0; tabIndex < static_cast<int>(mapTrackerState.tabs.size()); tabIndex++) {
                 visibleTabIndices.push_back(tabIndex);
             }
         }
+
         if (!visibleTabIndices.empty()) {
             bool selectedTabVisible =
                 std::find(visibleTabIndices.begin(), visibleTabIndices.end(), mapTrackerState.selectedTabIndex) !=
                 visibleTabIndices.end();
             if (!selectedTabVisible) {
-                auto rememberedTabIndexIt = mapTrackerState.lastSelectedTabByGroup.find(mapTrackerState.selectedGroupName);
-                if (rememberedTabIndexIt != mapTrackerState.lastSelectedTabByGroup.end() &&
-                    std::find(visibleTabIndices.begin(), visibleTabIndices.end(), rememberedTabIndexIt->second) !=
-                        visibleTabIndices.end()) {
-                    mapTrackerState.selectedTabIndex = rememberedTabIndexIt->second;
+                if (showGroupTabs) {
+                    auto rememberedTabIndexIt =
+                        mapTrackerState.lastSelectedTabByGroup.find(mapTrackerState.selectedGroupName);
+                    if (rememberedTabIndexIt != mapTrackerState.lastSelectedTabByGroup.end() &&
+                        std::find(visibleTabIndices.begin(), visibleTabIndices.end(), rememberedTabIndexIt->second) !=
+                            visibleTabIndices.end()) {
+                        mapTrackerState.selectedTabIndex = rememberedTabIndexIt->second;
+                    } else {
+                        mapTrackerState.selectedTabIndex = visibleTabIndices.front();
+                    }
                 } else {
                     mapTrackerState.selectedTabIndex = visibleTabIndices.front();
                 }
             }
+
+            if (showGroupTabs) {
+                mapTrackerState.lastSelectedTabByGroup[mapTrackerState.selectedGroupName] = mapTrackerState.selectedTabIndex;
+            }
+        }
+    }
+
+    bool hasSingleVisibleMap = !showingIssuesTab && visibleTabIndices.size() == 1;
+    if (hasSingleVisibleMap) {
+        mapTrackerState.selectedTabIndex = visibleTabIndices.front();
+        if (showGroupTabs) {
             mapTrackerState.lastSelectedTabByGroup[mapTrackerState.selectedGroupName] = mapTrackerState.selectedTabIndex;
         }
     }
 
-    if (!showingIssuesTab) {
+    bool showMapButtons = !showingIssuesTab && visibleTabIndices.size() > 1;
+    if (showMapButtons) {
         float tabsRowStartX = ImGui::GetCursorPosX();
         float tabsRowMaxX = tabsRowStartX + ImGui::GetContentRegionAvail().x;
         bool hasPreviousTabButton = false;
@@ -2522,7 +2592,9 @@ void DrawMapTrackerContent() {
             }
             if (ImGui::Button(label.c_str(), ImVec2(buttonWidth, 0.0f))) {
                 mapTrackerState.selectedTabIndex = tabIndex;
-                mapTrackerState.lastSelectedTabByGroup[mapTrackerState.selectedGroupName] = tabIndex;
+                if (showGroupTabs) {
+                    mapTrackerState.lastSelectedTabByGroup[mapTrackerState.selectedGroupName] = tabIndex;
+                }
             }
             if (isSelected) {
                 ImDrawList* tabDrawList = ImGui::GetWindowDrawList();
@@ -2571,7 +2643,6 @@ void DrawMapTrackerContent() {
     }
     ImGui::EndChild();
 }
-
 void TrySetAreas() {
     if (checksByArea.empty()) {
         for (int i = RCAREA_KOKIRI_FOREST; i < RCAREA_INVALID; i++) {
@@ -4821,5 +4892,8 @@ void RegisterCheckTrackerWidgets() {
 
 static RegisterMenuInitFunc menuInitFunc(RegisterCheckTrackerWidgets);
 } // namespace CheckTracker
+
+
+
 
 
