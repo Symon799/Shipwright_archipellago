@@ -2328,7 +2328,8 @@ static std::vector<ImU32> BuildClusterSegmentColors(const std::vector<Renderable
     if (hasUnavailable) {
         segmentColors.push_back(CHECK_TRACKER_MAP_COLOR_UNAVAILABLE);
     }
-    if (hasDone) {
+    const bool hasNonDoneSegment = hasAvailable || hasRequirementMismatch || hasUnavailable;
+    if (!hasNonDoneSegment && hasDone) {
         segmentColors.push_back(CHECK_TRACKER_MAP_COLOR_DONE);
     }
     if (segmentColors.empty()) {
