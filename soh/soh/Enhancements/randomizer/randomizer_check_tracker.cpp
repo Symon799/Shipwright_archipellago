@@ -320,6 +320,10 @@ constexpr ImU32 CHECK_TRACKER_MAP_COLOR_UNAVAILABLE = IM_COL32(200, 65, 65, 255)
 constexpr ImU32 CHECK_TRACKER_MAP_COLOR_BORDER = IM_COL32(255, 255, 255, 255);
 constexpr float CHECK_TRACKER_MAP_MIN_MARKER_PIXEL_SIZE = 20.0f;
 constexpr float CHECK_TRACKER_MAP_MULTI_MARKER_SIZE_SCALE = 1.14f;
+constexpr float CHECK_TRACKER_MAP_TOOLTIP_MIN_CONTENT_WIDTH = 220.0f;
+constexpr float CHECK_TRACKER_MAP_TOOLTIP_LOGIC_MIN_CONTENT_WIDTH = 700.0f;
+constexpr float CHECK_TRACKER_MAP_TOOLTIP_MAX_VIEWPORT_WIDTH_RATIO = 0.6f;
+constexpr float CHECK_TRACKER_MAP_TOOLTIP_MAX_VIEWPORT_HEIGHT_RATIO = 0.9f;
 
 struct MapPlacement {
     std::string mapName;
@@ -2074,6 +2078,21 @@ struct ClusterPopupState {
 
 static ClusterPopupState mapClusterPopupState;
 
+struct MarkerTooltipContent {
+    std::string checkName;
+    std::string requirementSummary;
+    std::string extraText;
+    Color_RGBA8 extraColor = { 255, 255, 255, 255 };
+    std::string logicString;
+    std::string checkTag;
+    std::string displayPath;
+};
+
+struct MarkerTooltipLayout {
+    ImVec2 windowSize = { 0.0f, 0.0f };
+    float contentWidth = 0.0f;
+};
+
 static bool ShouldRenderMapMarker(const MapMarker& marker, bool mqSpoilers) {
     if (!IsVisibleInCheckTracker(marker.check)) {
         return false;
@@ -2135,53 +2154,142 @@ static void BuildRenderableMarkersByStackKey(
     }
 }
 
-static void DrawRenderableMapMarkerTooltip(const RenderableMapMarker& renderableMarker) {
-    std::string logicString = showLogicTooltip ? GetCheckLogicString(renderableMarker.marker->check) : "";
-    if (!logicString.empty()) {
-        ImGui::SetNextWindowSizeConstraints(ImVec2(560.0f, 0.0f),
-                                            ImVec2(std::numeric_limits<float>::max(),
-                                                   std::numeric_limits<float>::max()));
+static MarkerTooltipContent BuildMarkerTooltipContent(RandomizerCheck check, const std::string& displayPath) {
+    MarkerTooltipContent content;
+    content.checkName = GetCheckDisplayName(check);
+    content.requirementSummary = GetCheckRequirementSummary(check);
+    content.extraText = GetCheckExtraInfoText(check);
+    if (!content.extraText.empty()) {
+        content.extraColor = GetLegacyCheckExtraColor(check);
     }
+    if (showLogicTooltip) {
+        content.logicString = GetCheckLogicString(check);
+    }
+    if (showMapDebugDetails) {
+        content.checkTag = GetGameCheckTag(check);
+        content.displayPath = displayPath;
+    }
+    return content;
+}
 
-    ImGui::BeginTooltip();
-    ImGui::TextUnformatted(GetCheckDisplayName(renderableMarker.marker->check).c_str());
-    bool hasTooltipDetails = false;
-    if (renderableMarker.isRequirementMismatch) {
-        std::string requirementSummary = GetCheckRequirementSummary(renderableMarker.marker->check);
-        if (!requirementSummary.empty()) {
-            ImGui::TextDisabled("%s", requirementSummary.c_str());
-            hasTooltipDetails = true;
+static MarkerTooltipLayout ComputeMarkerTooltipLayout(const MarkerTooltipContent& content) {
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float lineHeight = ImGui::GetTextLineHeight();
+
+    float maxWindowWidth = 900.0f;
+    float maxWindowHeight = 760.0f;
+    if (const ImGuiViewport* viewport = ImGui::GetMainViewport(); viewport != nullptr) {
+        maxWindowWidth = std::max(CHECK_TRACKER_MAP_TOOLTIP_MIN_CONTENT_WIDTH + (style.WindowPadding.x * 2.0f),
+                                  viewport->WorkSize.x * CHECK_TRACKER_MAP_TOOLTIP_MAX_VIEWPORT_WIDTH_RATIO);
+        maxWindowHeight = std::max(120.0f, viewport->WorkSize.y * CHECK_TRACKER_MAP_TOOLTIP_MAX_VIEWPORT_HEIGHT_RATIO);
+    }
+    float maxContentWidth = std::max(CHECK_TRACKER_MAP_TOOLTIP_MIN_CONTENT_WIDTH,
+                                     maxWindowWidth - (style.WindowPadding.x * 2.0f) - 4.0f);
+
+    float contentWidth = std::max(CHECK_TRACKER_MAP_TOOLTIP_MIN_CONTENT_WIDTH,
+                                  ImGui::CalcTextSize(content.checkName.c_str()).x);
+    if (!content.requirementSummary.empty()) {
+        contentWidth = std::max(contentWidth, ImGui::CalcTextSize(content.requirementSummary.c_str()).x);
+    }
+    if (!content.extraText.empty()) {
+        std::string extraLabel = fmt::format("({})", content.extraText);
+        contentWidth = std::max(contentWidth, ImGui::CalcTextSize(extraLabel.c_str()).x);
+    }
+    if (!content.logicString.empty()) {
+        contentWidth = std::max(contentWidth, CHECK_TRACKER_MAP_TOOLTIP_LOGIC_MIN_CONTENT_WIDTH);
+    }
+    if (!content.checkTag.empty()) {
+        contentWidth = std::max(contentWidth, ImGui::CalcTextSize(fmt::format("Tag: {}", content.checkTag).c_str()).x);
+    }
+    if (!content.displayPath.empty()) {
+        contentWidth =
+            std::max(contentWidth, ImGui::CalcTextSize(fmt::format("Pack: {}", content.displayPath).c_str()).x);
+    }
+    contentWidth = std::clamp(contentWidth, CHECK_TRACKER_MAP_TOOLTIP_MIN_CONTENT_WIDTH, maxContentWidth);
+
+    float contentHeight = lineHeight;
+    bool hasDetailsSection = false;
+    if (!content.requirementSummary.empty()) {
+        contentHeight += style.ItemSpacing.y + lineHeight;
+        hasDetailsSection = true;
+    }
+    if (!content.extraText.empty()) {
+        std::string extraLabel = fmt::format("({})", content.extraText);
+        float extraHeight = ImGui::CalcTextSize(extraLabel.c_str(), nullptr, false, contentWidth).y;
+        contentHeight += style.ItemSpacing.y + std::max(lineHeight, extraHeight);
+        hasDetailsSection = true;
+    }
+    if (!content.logicString.empty()) {
+        contentHeight += (style.ItemSpacing.y * 2.0f) + 2.0f;
+        float logicHeight = ImGui::CalcTextSize(content.logicString.c_str(), nullptr, false, contentWidth).y;
+        contentHeight += std::max(lineHeight, logicHeight);
+        hasDetailsSection = true;
+    }
+    if (!content.checkTag.empty()) {
+        if (hasDetailsSection) {
+            contentHeight += (style.ItemSpacing.y * 2.0f) + 2.0f;
+        }
+        contentHeight += lineHeight;
+        if (!content.displayPath.empty()) {
+            contentHeight += style.ItemSpacing.y + lineHeight;
         }
     }
 
-    std::string extraText = GetCheckExtraInfoText(renderableMarker.marker->check);
-    if (!extraText.empty()) {
-        Color_RGBA8 legacyExtraColor = GetLegacyCheckExtraColor(renderableMarker.marker->check);
+    MarkerTooltipLayout layout;
+    layout.contentWidth = contentWidth;
+    layout.windowSize.x = contentWidth + (style.WindowPadding.x * 2.0f) + 4.0f;
+    layout.windowSize.y = contentHeight + (style.WindowPadding.y * 2.0f) + 2.0f;
+    layout.windowSize.y = std::min(layout.windowSize.y, maxWindowHeight);
+    return layout;
+}
+
+static void DrawMarkerTooltip(const MarkerTooltipContent& content) {
+    MarkerTooltipLayout layout = ComputeMarkerTooltipLayout(content);
+    ImGui::SetNextWindowSize(layout.windowSize, ImGuiCond_Always);
+    ImGui::BeginTooltip();
+    ImGui::TextUnformatted(content.checkName.c_str());
+
+    bool hasTooltipDetails = false;
+    if (!content.requirementSummary.empty()) {
+        ImGui::TextDisabled("%s", content.requirementSummary.c_str());
+        hasTooltipDetails = true;
+    }
+
+    if (!content.extraText.empty()) {
+        std::string extraLabel = fmt::format("({})", content.extraText);
         ImGui::PushStyleColor(ImGuiCol_Text,
-                              ImVec4(legacyExtraColor.r / 255.0f, legacyExtraColor.g / 255.0f,
-                                     legacyExtraColor.b / 255.0f, legacyExtraColor.a / 255.0f));
-        ImGui::TextWrapped("(%s)", extraText.c_str());
+                              ImVec4(content.extraColor.r / 255.0f, content.extraColor.g / 255.0f,
+                                     content.extraColor.b / 255.0f, content.extraColor.a / 255.0f));
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + layout.contentWidth);
+        ImGui::TextUnformatted(extraLabel.c_str());
+        ImGui::PopTextWrapPos();
         ImGui::PopStyleColor();
         hasTooltipDetails = true;
     }
 
-    if (!logicString.empty()) {
+    if (!content.logicString.empty()) {
         ImGui::Separator();
-        ImGui::TextWrapped("%s", logicString.c_str());
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + layout.contentWidth);
+        ImGui::TextUnformatted(content.logicString.c_str());
+        ImGui::PopTextWrapPos();
         hasTooltipDetails = true;
     }
 
-    if (showMapDebugDetails) {
+    if (!content.checkTag.empty()) {
         if (hasTooltipDetails) {
             ImGui::Separator();
         }
-        ImGui::TextDisabled("Tag: %s", GetGameCheckTag(renderableMarker.marker->check).c_str());
-        if (!renderableMarker.marker->displayPath.empty()) {
-            ImGui::TextDisabled("Pack: %s", renderableMarker.marker->displayPath.c_str());
+        ImGui::TextDisabled("Tag: %s", content.checkTag.c_str());
+        if (!content.displayPath.empty()) {
+            ImGui::TextDisabled("Pack: %s", content.displayPath.c_str());
         }
     }
 
     ImGui::EndTooltip();
+}
+
+static void DrawRenderableMapMarkerTooltip(const RenderableMapMarker& renderableMarker) {
+    DrawMarkerTooltip(BuildMarkerTooltipContent(renderableMarker.marker->check, renderableMarker.marker->displayPath));
 }
 
 static float ComputeMarkerHalfSize(const MapMarker& marker, float imageScale, bool isMultiMarkerCluster) {
@@ -2554,33 +2662,7 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
                 }
 
                 if (statusHovered || rowHovered) {
-                    bool hasTooltipDetails = false;
-                    ImGui::BeginTooltip();
-                    ImGui::TextUnformatted(checkName.c_str());
-                    if (renderableMarker.isRequirementMismatch) {
-                        std::string requirementSummary = GetCheckRequirementSummary(marker.check);
-                        if (!requirementSummary.empty()) {
-                            ImGui::TextDisabled("%s", requirementSummary.c_str());
-                            hasTooltipDetails = true;
-                        }
-                    }
-
-                    std::string logicString = showLogicTooltip ? GetCheckLogicString(marker.check) : "";
-                    if (!logicString.empty()) {
-                        ImGui::Separator();
-                        ImGui::TextWrapped("%s", logicString.c_str());
-                        hasTooltipDetails = true;
-                    }
-                    if (showMapDebugDetails) {
-                        if (hasTooltipDetails) {
-                            ImGui::Separator();
-                        }
-                        ImGui::TextDisabled("Tag: %s", GetGameCheckTag(marker.check).c_str());
-                        if (!marker.displayPath.empty()) {
-                            ImGui::TextDisabled("Pack: %s", marker.displayPath.c_str());
-                        }
-                    }
-                    ImGui::EndTooltip();
+                    DrawMarkerTooltip(BuildMarkerTooltipContent(marker.check, marker.displayPath));
                 }
 
                 std::string extraText = GetCheckExtraInfoText(marker.check);
