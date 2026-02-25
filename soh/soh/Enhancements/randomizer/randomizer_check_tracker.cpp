@@ -1454,7 +1454,14 @@ std::vector<MapMarker> ParseMapMarkersFromPackAreas(
     return mappedMarkers;
 }
 
-void LoadMapTrackerData() {
+struct MapsMetadataParseResult {
+    std::unordered_map<std::string, std::string> mapImagePathsByName;
+    std::unordered_map<std::string, std::string> mapGroupByName;
+    std::vector<std::string> orderedMapNames;
+    bool hasNamedGroupsInMetadata = false;
+};
+
+static void InitializeMapTrackerLoadState() {
     const auto loadStartTime = std::chrono::steady_clock::now();
     ResetMapTrackerState(true);
     mapTrackerState.attemptedLoad = true;
@@ -1464,12 +1471,10 @@ void LoadMapTrackerData() {
     mapTrackerState.loadingTotal = 6;
     mapTrackerLoadContext.startTime = loadStartTime;
     mapTrackerState.assetsRoot = GetMapTrackerAssetsRoot();
+}
 
-    const std::filesystem::path packFolderPath = mapTrackerState.assetsRoot;
+static bool EnsureMapPackArchiveMounted(const std::filesystem::path& packFolderPath) {
     bool packFolderExists = std::filesystem::exists(packFolderPath) && std::filesystem::is_directory(packFolderPath);
-
-    SPDLOG_INFO("[CheckTrackerMapDiag] Load start. assets='{}' candidates='{}'", mapTrackerState.assetsRoot.string(),
-                BuildMapTrackerAssetsRootCandidatesSummary());
 
     if (!packFolderExists) {
         mapTrackerState.fatalErrors.push_back("Map pack not found.");
@@ -1478,7 +1483,7 @@ void LoadMapTrackerData() {
         mapTrackerState.fatalErrors.push_back("Put a map pack zip in mods/check_tracker_map_pack.");
         SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: pack folder not found. folder='{}'", packFolderPath.string());
         mapTrackerState.loading = false;
-        return;
+        return false;
     }
 
     const std::filesystem::path packArchivePath = GetFirstMapPackZip(packFolderPath);
@@ -1488,7 +1493,7 @@ void LoadMapTrackerData() {
         mapTrackerState.fatalErrors.push_back("Any zip filename is supported.");
         SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: no zip found in folder='{}'", packFolderPath.string());
         mapTrackerState.loading = false;
-        return;
+        return false;
     }
     mapTrackerState.usingArchivePack = true;
     mapTrackerState.assetsRoot = packArchivePath;
@@ -1501,32 +1506,34 @@ void LoadMapTrackerData() {
                                            mapTrackerState.resourcePathPrefix, mountError)) {
         mapTrackerState.fatalErrors.push_back("Failed to mount map pack zip archive: " + mountError);
         mapTrackerState.loading = false;
-        return;
+        return false;
     }
     mapTrackerState.loadingCurrent = 2;
+    return true;
+}
 
-    json mapsJson;
+static bool LoadMapTrackerMetadataJson(const std::filesystem::path& packFolderPath, json& outMapsJson,
+                                       std::filesystem::path& outMapsDiskPath, std::string& outMapsResourcePath) {
     std::string parseError;
-    std::filesystem::path mapsDiskPath;
-    std::string mapsResourcePath = BuildMapTrackerResourcePath(mapTrackerState.resourcePathPrefix, CHECK_TRACKER_MAPS_JSON);
-    if (!LoadJsonFromMapPack(mapsDiskPath, mapsResourcePath, mapsJson, parseError)) {
+    outMapsResourcePath = BuildMapTrackerResourcePath(mapTrackerState.resourcePathPrefix, CHECK_TRACKER_MAPS_JSON);
+    if (!LoadJsonFromMapPack(outMapsDiskPath, outMapsResourcePath, outMapsJson, parseError)) {
         mapTrackerState.fatalErrors.push_back("Could not parse map metadata: " + parseError);
         mapTrackerState.fatalErrors.push_back("Tried disk path: " + (packFolderPath / CHECK_TRACKER_MAPS_JSON).string());
-        mapTrackerState.fatalErrors.push_back("Tried resource path: " + mapsResourcePath);
+        mapTrackerState.fatalErrors.push_back("Tried resource path: " + outMapsResourcePath);
         mapTrackerState.loading = false;
-        return;
+        return false;
     }
+    return true;
+}
 
-    std::unordered_map<std::string, std::string> mapImagePathsByName;
-    std::unordered_map<std::string, std::string> mapGroupByName;
-    std::vector<std::string> orderedMapNames;
-    bool hasNamedGroupsInMetadata = false;
+static bool ParseMapMetadataEntries(const json& mapsJson, const std::string& mapsResourcePath,
+                                    const std::filesystem::path& mapsDiskPath, MapsMetadataParseResult& outMetadata) {
     if (!mapsJson.is_array()) {
         mapTrackerState.fatalErrors.push_back("Expected an array in maps.json.");
         SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: maps metadata root is not an array. resource='{}' disk='{}'",
                      mapsResourcePath, mapsDiskPath.string());
         mapTrackerState.loading = false;
-        return;
+        return false;
     }
     mapTrackerState.loadingCurrent = 3;
 
@@ -1540,8 +1547,8 @@ void LoadMapTrackerData() {
         }
 
         std::string normalizedMapName = NormalizeForMatching(mapName);
-        if (!mapImagePathsByName.contains(normalizedMapName)) {
-            orderedMapNames.push_back(mapName);
+        if (!outMetadata.mapImagePathsByName.contains(normalizedMapName)) {
+            outMetadata.orderedMapNames.push_back(mapName);
         }
 
         std::string mapGroup;
@@ -1554,27 +1561,31 @@ void LoadMapTrackerData() {
             mapGroup = TrimCopy(mapEntry["groups"][0].get<std::string>());
         }
         if (!mapGroup.empty()) {
-            hasNamedGroupsInMetadata = true;
+            outMetadata.hasNamedGroupsInMetadata = true;
         }
-        if (!mapGroupByName.contains(normalizedMapName)) {
-            mapGroupByName[normalizedMapName] = mapGroup;
+        if (!outMetadata.mapGroupByName.contains(normalizedMapName)) {
+            outMetadata.mapGroupByName[normalizedMapName] = mapGroup;
         }
 
         if (mapEntry.contains("img") && mapEntry["img"].is_string()) {
-            mapImagePathsByName[normalizedMapName] = mapEntry["img"].get<std::string>();
+            outMetadata.mapImagePathsByName[normalizedMapName] = mapEntry["img"].get<std::string>();
         } else {
             mapTrackerState.warnings.push_back({ "Missing image path for map " + mapName,
                                                  "The map entry in maps.json is missing an \"img\" value." });
         }
     }
     SPDLOG_INFO("[CheckTrackerMapDiag] Parsed maps metadata. rawEntries={} uniqueMaps={} warnings={}",
-                mapsJson.size(), orderedMapNames.size(), mapTrackerState.warnings.size());
-    if (orderedMapNames.empty()) {
+                mapsJson.size(), outMetadata.orderedMapNames.size(), mapTrackerState.warnings.size());
+    if (outMetadata.orderedMapNames.empty()) {
         mapTrackerState.fatalErrors.push_back("No maps were found in maps.json.");
         mapTrackerState.loading = false;
-        return;
+        return false;
     }
+    return true;
+}
 
+static bool BuildMapMarkersAndCheckLinks(const std::filesystem::path& packFolderPath,
+                                         std::vector<MapMarker>& outMappedMarkers) {
     std::vector<MapPackAreaFileRef> areaFiles =
         CollectMapPackAreaFiles(packFolderPath, mapTrackerState.usingArchivePack, mapTrackerState.resourcePathPrefix,
                                 mapTrackerState.warnings);
@@ -1585,7 +1596,7 @@ void LoadMapTrackerData() {
                                                                           std::string(CHECK_TRACKER_LOCATIONS_DIR) +
                                                                               "/*.json"));
         mapTrackerState.loading = false;
-        return;
+        return false;
     }
     mapTrackerState.loadingCurrent = 4;
 
@@ -1593,17 +1604,17 @@ void LoadMapTrackerData() {
     if (checksBySohId.empty()) {
         mapTrackerState.fatalErrors.push_back("No in-game checks were available for soh_id mapping.");
         mapTrackerState.loading = false;
-        return;
+        return false;
     }
-    std::vector<MapMarker> mappedMarkers = ParseMapMarkersFromPackAreas(areaFiles, checksBySohId, mapTrackerState.linkedChecks,
-                                                                         mapTrackerState.warnings, mapTrackerState.unresolvedLinks);
+    outMappedMarkers = ParseMapMarkersFromPackAreas(areaFiles, checksBySohId, mapTrackerState.linkedChecks,
+                                                    mapTrackerState.warnings, mapTrackerState.unresolvedLinks);
     mapTrackerState.loadingCurrent = 5;
 
     std::vector<CheckDescriptor> descriptors = BuildVisibleCheckDescriptors();
     if (descriptors.empty()) {
         mapTrackerState.fatalErrors.push_back("No visible checks available to map. Load a randomizer save first.");
         mapTrackerState.loading = false;
-        return;
+        return false;
     }
     for (const auto& descriptor : descriptors) {
         if (!mapTrackerState.linkedChecks.contains(descriptor.check)) {
@@ -1623,9 +1634,13 @@ void LoadMapTrackerData() {
         mapTrackerState.unassignedCheckIds.end());
 
     SPDLOG_INFO("[CheckTrackerMapDiag] soh_id mapping summary. mappedMarkers={} linkedChecks={} unresolved={} unassigned={}",
-                mappedMarkers.size(), mapTrackerState.linkedChecks.size(), mapTrackerState.unresolvedLinks.size(),
+                outMappedMarkers.size(), mapTrackerState.linkedChecks.size(), mapTrackerState.unresolvedLinks.size(),
                 mapTrackerState.unassignedCheckIds.size());
+    return true;
+}
 
+static std::vector<std::string> BuildMapNamesForTabs(const std::vector<std::string>& orderedMapNames,
+                                                      const std::vector<MapMarker>& mappedMarkers) {
     std::vector<std::string> mapNamesForTabs = orderedMapNames;
     for (const auto& marker : mappedMarkers) {
         std::string markerMapName = NormalizeMapNameForMapTracker(marker.mapName);
@@ -1634,17 +1649,21 @@ void LoadMapTrackerData() {
             mapNamesForTabs.push_back(markerMapName);
         }
     }
+    return mapNamesForTabs;
+}
 
+static void BuildMapTabsFromMetadata(const std::filesystem::path& packFolderPath, const std::vector<std::string>& mapNamesForTabs,
+                                     const MapsMetadataParseResult& metadata) {
     for (const auto& mapName : mapNamesForTabs) {
         MapTabData tab;
         tab.mapName = mapName;
         std::string normalizedMapName = NormalizeForMatching(mapName);
-        if (mapGroupByName.contains(normalizedMapName)) {
-            tab.groupName = mapGroupByName[normalizedMapName];
+        if (metadata.mapGroupByName.contains(normalizedMapName)) {
+            tab.groupName = metadata.mapGroupByName.at(normalizedMapName);
         }
 
         std::string resolutionInfo;
-        tab.imageRelativePath = ResolveMapImagePath(mapName, mapImagePathsByName, resolutionInfo);
+        tab.imageRelativePath = ResolveMapImagePath(mapName, metadata.mapImagePathsByName, resolutionInfo);
         if (!resolutionInfo.empty()) {
             mapTrackerState.warnings.push_back({ "Map alias used", resolutionInfo });
         }
@@ -1664,7 +1683,9 @@ void LoadMapTrackerData() {
         mapTrackerState.tabIndexByName[normalizedMapName] = mapTrackerState.tabs.size();
         mapTrackerState.tabs.push_back(std::move(tab));
     }
+}
 
+static void BuildMapTabGroups(bool hasNamedGroupsInMetadata) {
     bool hasNamedGroups = hasNamedGroupsInMetadata;
     for (auto& tab : mapTrackerState.tabs) {
         tab.groupName = TrimCopy(tab.groupName);
@@ -1701,7 +1722,9 @@ void LoadMapTrackerData() {
     } else {
         mapTrackerState.selectedGroupName.clear();
     }
+}
 
+static void LinkMapMarkersToTabs(const std::vector<MapMarker>& mappedMarkers) {
     for (const auto& marker : mappedMarkers) {
         std::string tabKey = NormalizeForMatching(marker.mapName);
         if (!mapTrackerState.tabIndexByName.contains(tabKey)) {
@@ -1719,14 +1742,16 @@ void LoadMapTrackerData() {
             checkTabIndices.push_back(markerTabIndex);
         }
     }
+}
 
+static bool LoadMapTabTextures(const std::filesystem::path& packFolderPath) {
     auto gui = Ship::Context::GetInstance()->GetWindow()->GetGui();
     if (gui == nullptr) {
         mapTrackerState.fatalErrors.push_back("Could not access GUI texture loader.");
         mapTrackerState.loading = false;
         mapTrackerLoadContext = {};
         SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: GUI texture loader was null.");
-        return;
+        return false;
     }
 
     auto context = Ship::Context::GetInstance();
@@ -1736,7 +1761,7 @@ void LoadMapTrackerData() {
         mapTrackerState.loading = false;
         mapTrackerLoadContext = {};
         SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: archive manager unavailable.");
-        return;
+        return false;
     }
     auto archiveManager = context->GetResourceManager()->GetArchiveManager();
 
@@ -1789,7 +1814,10 @@ void LoadMapTrackerData() {
                                        " | Resource path: " + tab.imageResourcePath;
         }
     }
+    return true;
+}
 
+static void FinalizeMapTrackerLoadSuccess() {
     mapTrackerState.loaded = true;
     mapTrackerState.loading = false;
     mapTrackerState.loadingStatus.clear();
@@ -1798,6 +1826,46 @@ void LoadMapTrackerData() {
                 GetElapsedMilliseconds(mapTrackerLoadContext.startTime), mapTrackerState.tabs.size(),
                 mapTrackerState.warnings.size(), mapTrackerState.fatalErrors.size());
     mapTrackerLoadContext = {};
+}
+
+void LoadMapTrackerData() {
+    InitializeMapTrackerLoadState();
+    const std::filesystem::path packFolderPath = mapTrackerState.assetsRoot;
+
+    SPDLOG_INFO("[CheckTrackerMapDiag] Load start. assets='{}' candidates='{}'", mapTrackerState.assetsRoot.string(),
+                BuildMapTrackerAssetsRootCandidatesSummary());
+
+    if (!EnsureMapPackArchiveMounted(packFolderPath)) {
+        return;
+    }
+
+    json mapsJson;
+    std::filesystem::path mapsDiskPath;
+    std::string mapsResourcePath;
+    if (!LoadMapTrackerMetadataJson(packFolderPath, mapsJson, mapsDiskPath, mapsResourcePath)) {
+        return;
+    }
+
+    MapsMetadataParseResult metadata;
+    if (!ParseMapMetadataEntries(mapsJson, mapsResourcePath, mapsDiskPath, metadata)) {
+        return;
+    }
+
+    std::vector<MapMarker> mappedMarkers;
+    if (!BuildMapMarkersAndCheckLinks(packFolderPath, mappedMarkers)) {
+        return;
+    }
+
+    std::vector<std::string> mapNamesForTabs = BuildMapNamesForTabs(metadata.orderedMapNames, mappedMarkers);
+    BuildMapTabsFromMetadata(packFolderPath, mapNamesForTabs, metadata);
+    BuildMapTabGroups(metadata.hasNamedGroupsInMetadata);
+    LinkMapMarkersToTabs(mappedMarkers);
+
+    if (!LoadMapTabTextures(packFolderPath)) {
+        return;
+    }
+
+    FinalizeMapTrackerLoadSuccess();
 }
 
 void StepMapTrackerDataLoad() {
