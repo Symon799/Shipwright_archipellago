@@ -207,8 +207,11 @@ std::string GetCheckDisplayName(RandomizerCheck rc);
 std::string GetCheckExtraInfoText(RandomizerCheck rc);
 std::string GetCheckLogicString(RandomizerCheck rc);
 enum class CheckAgeRequirement { Any, ChildOnly, AdultOnly };
+enum class CheckTimeRequirement { Any, DayOnly, NightOnly };
 CheckAgeRequirement GetCheckAgeRequirement(RandomizerCheck rc);
-bool IsCheckAvailableButWrongAge(RandomizerCheck rc);
+CheckTimeRequirement GetCheckTimeRequirement(RandomizerCheck rc);
+bool IsCheckAvailableButWrongAgeOrTime(RandomizerCheck rc);
+std::string GetCheckRequirementSummary(RandomizerCheck rc);
 Color_RGBA8 GetLegacyCheckExtraColor(RandomizerCheck rc);
 std::string BuildCanonicalAliasKey(const std::string& input);
 bool LoadJsonWithComments(const std::filesystem::path& filePath, json& outJson, std::string& outError);
@@ -314,9 +317,11 @@ constexpr const char* CHECK_TRACKER_MAPS_JSON = "maps.json";
 constexpr const char* CHECK_TRACKER_LOCATIONS_DIR = "areas";
 constexpr ImU32 CHECK_TRACKER_MAP_COLOR_DONE = IM_COL32(130, 130, 130, 255);
 constexpr ImU32 CHECK_TRACKER_MAP_COLOR_AVAILABLE = IM_COL32(55, 185, 85, 255);
-constexpr ImU32 CHECK_TRACKER_MAP_COLOR_AGE_MISMATCH = IM_COL32(235, 205, 70, 255);
+constexpr ImU32 CHECK_TRACKER_MAP_COLOR_AGE_MISMATCH = IM_COL32(180, 145, 35, 255);
 constexpr ImU32 CHECK_TRACKER_MAP_COLOR_UNAVAILABLE = IM_COL32(200, 65, 65, 255);
 constexpr ImU32 CHECK_TRACKER_MAP_COLOR_BORDER = IM_COL32(255, 255, 255, 255);
+constexpr float CHECK_TRACKER_MAP_MIN_MARKER_PIXEL_SIZE = 20.0f;
+constexpr float CHECK_TRACKER_MAP_MULTI_MARKER_SIZE_SCALE = 1.14f;
 
 struct MapPlacement {
     std::string mapName;
@@ -1077,12 +1082,22 @@ static CheckAgeRequirement GetCheckAgeRequirementFromLogicString(const std::stri
     return CheckAgeRequirement::Any;
 }
 
-CheckAgeRequirement GetCheckAgeRequirement(RandomizerCheck rc) {
-    return GetCheckAgeRequirementFromLogicString(GetCheckLogicString(rc));
+static CheckTimeRequirement GetCheckTimeRequirementFromLogicString(const std::string& logicString) {
+    bool requiresDay = logicString.find("AtDay") != std::string::npos;
+    bool requiresNight = logicString.find("AtNight") != std::string::npos ||
+                         logicString.find("CanGetNightTimeGS") != std::string::npos;
+
+    if (requiresDay && !requiresNight) {
+        return CheckTimeRequirement::DayOnly;
+    }
+    if (requiresNight && !requiresDay) {
+        return CheckTimeRequirement::NightOnly;
+    }
+    return CheckTimeRequirement::Any;
 }
 
-bool IsCheckAvailableButWrongAge(RandomizerCheck rc) {
-    switch (GetCheckAgeRequirement(rc)) {
+static bool IsCurrentAgeMismatched(CheckAgeRequirement ageRequirement) {
+    switch (ageRequirement) {
         case CheckAgeRequirement::AdultOnly:
             return !LINK_IS_ADULT;
         case CheckAgeRequirement::ChildOnly:
@@ -1090,6 +1105,69 @@ bool IsCheckAvailableButWrongAge(RandomizerCheck rc) {
         default:
             return false;
     }
+}
+
+static bool IsCurrentTimeMismatched(CheckTimeRequirement timeRequirement) {
+    switch (timeRequirement) {
+        case CheckTimeRequirement::DayOnly:
+            return IS_NIGHT;
+        case CheckTimeRequirement::NightOnly:
+            return IS_DAY;
+        default:
+            return false;
+    }
+}
+
+static std::string BuildCheckRequirementSummaryFromLogicString(const std::string& logicString) {
+    std::vector<std::string> requirements;
+    CheckAgeRequirement ageRequirement = GetCheckAgeRequirementFromLogicString(logicString);
+    CheckTimeRequirement timeRequirement = GetCheckTimeRequirementFromLogicString(logicString);
+
+    switch (ageRequirement) {
+        case CheckAgeRequirement::ChildOnly:
+            requirements.emplace_back("Child");
+            break;
+        case CheckAgeRequirement::AdultOnly:
+            requirements.emplace_back("Adult");
+            break;
+        default:
+            break;
+    }
+
+    switch (timeRequirement) {
+        case CheckTimeRequirement::DayOnly:
+            requirements.emplace_back("Day");
+            break;
+        case CheckTimeRequirement::NightOnly:
+            requirements.emplace_back("Night");
+            break;
+        default:
+            break;
+    }
+
+    if (requirements.empty()) {
+        return "";
+    }
+
+    return "Required: " + JoinWithCommaLimited(requirements, requirements.size());
+}
+
+CheckAgeRequirement GetCheckAgeRequirement(RandomizerCheck rc) {
+    return GetCheckAgeRequirementFromLogicString(GetCheckLogicString(rc));
+}
+
+CheckTimeRequirement GetCheckTimeRequirement(RandomizerCheck rc) {
+    return GetCheckTimeRequirementFromLogicString(GetCheckLogicString(rc));
+}
+
+bool IsCheckAvailableButWrongAgeOrTime(RandomizerCheck rc) {
+    std::string logicString = GetCheckLogicString(rc);
+    return IsCurrentAgeMismatched(GetCheckAgeRequirementFromLogicString(logicString)) ||
+           IsCurrentTimeMismatched(GetCheckTimeRequirementFromLogicString(logicString));
+}
+
+std::string GetCheckRequirementSummary(RandomizerCheck rc) {
+    return BuildCheckRequirementSummaryFromLogicString(GetCheckLogicString(rc));
 }
 
 std::vector<std::string> BuildPreferredMapNamesForArea(RandomizerCheckArea area) {
@@ -1749,6 +1827,7 @@ bool IsCheckDoneForMapDisplay(RandomizerCheck rc) {
 struct MapTabVisualSummary {
     bool hasVisibleChecks = false;
     bool hasAvailableChecks = false;
+    bool hasRequirementMismatchChecks = false;
     bool hasUnavailableChecks = false;
     bool hasDoneChecks = false;
 };
@@ -1775,11 +1854,13 @@ MapTabVisualSummary BuildMapTabVisualSummary(const MapTabData& tab, bool mqSpoil
 
         bool isDone = IsCheckDoneForMapDisplay(marker.check);
         bool isAvailable = itemLocation->IsAvailable();
+        bool isRequirementMismatch = isAvailable && !isDone && IsCheckAvailableButWrongAgeOrTime(marker.check);
 
         if (isDone) {
             summary.hasDoneChecks = true;
+        } else if (isRequirementMismatch) {
+            summary.hasRequirementMismatchChecks = true;
         } else if (isAvailable) {
-            // Age-mismatch checks are still logically available, they are rendered yellow in-map.
             summary.hasAvailableChecks = true;
         } else {
             summary.hasUnavailableChecks = true;
@@ -1795,6 +1876,9 @@ ImVec4 GetMapTabBaseColor(const MapTabVisualSummary& summary) {
     }
     if (summary.hasAvailableChecks) {
         return ImGui::ColorConvertU32ToFloat4(CHECK_TRACKER_MAP_COLOR_AVAILABLE);
+    }
+    if (summary.hasRequirementMismatchChecks) {
+        return ImGui::ColorConvertU32ToFloat4(CHECK_TRACKER_MAP_COLOR_AGE_MISMATCH);
     }
     if (summary.hasUnavailableChecks) {
         return ImGui::ColorConvertU32ToFloat4(CHECK_TRACKER_MAP_COLOR_UNAVAILABLE);
@@ -1955,7 +2039,7 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
         const MapMarker* marker = nullptr;
         bool isDone = false;
         bool isAvailable = false;
-        bool isAgeMismatch = false;
+        bool isRequirementMismatch = false;
         ImU32 fillColor = CHECK_TRACKER_MAP_COLOR_UNAVAILABLE;
     };
 
@@ -2023,12 +2107,12 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
         auto* itemLocation = OTRGlobals::Instance->gRandoContext->GetItemLocation(marker.check);
         bool isDone = IsCheckDoneForMapDisplay(marker.check);
         bool isAvailable = itemLocation->IsAvailable();
-        bool isAgeMismatch = isAvailable && !isDone && IsCheckAvailableButWrongAge(marker.check);
+        bool isRequirementMismatch = isAvailable && !isDone && IsCheckAvailableButWrongAgeOrTime(marker.check);
 
         ImU32 fillColor = CHECK_TRACKER_MAP_COLOR_UNAVAILABLE;
         if (isDone) {
             fillColor = CHECK_TRACKER_MAP_COLOR_DONE;
-        } else if (isAgeMismatch) {
+        } else if (isRequirementMismatch) {
             fillColor = CHECK_TRACKER_MAP_COLOR_AGE_MISMATCH;
         } else if (isAvailable) {
             fillColor = CHECK_TRACKER_MAP_COLOR_AVAILABLE;
@@ -2038,7 +2122,8 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
         if (!renderableMarkersByStackKey.contains(stackKey)) {
             stackOrder.push_back(stackKey);
         }
-        renderableMarkersByStackKey[stackKey].push_back({ &marker, isDone, isAvailable, isAgeMismatch, fillColor });
+        renderableMarkersByStackKey[stackKey].push_back(
+            { &marker, isDone, isAvailable, isRequirementMismatch, fillColor });
     }
 
     auto drawSingleMarkerTooltip = [&](const RenderableMarker& renderableMarker) {
@@ -2052,6 +2137,13 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
         ImGui::BeginTooltip();
         ImGui::TextUnformatted(GetCheckDisplayName(renderableMarker.marker->check).c_str());
         bool hasTooltipDetails = false;
+        if (renderableMarker.isRequirementMismatch) {
+            std::string requirementSummary = GetCheckRequirementSummary(renderableMarker.marker->check);
+            if (!requirementSummary.empty()) {
+                ImGui::TextDisabled("%s", requirementSummary.c_str());
+                hasTooltipDetails = true;
+            }
+        }
 
         std::string extraText = GetCheckExtraInfoText(renderableMarker.marker->check);
         if (!extraText.empty()) {
@@ -2096,7 +2188,12 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
         const MapMarker& anchorMarker = *renderableMarkers.front().marker;
         bool isMultiMarkerCluster = renderableMarkers.size() > 1;
 
-        float halfSize = std::max(4.0f, anchorMarker.size * imageScale * 0.5f);
+        float markerPixelSize =
+            std::max(CHECK_TRACKER_MAP_MIN_MARKER_PIXEL_SIZE, std::max(0.0f, anchorMarker.size) * imageScale);
+        if (isMultiMarkerCluster) {
+            markerPixelSize *= CHECK_TRACKER_MAP_MULTI_MARKER_SIZE_SCALE;
+        }
+        float halfSize = markerPixelSize * 0.5f;
         ImVec2 center(imageStartPos.x + (anchorMarker.x * imageScale), imageStartPos.y + (anchorMarker.y * imageScale));
         ImVec2 markerMin(center.x - halfSize, center.y - halfSize);
         ImVec2 markerMax(center.x + halfSize, center.y + halfSize);
@@ -2109,14 +2206,14 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
         ImGui::PopID();
 
         bool hasAvailable = false;
-        bool hasAgeMismatch = false;
+        bool hasRequirementMismatch = false;
         bool hasUnavailable = false;
         bool hasDone = false;
         for (const auto& renderableMarker : renderableMarkers) {
             if (renderableMarker.isDone) {
                 hasDone = true;
-            } else if (renderableMarker.isAgeMismatch) {
-                hasAgeMismatch = true;
+            } else if (renderableMarker.isRequirementMismatch) {
+                hasRequirementMismatch = true;
             } else if (renderableMarker.isAvailable) {
                 hasAvailable = true;
             } else {
@@ -2128,7 +2225,7 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
         if (hasAvailable) {
             segmentColors.push_back(CHECK_TRACKER_MAP_COLOR_AVAILABLE);
         }
-        if (hasAgeMismatch) {
+        if (hasRequirementMismatch) {
             segmentColors.push_back(CHECK_TRACKER_MAP_COLOR_AGE_MISMATCH);
         }
         if (hasUnavailable) {
@@ -2246,10 +2343,67 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
         if (popupClusterIt == renderableMarkersByStackKey.end() || popupClusterIt->second.size() < 2) {
             clusterPopupState.open = false;
         } else {
+            std::optional<int> popupNavigationTargetTabIndex;
+            if (currentTabIndex >= 0) {
+                std::vector<RandomizerCheck> popupClusterChecks;
+                popupClusterChecks.reserve(popupClusterIt->second.size());
+                for (const auto& popupMarker : popupClusterIt->second) {
+                    popupClusterChecks.push_back(popupMarker.marker->check);
+                }
+                popupNavigationTargetTabIndex =
+                    FindClusterNavigationTargetTabIndex(popupClusterChecks, currentTabIndex);
+            }
+
+            const ImGuiStyle& popupStyle = ImGui::GetStyle();
+            float popupTextLineHeight = ImGui::GetTextLineHeight();
+            float popupRowHeight = std::max(14.0f, popupTextLineHeight + 1.0f);
+            float popupStatusWidth = std::max(10.0f, popupRowHeight - 2.0f);
+            float measuredContentWidth = 0.0f;
+            float measuredContentHeight = 0.0f;
+
+            if (popupNavigationTargetTabIndex.has_value() && *popupNavigationTargetTabIndex >= 0 &&
+                *popupNavigationTargetTabIndex < static_cast<int>(mapTrackerState.tabs.size())) {
+                const MapTabData& popupTargetTab =
+                    mapTrackerState.tabs[static_cast<size_t>(*popupNavigationTargetTabIndex)];
+                measuredContentWidth =
+                    std::max(measuredContentWidth, ImGui::CalcTextSize(popupTargetTab.mapName.c_str()).x + 1.0f);
+                measuredContentHeight += popupTextLineHeight;
+                // Separator + spacing around it.
+                measuredContentHeight += (popupStyle.ItemSpacing.y * 2.0f) + 2.0f;
+            }
+
+            for (size_t clusterIndex = 0; clusterIndex < popupClusterIt->second.size(); clusterIndex++) {
+                const auto& renderableMarker = popupClusterIt->second[clusterIndex];
+                const MapMarker& marker = *renderableMarker.marker;
+                std::string checkName = GetCheckDisplayName(marker.check);
+                float selectableWidth = ImGui::CalcTextSize(checkName.c_str()).x + (popupStyle.FramePadding.x * 2.0f);
+                float rowWidth = popupStatusWidth + 6.0f + selectableWidth;
+
+                std::string extraText = GetCheckExtraInfoText(marker.check);
+                if (!extraText.empty()) {
+                    std::string extraLabel = fmt::format("({})", extraText);
+                    rowWidth += popupStyle.ItemSpacing.x + ImGui::CalcTextSize(extraLabel.c_str()).x;
+                }
+
+                measuredContentWidth = std::max(measuredContentWidth, rowWidth);
+                measuredContentHeight += popupRowHeight;
+                if (clusterIndex + 1 < popupClusterIt->second.size()) {
+                    measuredContentHeight += popupStyle.ItemSpacing.y;
+                }
+            }
+
+            ImVec2 popupWindowSize(measuredContentWidth + (popupStyle.WindowPadding.x * 2.0f) + 4.0f,
+                                   measuredContentHeight + (popupStyle.WindowPadding.y * 2.0f) + 2.0f);
+            if (const ImGuiViewport* viewport = ImGui::GetMainViewport(); viewport != nullptr) {
+                popupWindowSize.x = std::clamp(popupWindowSize.x, 180.0f, std::max(180.0f, viewport->WorkSize.x * 0.55f));
+                popupWindowSize.y = std::clamp(popupWindowSize.y, 90.0f, std::max(90.0f, viewport->WorkSize.y * 0.75f));
+            }
+
             ImGui::SetNextWindowPos(clusterPopupState.popupPosition, ImGuiCond_Always);
+            ImGui::SetNextWindowSize(popupWindowSize, ImGuiCond_Always);
             ImGuiWindowFlags popupFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-                                          ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
-                                          ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
+                                          ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+                                          ImGuiWindowFlags_NoNav;
             std::string popupTitle = "Map Checks##MapClusterPopup_" + tab.mapName;
             ImGui::Begin(popupTitle.c_str(), nullptr, popupFlags);
 
@@ -2257,6 +2411,18 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
                 ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem | ImGuiHoveredFlags_ChildWindows);
             if (popupHovered) {
                 clusterPopupState.keepAliveUntil = std::max(clusterPopupState.keepAliveUntil, nowTime + 0.16);
+            }
+
+            if (popupNavigationTargetTabIndex.has_value() && *popupNavigationTargetTabIndex >= 0 &&
+                *popupNavigationTargetTabIndex < static_cast<int>(mapTrackerState.tabs.size())) {
+                const MapTabData& popupTargetTab =
+                    mapTrackerState.tabs[static_cast<size_t>(*popupNavigationTargetTabIndex)];
+                ImVec2 mapNameStart = ImGui::GetCursorScreenPos();
+                ImGui::TextUnformatted(popupTargetTab.mapName.c_str());
+                ImGui::GetWindowDrawList()->AddText(ImGui::GetFont(), ImGui::GetFontSize(),
+                                                    ImVec2(mapNameStart.x + 0.9f, mapNameStart.y),
+                                                    ImGui::GetColorU32(ImGuiCol_Text), popupTargetTab.mapName.c_str());
+                ImGui::Separator();
             }
 
             for (size_t clusterIndex = 0; clusterIndex < popupClusterIt->second.size(); clusterIndex++) {
@@ -2283,8 +2449,10 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
                 ImGui::SameLine(0.0f, 6.0f);
 
                 bool selected = false;
+                float selectableWidth = ImGui::CalcTextSize(checkName.c_str()).x + (ImGui::GetStyle().FramePadding.x * 2.0f);
                 bool rowPressed = ImGui::Selectable(checkSelectableLabel.c_str(), &selected,
-                                                    ImGuiSelectableFlags_AllowDoubleClick, ImVec2(0.0f, popupRowHeight));
+                                                    ImGuiSelectableFlags_AllowDoubleClick,
+                                                    ImVec2(selectableWidth, popupRowHeight));
                 bool rowHovered = ImGui::IsItemHovered();
                 if ((statusPressed || rowPressed) && canToggle) {
                     ToggleSkippedStateForCheck(marker.check);
@@ -2299,6 +2467,13 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
                     bool hasTooltipDetails = false;
                     ImGui::BeginTooltip();
                     ImGui::TextUnformatted(checkName.c_str());
+                    if (renderableMarker.isRequirementMismatch) {
+                        std::string requirementSummary = GetCheckRequirementSummary(marker.check);
+                        if (!requirementSummary.empty()) {
+                            ImGui::TextDisabled("%s", requirementSummary.c_str());
+                            hasTooltipDetails = true;
+                        }
+                    }
 
                     std::string logicString = showLogicTooltip ? GetCheckLogicString(marker.check) : "";
                     if (!logicString.empty()) {
