@@ -1071,61 +1071,139 @@ std::string ResolveMapImagePath(const std::string& mapName,
     return "";
 }
 
-static CheckAgeRequirement GetCheckAgeRequirementFromLogicString(const std::string& logicString) {
-    bool requiresAdult = logicString.find("IsAdult") != std::string::npos;
-    bool requiresChild = logicString.find("IsChild") != std::string::npos;
+struct CheckAgeTimeAvailabilityInfo {
+    bool canChildDay = false;
+    bool canChildNight = false;
+    bool canAdultDay = false;
+    bool canAdultNight = false;
+    bool canDoNow = false;
+    bool canDoAtAll = false;
+    CheckAgeRequirement ageRequirement = CheckAgeRequirement::Any;
+    CheckTimeRequirement timeRequirement = CheckTimeRequirement::Any;
+};
 
-    if (requiresAdult && !requiresChild) {
-        return CheckAgeRequirement::AdultOnly;
+static const LocationAccess* FindLocationAccessInParentRegion(RandomizerCheck rc, RandomizerRegion parentRegion) {
+    if (parentRegion == RR_NONE || parentRegion >= RR_MAX) {
+        return nullptr;
     }
-    if (requiresChild && !requiresAdult) {
-        return CheckAgeRequirement::ChildOnly;
+
+    for (const auto& locationInRegion : areaTable[parentRegion].locations) {
+        if (locationInRegion.GetLocation() == rc) {
+            return &locationInRegion;
+        }
     }
-    return CheckAgeRequirement::Any;
+
+    return nullptr;
 }
 
-static CheckTimeRequirement GetCheckTimeRequirementFromLogicString(const std::string& logicString) {
-    bool requiresDay = logicString.find("AtDay") != std::string::npos;
-    bool requiresNight = logicString.find("AtNight") != std::string::npos ||
-                         logicString.find("CanGetNightTimeGS") != std::string::npos;
+static bool EvaluateLocationConditionAtAgeTime(const LocationAccess& locationAccess, RandomizerRegion parentRegion,
+                                               RandomizerCheck rc, bool evaluateAsAdult, bool evaluateAtNight) {
+    auto ctx = Rando::Context::GetInstance();
+    if (ctx == nullptr) {
+        return false;
+    }
 
-    if (requiresDay && !requiresNight) {
-        return CheckTimeRequirement::DayOnly;
+    auto logicRef = ctx->GetLogic();
+    if (logicRef == nullptr) {
+        return false;
     }
-    if (requiresNight && !requiresDay) {
-        return CheckTimeRequirement::NightOnly;
+
+    const bool previousIsChild = logicRef->IsChild;
+    const bool previousIsAdult = logicRef->IsAdult;
+    const bool previousAtDay = logicRef->AtDay;
+    const bool previousAtNight = logicRef->AtNight;
+    const RandomizerRegion previousRegionKey = logicRef->CurrentRegionKey;
+    const RandomizerCheck previousCheckKey = logicRef->CurrentCheckKey;
+
+    logicRef->CurrentRegionKey = parentRegion;
+    logicRef->CurrentCheckKey = rc;
+
+    bool conditionsMet = false;
+    if (evaluateAsAdult) {
+        if (evaluateAtNight) {
+            conditionsMet = locationAccess.CheckConditionAtAgeTime(logicRef->IsAdult, logicRef->AtNight);
+        } else {
+            conditionsMet = locationAccess.CheckConditionAtAgeTime(logicRef->IsAdult, logicRef->AtDay);
+        }
+    } else {
+        if (evaluateAtNight) {
+            conditionsMet = locationAccess.CheckConditionAtAgeTime(logicRef->IsChild, logicRef->AtNight);
+        } else {
+            conditionsMet = locationAccess.CheckConditionAtAgeTime(logicRef->IsChild, logicRef->AtDay);
+        }
     }
-    return CheckTimeRequirement::Any;
+
+    logicRef->IsChild = previousIsChild;
+    logicRef->IsAdult = previousIsAdult;
+    logicRef->AtDay = previousAtDay;
+    logicRef->AtNight = previousAtNight;
+    logicRef->CurrentRegionKey = previousRegionKey;
+    logicRef->CurrentCheckKey = previousCheckKey;
+
+    return conditionsMet;
 }
 
-static bool IsCurrentAgeMismatched(CheckAgeRequirement ageRequirement) {
-    switch (ageRequirement) {
-        case CheckAgeRequirement::AdultOnly:
-            return !LINK_IS_ADULT;
-        case CheckAgeRequirement::ChildOnly:
-            return LINK_IS_ADULT;
-        default:
+static CheckAgeTimeAvailabilityInfo EvaluateCheckAgeTimeAvailability(RandomizerCheck rc) {
+    CheckAgeTimeAvailabilityInfo info;
+
+    auto* itemLocation = OTRGlobals::Instance->gRandoContext->GetItemLocation(rc);
+    if (itemLocation == nullptr) {
+        return info;
+    }
+
+    RandomizerRegion parentRegion = itemLocation->GetParentRegionKey();
+    const LocationAccess* locationAccess = FindLocationAccessInParentRegion(rc, parentRegion);
+    if (locationAccess == nullptr) {
+        return info;
+    }
+
+    if (parentRegion == RR_NONE || parentRegion >= RR_MAX) {
+        return info;
+    }
+
+    Region& parent = areaTable[parentRegion];
+
+    auto evaluateCombo = [&](bool parentHasAccess, bool evaluateAsAdult, bool evaluateAtNight) {
+        if (!parentHasAccess) {
             return false;
+        }
+        return EvaluateLocationConditionAtAgeTime(*locationAccess, parentRegion, rc, evaluateAsAdult, evaluateAtNight);
+    };
+
+    info.canChildDay = evaluateCombo(parent.childDay, false, false);
+    info.canChildNight = evaluateCombo(parent.childNight, false, true);
+    info.canAdultDay = evaluateCombo(parent.adultDay, true, false);
+    info.canAdultNight = evaluateCombo(parent.adultNight, true, true);
+
+    info.canDoAtAll = info.canChildDay || info.canChildNight || info.canAdultDay || info.canAdultNight;
+
+    bool canAsChild = info.canChildDay || info.canChildNight;
+    bool canAsAdult = info.canAdultDay || info.canAdultNight;
+    if (canAsChild != canAsAdult) {
+        info.ageRequirement = canAsChild ? CheckAgeRequirement::ChildOnly : CheckAgeRequirement::AdultOnly;
     }
+
+    bool canAtDay = info.canChildDay || info.canAdultDay;
+    bool canAtNight = info.canChildNight || info.canAdultNight;
+    if (canAtDay != canAtNight) {
+        info.timeRequirement = canAtDay ? CheckTimeRequirement::DayOnly : CheckTimeRequirement::NightOnly;
+    }
+
+    bool currentIsAdult = LINK_IS_ADULT;
+    bool currentIsNight = IS_NIGHT;
+    if (currentIsAdult) {
+        info.canDoNow = currentIsNight ? info.canAdultNight : info.canAdultDay;
+    } else {
+        info.canDoNow = currentIsNight ? info.canChildNight : info.canChildDay;
+    }
+
+    return info;
 }
 
-static bool IsCurrentTimeMismatched(CheckTimeRequirement timeRequirement) {
-    switch (timeRequirement) {
-        case CheckTimeRequirement::DayOnly:
-            return IS_NIGHT;
-        case CheckTimeRequirement::NightOnly:
-            return IS_DAY;
-        default:
-            return false;
-    }
-}
-
-static std::string BuildCheckRequirementSummaryFromLogicString(const std::string& logicString) {
+static std::string BuildCheckRequirementSummary(const CheckAgeTimeAvailabilityInfo& availabilityInfo) {
     std::vector<std::string> requirements;
-    CheckAgeRequirement ageRequirement = GetCheckAgeRequirementFromLogicString(logicString);
-    CheckTimeRequirement timeRequirement = GetCheckTimeRequirementFromLogicString(logicString);
 
-    switch (ageRequirement) {
+    switch (availabilityInfo.ageRequirement) {
         case CheckAgeRequirement::ChildOnly:
             requirements.emplace_back("Child");
             break;
@@ -1136,7 +1214,7 @@ static std::string BuildCheckRequirementSummaryFromLogicString(const std::string
             break;
     }
 
-    switch (timeRequirement) {
+    switch (availabilityInfo.timeRequirement) {
         case CheckTimeRequirement::DayOnly:
             requirements.emplace_back("Day");
             break;
@@ -1147,21 +1225,24 @@ static std::string BuildCheckRequirementSummaryFromLogicString(const std::string
             break;
     }
 
-    if (requirements.empty()) {
-        return "";
+    if (!requirements.empty()) {
+        return "Required: " + JoinWithCommaLimited(requirements, requirements.size());
     }
 
-    return "Required: " + JoinWithCommaLimited(requirements, requirements.size());
+    if (availabilityInfo.canDoAtAll && !availabilityInfo.canDoNow) {
+        return "Required: Different age/time";
+    }
+
+    return "";
 }
 
 bool IsCheckAvailableButWrongAgeOrTime(RandomizerCheck rc) {
-    std::string logicString = GetCheckLogicString(rc);
-    return IsCurrentAgeMismatched(GetCheckAgeRequirementFromLogicString(logicString)) ||
-           IsCurrentTimeMismatched(GetCheckTimeRequirementFromLogicString(logicString));
+    CheckAgeTimeAvailabilityInfo availabilityInfo = EvaluateCheckAgeTimeAvailability(rc);
+    return availabilityInfo.canDoAtAll && !availabilityInfo.canDoNow;
 }
 
 std::string GetCheckRequirementSummary(RandomizerCheck rc) {
-    return BuildCheckRequirementSummaryFromLogicString(GetCheckLogicString(rc));
+    return BuildCheckRequirementSummary(EvaluateCheckAgeTimeAvailability(rc));
 }
 
 std::vector<std::string> BuildPreferredMapNamesForArea(RandomizerCheckArea area) {
@@ -5257,6 +5338,7 @@ void RegisterCheckTrackerWidgets() {
 
 static RegisterMenuInitFunc menuInitFunc(RegisterCheckTrackerWidgets);
 } // namespace CheckTracker
+
 
 
 
