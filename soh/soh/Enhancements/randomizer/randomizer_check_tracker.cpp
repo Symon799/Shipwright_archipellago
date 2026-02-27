@@ -324,6 +324,9 @@ constexpr float CHECK_TRACKER_MAP_TOOLTIP_MIN_CONTENT_WIDTH = 220.0f;
 constexpr float CHECK_TRACKER_MAP_TOOLTIP_LOGIC_MIN_CONTENT_WIDTH = 700.0f;
 constexpr float CHECK_TRACKER_MAP_TOOLTIP_MAX_VIEWPORT_WIDTH_RATIO = 0.6f;
 constexpr float CHECK_TRACKER_MAP_TOOLTIP_MAX_VIEWPORT_HEIGHT_RATIO = 0.9f;
+constexpr float CHECK_TRACKER_MAP_ZOOM_MIN = 1.0f;
+constexpr float CHECK_TRACKER_MAP_ZOOM_MAX = 5.0f;
+constexpr float CHECK_TRACKER_MAP_ZOOM_WHEEL_STEP = 1.15f;
 
 struct MapPlacement {
     std::string mapName;
@@ -358,6 +361,8 @@ struct MapTabData {
     ImTextureID texture = 0;
     ImVec2 textureSize = { 0.0f, 0.0f };
     bool imageLoaded = false;
+    float zoomFactor = 1.0f;
+    ImVec2 panOffset = { 0.0f, 0.0f };
     std::string imageError;
     std::vector<MapMarker> markers;
 };
@@ -398,6 +403,7 @@ struct MapTrackerState {
     std::unordered_set<RandomizerCheck> linkedChecks;
     std::string requestedTabName;
     int selectedTabIndex = 0;
+    int lastMapViewTabIndex = -1;
     RandomizerCheckArea lastFocusedArea = RCAREA_INVALID;
 };
 
@@ -2504,7 +2510,17 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
         return;
     }
 
+    tab.zoomFactor = std::clamp(tab.zoomFactor, CHECK_TRACKER_MAP_ZOOM_MIN, CHECK_TRACKER_MAP_ZOOM_MAX);
+
     ImVec2 availableSize = ImGui::GetContentRegionAvail();
+    availableSize.x = std::max(1.0f, availableSize.x);
+    availableSize.y = std::max(120.0f, availableSize.y);
+
+    ImGuiWindowFlags mapCanvasFlags = ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoScrollbar;
+    std::string mapCanvasId = "CheckTrackerMapCanvas##" + NormalizeForMatching(tab.mapName);
+    ImGui::BeginChild(mapCanvasId.c_str(), availableSize, false, mapCanvasFlags);
+
+    availableSize = ImGui::GetContentRegionAvail();
     // In a scrollable table cell, available Y can grow with scroll offset. Clamp to a stable visible height so
     // map scaling does not increase while scrolling.
     float visibleRegionHeight = ImGui::GetWindowContentRegionMax().y - ImGui::GetWindowContentRegionMin().y;
@@ -2519,18 +2535,90 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
 
     float widthScale = (fitSize.x > 0.0f && tab.textureSize.x > 0.0f) ? (fitSize.x / tab.textureSize.x) : 1.0f;
     float heightScale = (fitSize.y > 0.0f && tab.textureSize.y > 0.0f) ? (fitSize.y / tab.textureSize.y) : widthScale;
-    float imageScale = std::min(widthScale, heightScale);
-    imageScale = std::clamp(imageScale, 0.05f, 1.0f);
+    float fitScale = std::min(widthScale, heightScale);
+    fitScale = std::clamp(fitScale, 0.05f, 1.0f);
 
+    ImVec2 mapCursorPos = ImGui::GetCursorPos();
+    ImVec2 mapCursorScreenPos = ImGui::GetCursorScreenPos();
+
+    auto clampPanOffset = [&](float currentImageScale, const ImVec2& currentDrawSize, float currentHorizontalPadding,
+                              float currentVerticalPadding) {
+        float minPanX = 0.0f;
+        float maxPanX = 0.0f;
+        if (currentDrawSize.x > availableSize.x) {
+            minPanX = availableSize.x - currentDrawSize.x - currentHorizontalPadding;
+            maxPanX = -currentHorizontalPadding;
+        }
+
+        float minPanY = 0.0f;
+        float maxPanY = 0.0f;
+        if (currentDrawSize.y > availableSize.y) {
+            minPanY = availableSize.y - currentDrawSize.y - currentVerticalPadding;
+            maxPanY = -currentVerticalPadding;
+        }
+
+        tab.panOffset.x = std::clamp(tab.panOffset.x, minPanX, maxPanX);
+        tab.panOffset.y = std::clamp(tab.panOffset.y, minPanY, maxPanY);
+    };
+
+    float imageScale = fitScale * tab.zoomFactor;
     ImVec2 drawSize(tab.textureSize.x * imageScale, tab.textureSize.y * imageScale);
     float horizontalPadding = std::max(0.0f, (availableSize.x - drawSize.x) * 0.5f);
     float verticalPadding = std::max(0.0f, (availableSize.y - drawSize.y) * 0.5f);
-    ImVec2 mapCursorPos = ImGui::GetCursorPos();
-    ImGui::SetCursorPos(ImVec2(mapCursorPos.x + horizontalPadding, mapCursorPos.y + verticalPadding));
-    ImVec2 imageStartPos = ImGui::GetCursorScreenPos();
+    ImVec2 imageStartPos(mapCursorScreenPos.x + horizontalPadding + tab.panOffset.x,
+                         mapCursorScreenPos.y + verticalPadding + tab.panOffset.y);
+
+    float wheelDelta = ImGui::GetIO().MouseWheel;
+    ImVec2 mousePos = ImGui::GetIO().MousePos;
+    bool mouseInsideImage = mousePos.x >= imageStartPos.x && mousePos.x <= (imageStartPos.x + drawSize.x) &&
+                            mousePos.y >= imageStartPos.y && mousePos.y <= (imageStartPos.y + drawSize.y);
+    if (wheelDelta != 0.0f && mouseInsideImage) {
+        float previousZoomFactor = tab.zoomFactor;
+        float zoomStep = std::pow(CHECK_TRACKER_MAP_ZOOM_WHEEL_STEP, wheelDelta);
+        float nextZoomFactor =
+            std::clamp(previousZoomFactor * zoomStep, CHECK_TRACKER_MAP_ZOOM_MIN, CHECK_TRACKER_MAP_ZOOM_MAX);
+        if (nextZoomFactor != previousZoomFactor) {
+            float previousImageScale = imageScale;
+            ImVec2 previousImageStartPos = imageStartPos;
+
+            float mapPixelX = (mousePos.x - previousImageStartPos.x) / std::max(0.0001f, previousImageScale);
+            float mapPixelY = (mousePos.y - previousImageStartPos.y) / std::max(0.0001f, previousImageScale);
+
+            tab.zoomFactor = nextZoomFactor;
+            imageScale = fitScale * tab.zoomFactor;
+            drawSize = ImVec2(tab.textureSize.x * imageScale, tab.textureSize.y * imageScale);
+            horizontalPadding = std::max(0.0f, (availableSize.x - drawSize.x) * 0.5f);
+            verticalPadding = std::max(0.0f, (availableSize.y - drawSize.y) * 0.5f);
+
+            ImVec2 desiredImageStartPos(mousePos.x - (mapPixelX * imageScale), mousePos.y - (mapPixelY * imageScale));
+            tab.panOffset.x = desiredImageStartPos.x - mapCursorScreenPos.x - horizontalPadding;
+            tab.panOffset.y = desiredImageStartPos.y - mapCursorScreenPos.y - verticalPadding;
+        }
+    }
+
+    clampPanOffset(imageScale, drawSize, horizontalPadding, verticalPadding);
+
+    ImGui::SetCursorPos(
+        ImVec2(mapCursorPos.x + horizontalPadding + tab.panOffset.x, mapCursorPos.y + verticalPadding + tab.panOffset.y));
+    imageStartPos = ImGui::GetCursorScreenPos();
     ImDrawList* drawList = ImGui::GetWindowDrawList();
 
     ImGui::Image(tab.texture, drawSize);
+
+    // Capture drag input on the map itself so the parent ImGui window does not move.
+    ImGui::SetCursorScreenPos(imageStartPos);
+    ImGui::PushID("MapPanLayer");
+    ImGui::InvisibleButton("MapPanCapture", drawSize);
+    ImGui::SetItemAllowOverlap();
+    bool mapImageActive = ImGui::IsItemActive();
+    ImGui::PopID();
+
+    if (mapImageActive && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f)) {
+        ImVec2 dragDelta = ImGui::GetIO().MouseDelta;
+        tab.panOffset.x += dragDelta.x;
+        tab.panOffset.y += dragDelta.y;
+        clampPanOffset(imageScale, drawSize, horizontalPadding, verticalPadding);
+    }
 
     if (mapClusterPopupState.tabName != tab.mapName) {
         mapClusterPopupState.open = false;
@@ -2578,7 +2666,7 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
         ImGui::PushID(fmt::format("MapMarker_{}_{}", tab.mapName, stackKey).c_str());
         ImGui::InvisibleButton("marker", ImVec2(markerMax.x - markerMin.x, markerMax.y - markerMin.y));
         bool hovered = ImGui::IsItemHovered();
-        bool clicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
+        bool clicked = ImGui::IsItemClicked(ImGuiMouseButton_Left) && !ImGui::IsMouseDragging(ImGuiMouseButton_Left, 4.0f);
         ImGui::PopID();
 
         std::vector<ImU32> segmentColors = BuildClusterSegmentColors(renderableMarkers);
@@ -2769,6 +2857,8 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
         ImGui::GetTime() > mapClusterPopupState.keepAliveUntil) {
         mapClusterPopupState.open = false;
     }
+
+    ImGui::EndChild();
 }
 
 static bool DrawMapTrackerLoadingOrFatalState() {
@@ -3078,12 +3168,20 @@ void DrawMapTrackerContent() {
 
     if (ImGui::BeginChild("CheckTrackerMapBody", mapBodySize, false, mapBodyFlags)) {
         if (showingIssuesTab) {
+            mapTrackerState.lastMapViewTabIndex = -1;
             DrawMapTrackerIssuesTab();
         } else if (!mapTrackerState.tabs.empty() &&
                    mapTrackerState.selectedTabIndex >= 0 &&
                    mapTrackerState.selectedTabIndex < static_cast<int>(mapTrackerState.tabs.size())) {
+            if (mapTrackerState.lastMapViewTabIndex != mapTrackerState.selectedTabIndex) {
+                MapTabData& selectedMapTab = mapTrackerState.tabs[mapTrackerState.selectedTabIndex];
+                selectedMapTab.zoomFactor = 1.0f;
+                selectedMapTab.panOffset = ImVec2(0.0f, 0.0f);
+                mapTrackerState.lastMapViewTabIndex = mapTrackerState.selectedTabIndex;
+            }
             DrawMapTabContent(mapTrackerState.tabs[mapTrackerState.selectedTabIndex], mqSpoilers);
         } else {
+            mapTrackerState.lastMapViewTabIndex = -1;
             ImGui::TextUnformatted("No map tabs available for this group.");
         }
     }
@@ -5338,16 +5436,6 @@ void RegisterCheckTrackerWidgets() {
 
 static RegisterMenuInitFunc menuInitFunc(RegisterCheckTrackerWidgets);
 } // namespace CheckTracker
-
-
-
-
-
-
-
-
-
-
 
 
 
