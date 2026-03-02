@@ -401,6 +401,8 @@ struct MapTrackerState {
     std::unordered_map<RandomizerCheck, std::vector<int>> tabIndicesByCheck;
     std::unordered_map<std::string, int> lastSelectedTabByGroup;
     std::unordered_set<RandomizerCheck> linkedChecks;
+    std::unordered_map<RandomizerCheck, std::string> checkHints;
+    std::unordered_set<RandomizerCheck> revealedCheckHints;
     std::string requestedTabName;
     int selectedTabIndex = 0;
     int lastMapViewTabIndex = -1;
@@ -1502,6 +1504,13 @@ std::vector<MapMarker> ParseMapMarkersFromPackAreas(
                 continue;
             }
 
+            if (checkNode.contains("hint") && checkNode["hint"].is_string()) {
+                const std::string hintText = TrimCopy(checkNode["hint"].get<std::string>());
+                if (!hintText.empty()) {
+                    mapTrackerState.checkHints[checkMatch->second] = hintText;
+                }
+            }
+
             std::vector<MapPlacement> placements = ExtractPlacementsFromNode(checkNode, areaFile.displayName, warnings);
             if (placements.empty()) {
                 warnings.push_back(
@@ -2165,11 +2174,36 @@ struct ClusterPopupState {
 
 static ClusterPopupState mapClusterPopupState;
 
+static std::string GetMapTrackerCheckHint(RandomizerCheck check) {
+    auto hintIt = mapTrackerState.checkHints.find(check);
+    if (hintIt == mapTrackerState.checkHints.end()) {
+        return "";
+    }
+
+    return hintIt->second;
+}
+
+static bool ToggleMapTrackerCheckHint(RandomizerCheck check) {
+    if (GetMapTrackerCheckHint(check).empty()) {
+        return false;
+    }
+
+    if (mapTrackerState.revealedCheckHints.contains(check)) {
+        mapTrackerState.revealedCheckHints.erase(check);
+    } else {
+        mapTrackerState.revealedCheckHints.insert(check);
+    }
+
+    return true;
+}
+
 struct MarkerTooltipContent {
     std::string checkName;
     std::string requirementSummary;
     std::string extraText;
     Color_RGBA8 extraColor = { 255, 255, 255, 255 };
+    std::string hintText;
+    bool showHintPrompt = false;
     std::string logicString;
     std::string checkTag;
     std::string displayPath;
@@ -2249,6 +2283,11 @@ static MarkerTooltipContent BuildMarkerTooltipContent(RandomizerCheck check, con
     if (!content.extraText.empty()) {
         content.extraColor = GetLegacyCheckExtraColor(check);
     }
+    content.hintText = GetMapTrackerCheckHint(check);
+    if (!content.hintText.empty() && !mapTrackerState.revealedCheckHints.contains(check)) {
+        content.hintText.clear();
+        content.showHintPrompt = true;
+    }
     if (showLogicTooltip) {
         content.logicString = GetCheckLogicString(check);
     }
@@ -2282,6 +2321,11 @@ static MarkerTooltipLayout ComputeMarkerTooltipLayout(const MarkerTooltipContent
         std::string extraLabel = fmt::format("({})", content.extraText);
         contentWidth = std::max(contentWidth, ImGui::CalcTextSize(extraLabel.c_str()).x);
     }
+    if (!content.hintText.empty()) {
+        contentWidth = std::max(contentWidth, ImGui::CalcTextSize("Hint: ").x + CHECK_TRACKER_MAP_TOOLTIP_MIN_CONTENT_WIDTH);
+    } else if (content.showHintPrompt) {
+        contentWidth = std::max(contentWidth, ImGui::CalcTextSize("Right click to show hint").x);
+    }
     if (!content.logicString.empty()) {
         contentWidth = std::max(contentWidth, CHECK_TRACKER_MAP_TOOLTIP_LOGIC_MIN_CONTENT_WIDTH);
     }
@@ -2304,6 +2348,14 @@ static MarkerTooltipLayout ComputeMarkerTooltipLayout(const MarkerTooltipContent
         std::string extraLabel = fmt::format("({})", content.extraText);
         float extraHeight = ImGui::CalcTextSize(extraLabel.c_str(), nullptr, false, contentWidth).y;
         contentHeight += style.ItemSpacing.y + std::max(lineHeight, extraHeight);
+        hasDetailsSection = true;
+    }
+    if (!content.hintText.empty() || content.showHintPrompt) {
+        contentHeight += (style.ItemSpacing.y * 2.0f) + 2.0f;
+        const std::string hintLabel =
+            content.hintText.empty() ? "Right click to show hint." : fmt::format("Hint: {}", content.hintText);
+        float hintHeight = ImGui::CalcTextSize(hintLabel.c_str(), nullptr, false, contentWidth).y;
+        contentHeight += std::max(lineHeight, hintHeight);
         hasDetailsSection = true;
     }
     if (!content.logicString.empty()) {
@@ -2351,6 +2403,19 @@ static void DrawMarkerTooltip(const MarkerTooltipContent& content) {
         ImGui::TextUnformatted(extraLabel.c_str());
         ImGui::PopTextWrapPos();
         ImGui::PopStyleColor();
+        hasTooltipDetails = true;
+    }
+
+    if (!content.hintText.empty() || content.showHintPrompt) {
+        ImGui::Separator();
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + layout.contentWidth);
+        if (!content.hintText.empty()) {
+            std::string hintLabel = fmt::format("Hint: {}", content.hintText);
+            ImGui::TextUnformatted(hintLabel.c_str());
+        } else {
+            ImGui::TextDisabled("%s", "Right click to show hint.");
+        }
+        ImGui::PopTextWrapPos();
         hasTooltipDetails = true;
     }
 
@@ -2667,6 +2732,8 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
         ImGui::InvisibleButton("marker", ImVec2(markerMax.x - markerMin.x, markerMax.y - markerMin.y));
         bool hovered = ImGui::IsItemHovered();
         bool clicked = ImGui::IsItemClicked(ImGuiMouseButton_Left) && !ImGui::IsMouseDragging(ImGuiMouseButton_Left, 4.0f);
+        bool rightClicked = hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right) &&
+                            !ImGui::IsMouseDragging(ImGuiMouseButton_Right, 4.0f);
         ImGui::PopID();
 
         std::vector<ImU32> segmentColors = BuildClusterSegmentColors(renderableMarkers);
@@ -2761,6 +2828,9 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
         }
 
         if (hovered) {
+            if (rightClicked) {
+                ToggleMapTrackerCheckHint(anchorMarker.check);
+            }
             DrawRenderableMapMarkerTooltip(renderableMarkers.front());
         }
     }
@@ -2812,7 +2882,7 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
                 bool statusPressed =
                     ImGui::ColorButton("##Status", ImGui::ColorConvertU32ToFloat4(renderableMarker.fillColor),
                                        ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop, statusSize);
-                bool statusHovered = ImGui::IsItemHovered();
+                bool statusHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
                 ImGui::SameLine(0.0f, 6.0f);
 
                 bool selected = false;
@@ -2820,7 +2890,7 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
                 bool rowPressed = ImGui::Selectable(checkSelectableLabel.c_str(), &selected,
                                                     ImGuiSelectableFlags_AllowDoubleClick,
                                                     ImVec2(selectableWidth, popupRowHeight));
-                bool rowHovered = ImGui::IsItemHovered();
+                bool rowHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
                 if ((statusPressed || rowPressed) && canToggle) {
                     ToggleSkippedStateForCheck(marker.check);
                     mapClusterPopupState.keepAliveUntil =
@@ -2831,11 +2901,8 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
                     ImGui::EndDisabled();
                 }
 
-                if (statusHovered || rowHovered) {
-                    DrawMarkerTooltip(BuildMarkerTooltipContent(marker.check, marker.displayPath));
-                }
-
                 std::string extraText = GetCheckExtraInfoText(marker.check);
+                bool extraHovered = false;
                 if (!extraText.empty()) {
                     ImGui::SameLine();
                     Color_RGBA8 legacyExtraColor = GetLegacyCheckExtraColor(marker.check);
@@ -2845,6 +2912,19 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
                                legacyExtraColor.a / 255.0f));
                     ImGui::Text("(%s)", extraText.c_str());
                     ImGui::PopStyleColor();
+                    extraHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
+                }
+
+                bool clusterRowHovered = statusHovered || rowHovered || extraHovered;
+                bool hintTogglePressed = clusterRowHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right) &&
+                                         !ImGui::IsMouseDragging(ImGuiMouseButton_Right, 4.0f);
+                if (clusterRowHovered) {
+                    mapClusterPopupState.keepAliveUntil =
+                        std::max(mapClusterPopupState.keepAliveUntil, ImGui::GetTime() + 0.16);
+                    if (hintTogglePressed) {
+                        ToggleMapTrackerCheckHint(marker.check);
+                    }
+                    DrawMarkerTooltip(BuildMarkerTooltipContent(marker.check, marker.displayPath));
                 }
                 ImGui::PopID();
             }
