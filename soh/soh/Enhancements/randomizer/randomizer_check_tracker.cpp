@@ -351,6 +351,14 @@ struct MapMarker {
     float size = 22.0f;
 };
 
+struct MapLink {
+    std::string targetMapName;
+    std::string normalizedTargetMapName;
+    float x = 0.0f;
+    float y = 0.0f;
+    float size = 22.0f;
+};
+
 struct MapTabData {
     std::string mapName;
     std::string groupName;
@@ -365,6 +373,7 @@ struct MapTabData {
     ImVec2 panOffset = { 0.0f, 0.0f };
     std::string imageError;
     std::vector<MapMarker> markers;
+    std::vector<MapLink> links;
 };
 
 struct MapIssueEntry {
@@ -1557,6 +1566,7 @@ std::vector<MapMarker> ParseMapMarkersFromPackAreas(
 struct MapsMetadataParseResult {
     std::unordered_map<std::string, std::string> mapImagePathsByName;
     std::unordered_map<std::string, std::string> mapGroupByName;
+    std::unordered_map<std::string, std::vector<MapLink>> mapLinksByName;
     std::vector<std::string> orderedMapNames;
     bool hasNamedGroupsInMetadata = false;
 };
@@ -1667,6 +1677,42 @@ static bool ParseMapMetadataEntries(const json& mapsJson, const std::string& map
             outMetadata.mapGroupByName[normalizedMapName] = mapGroup;
         }
 
+        if (mapEntry.contains("links") && mapEntry["links"].is_array()) {
+            auto& links = outMetadata.mapLinksByName[normalizedMapName];
+            for (const auto& linkEntry : mapEntry["links"]) {
+                if (!linkEntry.is_object() || !linkEntry.contains("target_map") || !linkEntry["target_map"].is_string()) {
+                    mapTrackerState.warnings.push_back({ "Invalid link in map " + mapName,
+                                                         "A links entry is missing a valid \"target_map\" string." });
+                    continue;
+                }
+
+                MapLink link;
+                link.targetMapName = NormalizeMapNameForMapTracker(linkEntry["target_map"].get<std::string>());
+                link.normalizedTargetMapName = NormalizeForMatching(link.targetMapName);
+                if (link.targetMapName.empty() || link.normalizedTargetMapName.empty()) {
+                    mapTrackerState.warnings.push_back({ "Invalid link in map " + mapName,
+                                                         "A links entry has an empty target_map after normalization." });
+                    continue;
+                }
+
+                bool hasX = linkEntry.contains("x") && TryReadFloat(linkEntry["x"], link.x);
+                bool hasY = linkEntry.contains("y") && TryReadFloat(linkEntry["y"], link.y);
+                bool hasSize = true;
+                if (linkEntry.contains("size")) {
+                    hasSize = TryReadFloat(linkEntry["size"], link.size);
+                }
+
+                if (!hasX || !hasY || !hasSize) {
+                    mapTrackerState.warnings.push_back(
+                        { "Invalid link coordinates in map " + mapName,
+                          "A links entry has invalid x/y/size values for target_map \"" + link.targetMapName + "\"." });
+                    continue;
+                }
+
+                links.push_back(std::move(link));
+            }
+        }
+
         if (mapEntry.contains("img") && mapEntry["img"].is_string()) {
             outMetadata.mapImagePathsByName[normalizedMapName] = mapEntry["img"].get<std::string>();
         } else {
@@ -1761,6 +1807,9 @@ static void BuildMapTabsFromMetadata(const std::filesystem::path& packFolderPath
         if (metadata.mapGroupByName.contains(normalizedMapName)) {
             tab.groupName = metadata.mapGroupByName.at(normalizedMapName);
         }
+        if (metadata.mapLinksByName.contains(normalizedMapName)) {
+            tab.links = metadata.mapLinksByName.at(normalizedMapName);
+        }
 
         std::string resolutionInfo;
         tab.imageRelativePath = ResolveMapImagePath(mapName, metadata.mapImagePathsByName, resolutionInfo);
@@ -1782,6 +1831,17 @@ static void BuildMapTabsFromMetadata(const std::filesystem::path& packFolderPath
 
         mapTrackerState.tabIndexByName[normalizedMapName] = mapTrackerState.tabs.size();
         mapTrackerState.tabs.push_back(std::move(tab));
+    }
+
+    for (const auto& tab : mapTrackerState.tabs) {
+        for (const auto& link : tab.links) {
+            if (!mapTrackerState.tabIndexByName.contains(link.normalizedTargetMapName)) {
+                mapTrackerState.warnings.push_back(
+                    { "Missing target map for link",
+                      "Map \"" + tab.mapName + "\" links to \"" + link.targetMapName +
+                          "\", but no tab with that name exists in maps.json." });
+            }
+        }
     }
 }
 
@@ -2174,6 +2234,16 @@ struct ClusterPopupState {
 
 static ClusterPopupState mapClusterPopupState;
 
+struct LinkPopupState {
+    bool open = false;
+    std::string tabName;
+    std::string targetTabName;
+    ImVec2 popupPosition = { 0.0f, 0.0f };
+    double keepAliveUntil = 0.0;
+};
+
+static LinkPopupState mapLinkPopupState;
+
 static std::string GetMapTrackerCheckHint(RandomizerCheck check) {
     auto hintIt = mapTrackerState.checkHints.find(check);
     if (hintIt == mapTrackerState.checkHints.end()) {
@@ -2296,6 +2366,20 @@ static MarkerTooltipContent BuildMarkerTooltipContent(RandomizerCheck check, con
         content.displayPath = displayPath;
     }
     return content;
+}
+
+static std::vector<RenderableMapMarker> BuildRenderableMarkersForTab(const MapTabData& tab, bool mqSpoilers) {
+    std::vector<RenderableMapMarker> renderableMarkers;
+    renderableMarkers.reserve(tab.markers.size());
+
+    for (const auto& marker : tab.markers) {
+        if (!ShouldRenderMapMarker(marker, mqSpoilers)) {
+            continue;
+        }
+        renderableMarkers.push_back(CreateRenderableMapMarker(marker));
+    }
+
+    return renderableMarkers;
 }
 
 static MarkerTooltipLayout ComputeMarkerTooltipLayout(const MarkerTooltipContent& content) {
@@ -2566,6 +2650,89 @@ static ImVec2 ComputeClusterPopupWindowSize(const std::vector<RenderableMapMarke
     return popupWindowSize;
 }
 
+static void NavigateToMapTab(int targetTabIndex) {
+    if (targetTabIndex < 0 || targetTabIndex >= static_cast<int>(mapTrackerState.tabs.size())) {
+        return;
+    }
+
+    mapTrackerState.selectedTabIndex = targetTabIndex;
+    const MapTabData& targetTab = mapTrackerState.tabs[static_cast<size_t>(targetTabIndex)];
+    mapTrackerState.selectedGroupName = targetTab.groupName;
+    if (!mapTrackerState.selectedGroupName.empty()) {
+        mapTrackerState.lastSelectedTabByGroup[mapTrackerState.selectedGroupName] = targetTabIndex;
+    }
+    mapTrackerState.requestedTabName = NormalizeForMatching(targetTab.mapName);
+}
+
+static void DrawRenderableMarkerRows(const std::vector<RenderableMapMarker>& renderableMarkers) {
+    for (size_t markerIndex = 0; markerIndex < renderableMarkers.size(); markerIndex++) {
+        const auto& renderableMarker = renderableMarkers[markerIndex];
+        const MapMarker& marker = *renderableMarker.marker;
+        bool canToggle = CanToggleSkippedStateForCheck(marker.check);
+        std::string checkName = GetCheckDisplayName(marker.check);
+        std::string markerRowId = fmt::format("PopupCheckRow_{}_{}_{}_{}", static_cast<int>(marker.check), markerIndex,
+                                              marker.displayPath, marker.mapName);
+        std::string checkSelectableLabel = checkName + "##Select";
+
+        ImGui::PushID(markerRowId.c_str());
+        float popupRowHeight = std::max(14.0f, ImGui::GetTextLineHeight() + 1.0f);
+
+        if (!canToggle) {
+            ImGui::BeginDisabled();
+        }
+
+        ImVec2 statusSize(std::max(10.0f, popupRowHeight - 2.0f), std::max(10.0f, popupRowHeight - 2.0f));
+        bool statusPressed = ImGui::ColorButton("##Status", ImGui::ColorConvertU32ToFloat4(renderableMarker.fillColor),
+                                                ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop,
+                                                statusSize);
+        bool statusHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
+        ImGui::SameLine(0.0f, 6.0f);
+
+        bool selected = false;
+        float selectableWidth = ImGui::CalcTextSize(checkName.c_str()).x + (ImGui::GetStyle().FramePadding.x * 2.0f);
+        bool rowPressed = ImGui::Selectable(checkSelectableLabel.c_str(), &selected, ImGuiSelectableFlags_AllowDoubleClick,
+                                            ImVec2(selectableWidth, popupRowHeight));
+        bool rowHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
+        if ((statusPressed || rowPressed) && canToggle) {
+            ToggleSkippedStateForCheck(marker.check);
+            mapClusterPopupState.keepAliveUntil = std::max(mapClusterPopupState.keepAliveUntil, ImGui::GetTime() + 0.16);
+            mapLinkPopupState.keepAliveUntil = std::max(mapLinkPopupState.keepAliveUntil, ImGui::GetTime() + 0.16);
+        }
+
+        if (!canToggle) {
+            ImGui::EndDisabled();
+        }
+
+        std::string extraText = GetCheckExtraInfoText(marker.check);
+        bool extraHovered = false;
+        if (!extraText.empty()) {
+            ImGui::SameLine();
+            Color_RGBA8 legacyExtraColor = GetLegacyCheckExtraColor(marker.check);
+            ImGui::PushStyleColor(
+                ImGuiCol_Text,
+                ImVec4(legacyExtraColor.r / 255.0f, legacyExtraColor.g / 255.0f, legacyExtraColor.b / 255.0f,
+                       legacyExtraColor.a / 255.0f));
+            ImGui::Text("(%s)", extraText.c_str());
+            ImGui::PopStyleColor();
+            extraHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
+        }
+
+        bool rowTooltipHovered = statusHovered || rowHovered || extraHovered;
+        bool hintTogglePressed = rowTooltipHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right) &&
+                                 !ImGui::IsMouseDragging(ImGuiMouseButton_Right, 4.0f);
+        if (rowTooltipHovered) {
+            mapClusterPopupState.keepAliveUntil = std::max(mapClusterPopupState.keepAliveUntil, ImGui::GetTime() + 0.16);
+            mapLinkPopupState.keepAliveUntil = std::max(mapLinkPopupState.keepAliveUntil, ImGui::GetTime() + 0.16);
+            if (hintTogglePressed) {
+                ToggleMapTrackerCheckHint(marker.check);
+            }
+            DrawMarkerTooltip(BuildMarkerTooltipContent(marker.check, marker.displayPath));
+        }
+
+        ImGui::PopID();
+    }
+}
+
 void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
     if (!tab.imageLoaded) {
         ImGui::TextWrapped("Could not render map image for \"%s\".", tab.mapName.c_str());
@@ -2691,6 +2858,12 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
         mapClusterPopupState.stackKey.clear();
         mapClusterPopupState.keepAliveUntil = 0.0;
     }
+    if (mapLinkPopupState.tabName != tab.mapName) {
+        mapLinkPopupState.open = false;
+        mapLinkPopupState.tabName = tab.mapName;
+        mapLinkPopupState.targetTabName.clear();
+        mapLinkPopupState.keepAliveUntil = 0.0;
+    }
 
     int currentTabIndex = -1;
     if (auto tabIndexIt = mapTrackerState.tabIndexByName.find(NormalizeForMatching(tab.mapName));
@@ -2711,6 +2884,7 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
     BuildRenderableMarkersByStackKey(tab, mqSpoilers, stackOrder, renderableMarkersByStackKey);
 
     bool markerHoveredForPopup = false;
+    bool linkHoveredForPopup = false;
     double nowTime = ImGui::GetTime();
 
     for (const auto& stackKey : stackOrder) {
@@ -2747,54 +2921,31 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
             isMultiMarkerCluster && navigationTargetTabIndex.has_value() && playerFocusTargetTabIndex.has_value() &&
             (*navigationTargetTabIndex == *playerFocusTargetTabIndex);
 
-        if (isMultiMarkerCluster) {
-            float markerRadius = halfSize;
-            if (segmentColors.size() == 1) {
-                drawList->AddCircleFilled(center, markerRadius, segmentColors.front(), 16);
-            } else {
-                float startAngle = -IM_PI * 0.5f;
-                float fullCircle = IM_PI * 2.0f;
-                for (size_t segmentIndex = 0; segmentIndex < segmentColors.size(); segmentIndex++) {
-                    float segmentStart =
-                        startAngle + (fullCircle * static_cast<float>(segmentIndex) / static_cast<float>(segmentColors.size()));
-                    float segmentEnd = startAngle +
-                                       (fullCircle * static_cast<float>(segmentIndex + 1) /
-                                        static_cast<float>(segmentColors.size()));
-
-                    drawList->PathClear();
-                    drawList->PathLineTo(center);
-                    drawList->PathArcTo(center, markerRadius, segmentStart, segmentEnd, 12);
-                    drawList->PathLineTo(center);
-                    drawList->PathFillConvex(segmentColors[segmentIndex]);
-                }
-            }
-            drawList->AddCircle(center, markerRadius, CHECK_TRACKER_MAP_COLOR_BORDER, 16, 1.5f);
-            if (isPlayerFocusClusterTarget) {
-                float highlightRadius = markerRadius + std::max(2.0f, markerRadius * 0.22f);
-                drawList->AddCircle(center, highlightRadius, IM_COL32(255, 255, 255, 255), 20, 3.0f);
-
-                float arrowHalfWidth = std::max(3.0f, markerRadius * 0.32f);
-                float arrowHeight = std::max(4.0f, markerRadius * 0.50f);
-                ImVec2 arrowTip(center.x, center.y - highlightRadius - 1.0f);
-                ImVec2 arrowLeft(center.x - arrowHalfWidth, arrowTip.y - arrowHeight);
-                ImVec2 arrowRight(center.x + arrowHalfWidth, arrowTip.y - arrowHeight);
-                drawList->AddTriangleFilled(arrowTip, arrowLeft, arrowRight, IM_COL32(255, 255, 255, 245));
-            }
+        if (segmentColors.size() == 1) {
+            drawList->AddRectFilled(markerMin, markerMax, segmentColors.front(), 1.0f);
         } else {
-            if (segmentColors.size() == 1) {
-                drawList->AddRectFilled(markerMin, markerMax, segmentColors.front(), 1.0f);
-            } else {
-                float markerWidth = markerMax.x - markerMin.x;
-                for (size_t segmentIndex = 0; segmentIndex < segmentColors.size(); segmentIndex++) {
-                    float leftX = markerMin.x + (markerWidth * static_cast<float>(segmentIndex) /
-                                                 static_cast<float>(segmentColors.size()));
-                    float rightX = markerMin.x + (markerWidth * static_cast<float>(segmentIndex + 1) /
-                                                  static_cast<float>(segmentColors.size()));
-                    drawList->AddRectFilled(ImVec2(leftX, markerMin.y), ImVec2(rightX, markerMax.y),
-                                            segmentColors[segmentIndex]);
-                }
+            float markerWidth = markerMax.x - markerMin.x;
+            for (size_t segmentIndex = 0; segmentIndex < segmentColors.size(); segmentIndex++) {
+                float leftX = markerMin.x + (markerWidth * static_cast<float>(segmentIndex) /
+                                             static_cast<float>(segmentColors.size()));
+                float rightX = markerMin.x + (markerWidth * static_cast<float>(segmentIndex + 1) /
+                                              static_cast<float>(segmentColors.size()));
+                drawList->AddRectFilled(ImVec2(leftX, markerMin.y), ImVec2(rightX, markerMax.y),
+                                        segmentColors[segmentIndex]);
             }
-            drawList->AddRect(markerMin, markerMax, CHECK_TRACKER_MAP_COLOR_BORDER, 1.0f, 0, 1.5f);
+        }
+        drawList->AddRect(markerMin, markerMax, CHECK_TRACKER_MAP_COLOR_BORDER, 1.0f, 0, 1.5f);
+        if (isPlayerFocusClusterTarget) {
+            ImVec2 highlightMin(markerMin.x - 3.0f, markerMin.y - 3.0f);
+            ImVec2 highlightMax(markerMax.x + 3.0f, markerMax.y + 3.0f);
+            drawList->AddRect(highlightMin, highlightMax, IM_COL32(255, 255, 255, 255), 1.0f, 0, 3.0f);
+
+            float arrowHalfWidth = std::max(3.0f, halfSize * 0.32f);
+            float arrowHeight = std::max(4.0f, halfSize * 0.50f);
+            ImVec2 arrowTip(center.x, highlightMin.y - 1.0f);
+            ImVec2 arrowLeft(center.x - arrowHalfWidth, arrowTip.y - arrowHeight);
+            ImVec2 arrowRight(center.x + arrowHalfWidth, arrowTip.y - arrowHeight);
+            drawList->AddTriangleFilled(arrowTip, arrowLeft, arrowRight, IM_COL32(255, 255, 255, 245));
         }
 
         if (isMultiMarkerCluster) {
@@ -2814,6 +2965,7 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
             }
             if (hovered) {
                 markerHoveredForPopup = true;
+                mapLinkPopupState.open = false;
                 mapClusterPopupState.open = true;
                 mapClusterPopupState.tabName = tab.mapName;
                 mapClusterPopupState.stackKey = stackKey;
@@ -2832,6 +2984,68 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
                 ToggleMapTrackerCheckHint(anchorMarker.check);
             }
             DrawRenderableMapMarkerTooltip(renderableMarkers.front());
+        }
+    }
+
+    for (size_t linkIndex = 0; linkIndex < tab.links.size(); linkIndex++) {
+        const MapLink& link = tab.links[linkIndex];
+        auto targetTabIndexIt = mapTrackerState.tabIndexByName.find(link.normalizedTargetMapName);
+        if (targetTabIndexIt == mapTrackerState.tabIndexByName.end()) {
+            continue;
+        }
+
+        int targetTabIndex = static_cast<int>(targetTabIndexIt->second);
+        const MapTabData& targetTab = mapTrackerState.tabs[static_cast<size_t>(targetTabIndex)];
+        std::vector<RenderableMapMarker> linkRenderableMarkers = BuildRenderableMarkersForTab(targetTab, mqSpoilers);
+        std::vector<ImU32> segmentColors = BuildClusterSegmentColors(linkRenderableMarkers);
+
+        float halfSize = std::max(CHECK_TRACKER_MAP_MIN_MARKER_PIXEL_SIZE, std::max(0.0f, link.size) * imageScale) * 0.5f;
+        ImVec2 center(imageStartPos.x + (link.x * imageScale), imageStartPos.y + (link.y * imageScale));
+        ImVec2 markerMin(center.x - halfSize, center.y - halfSize);
+        ImVec2 markerMax(center.x + halfSize, center.y + halfSize);
+
+        ImGui::SetCursorScreenPos(markerMin);
+        ImGui::PushID(fmt::format("MapLink_{}_{}_{}", tab.mapName, link.targetMapName, linkIndex).c_str());
+        ImGui::InvisibleButton("link", ImVec2(markerMax.x - markerMin.x, markerMax.y - markerMin.y));
+        bool hovered = ImGui::IsItemHovered();
+        bool clicked = ImGui::IsItemClicked(ImGuiMouseButton_Left) && !ImGui::IsMouseDragging(ImGuiMouseButton_Left, 4.0f);
+        ImGui::PopID();
+
+        if (segmentColors.size() == 1) {
+            drawList->AddCircleFilled(center, halfSize, segmentColors.front(), 16);
+        } else {
+            float startAngle = -IM_PI * 0.5f;
+            float fullCircle = IM_PI * 2.0f;
+            for (size_t segmentIndex = 0; segmentIndex < segmentColors.size(); segmentIndex++) {
+                float segmentStart =
+                    startAngle + (fullCircle * static_cast<float>(segmentIndex) / static_cast<float>(segmentColors.size()));
+                float segmentEnd = startAngle + (fullCircle * static_cast<float>(segmentIndex + 1) /
+                                                 static_cast<float>(segmentColors.size()));
+
+                drawList->PathClear();
+                drawList->PathLineTo(center);
+                drawList->PathArcTo(center, halfSize, segmentStart, segmentEnd, 12);
+                drawList->PathLineTo(center);
+                drawList->PathFillConvex(segmentColors[segmentIndex]);
+            }
+        }
+        drawList->AddCircle(center, halfSize, CHECK_TRACKER_MAP_COLOR_BORDER, 16, 1.5f);
+
+        if (clicked) {
+            mapClusterPopupState.open = false;
+            mapLinkPopupState.open = false;
+            NavigateToMapTab(targetTabIndex);
+            continue;
+        }
+
+        if (hovered) {
+            linkHoveredForPopup = true;
+            mapClusterPopupState.open = false;
+            mapLinkPopupState.open = true;
+            mapLinkPopupState.tabName = tab.mapName;
+            mapLinkPopupState.targetTabName = link.normalizedTargetMapName;
+            mapLinkPopupState.popupPosition = ImVec2(markerMax.x + 10.0f, markerMin.y - 4.0f);
+            mapLinkPopupState.keepAliveUntil = nowTime + 0.16;
         }
     }
 
@@ -2861,73 +3075,39 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
             }
 
             DrawClusterPopupTargetHeader(popupNavigationTargetTabIndex);
+            DrawRenderableMarkerRows(popupClusterIt->second);
 
-            for (size_t clusterIndex = 0; clusterIndex < popupClusterIt->second.size(); clusterIndex++) {
-                const auto& renderableMarker = popupClusterIt->second[clusterIndex];
-                const MapMarker& marker = *renderableMarker.marker;
-                bool canToggle = CanToggleSkippedStateForCheck(marker.check);
-                std::string checkName = GetCheckDisplayName(marker.check);
-                std::string markerRowId = fmt::format("ClusterCheckRow_{}_{}_{}_{}", static_cast<int>(marker.check),
-                                                      clusterIndex, marker.displayPath, marker.mapName);
-                std::string checkSelectableLabel = checkName + "##Select";
+            ImGui::End();
+        }
+    }
 
-                ImGui::PushID(markerRowId.c_str());
-                float popupRowHeight = std::max(14.0f, ImGui::GetTextLineHeight() + 1.0f);
+    bool linkPopupHovered = false;
+    if (mapLinkPopupState.open && mapLinkPopupState.tabName == tab.mapName) {
+        auto targetTabIndexIt = mapTrackerState.tabIndexByName.find(mapLinkPopupState.targetTabName);
+        if (targetTabIndexIt == mapTrackerState.tabIndexByName.end()) {
+            mapLinkPopupState.open = false;
+        } else {
+            const int targetTabIndex = static_cast<int>(targetTabIndexIt->second);
+            const MapTabData& targetTab = mapTrackerState.tabs[static_cast<size_t>(targetTabIndex)];
+            std::vector<RenderableMapMarker> popupMarkers = BuildRenderableMarkersForTab(targetTab, mqSpoilers);
+            const ImVec2 popupWindowSize = ComputeClusterPopupWindowSize(popupMarkers, targetTabIndex);
 
-                if (!canToggle) {
-                    ImGui::BeginDisabled();
-                }
+            ImGui::SetNextWindowPos(mapLinkPopupState.popupPosition, ImGuiCond_Always);
+            ImGui::SetNextWindowSize(popupWindowSize, ImGuiCond_Always);
+            ImGuiWindowFlags popupFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                                          ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+                                          ImGuiWindowFlags_NoNav;
+            std::string popupTitle = "Map Link##MapLinkPopup_" + tab.mapName + "_" + targetTab.mapName;
+            ImGui::Begin(popupTitle.c_str(), nullptr, popupFlags);
 
-                ImVec2 statusSize(std::max(10.0f, popupRowHeight - 2.0f), std::max(10.0f, popupRowHeight - 2.0f));
-                bool statusPressed =
-                    ImGui::ColorButton("##Status", ImGui::ColorConvertU32ToFloat4(renderableMarker.fillColor),
-                                       ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop, statusSize);
-                bool statusHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
-                ImGui::SameLine(0.0f, 6.0f);
-
-                bool selected = false;
-                float selectableWidth = ImGui::CalcTextSize(checkName.c_str()).x + (ImGui::GetStyle().FramePadding.x * 2.0f);
-                bool rowPressed = ImGui::Selectable(checkSelectableLabel.c_str(), &selected,
-                                                    ImGuiSelectableFlags_AllowDoubleClick,
-                                                    ImVec2(selectableWidth, popupRowHeight));
-                bool rowHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
-                if ((statusPressed || rowPressed) && canToggle) {
-                    ToggleSkippedStateForCheck(marker.check);
-                    mapClusterPopupState.keepAliveUntil =
-                        std::max(mapClusterPopupState.keepAliveUntil, ImGui::GetTime() + 0.16);
-                }
-
-                if (!canToggle) {
-                    ImGui::EndDisabled();
-                }
-
-                std::string extraText = GetCheckExtraInfoText(marker.check);
-                bool extraHovered = false;
-                if (!extraText.empty()) {
-                    ImGui::SameLine();
-                    Color_RGBA8 legacyExtraColor = GetLegacyCheckExtraColor(marker.check);
-                    ImGui::PushStyleColor(
-                        ImGuiCol_Text,
-                        ImVec4(legacyExtraColor.r / 255.0f, legacyExtraColor.g / 255.0f, legacyExtraColor.b / 255.0f,
-                               legacyExtraColor.a / 255.0f));
-                    ImGui::Text("(%s)", extraText.c_str());
-                    ImGui::PopStyleColor();
-                    extraHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
-                }
-
-                bool clusterRowHovered = statusHovered || rowHovered || extraHovered;
-                bool hintTogglePressed = clusterRowHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right) &&
-                                         !ImGui::IsMouseDragging(ImGuiMouseButton_Right, 4.0f);
-                if (clusterRowHovered) {
-                    mapClusterPopupState.keepAliveUntil =
-                        std::max(mapClusterPopupState.keepAliveUntil, ImGui::GetTime() + 0.16);
-                    if (hintTogglePressed) {
-                        ToggleMapTrackerCheckHint(marker.check);
-                    }
-                    DrawMarkerTooltip(BuildMarkerTooltipContent(marker.check, marker.displayPath));
-                }
-                ImGui::PopID();
+            linkPopupHovered =
+                ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem | ImGuiHoveredFlags_ChildWindows);
+            if (linkPopupHovered) {
+                mapLinkPopupState.keepAliveUntil = std::max(mapLinkPopupState.keepAliveUntil, nowTime + 0.16);
             }
+
+            DrawClusterPopupTargetHeader(targetTabIndex);
+            DrawRenderableMarkerRows(popupMarkers);
 
             ImGui::End();
         }
@@ -2936,6 +3116,10 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
     if (mapClusterPopupState.open && !markerHoveredForPopup && !popupHovered &&
         ImGui::GetTime() > mapClusterPopupState.keepAliveUntil) {
         mapClusterPopupState.open = false;
+    }
+    if (mapLinkPopupState.open && !linkHoveredForPopup && !linkPopupHovered &&
+        ImGui::GetTime() > mapLinkPopupState.keepAliveUntil) {
+        mapLinkPopupState.open = false;
     }
 
     ImGui::EndChild();
