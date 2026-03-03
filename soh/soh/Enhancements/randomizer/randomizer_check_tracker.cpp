@@ -407,7 +407,6 @@ struct MapTrackerState {
     std::vector<std::string> mapGroups;
     std::unordered_map<std::string, std::vector<int>> tabIndicesByGroup;
     std::string selectedGroupName;
-    std::unordered_map<RandomizerCheck, std::vector<int>> tabIndicesByCheck;
     std::unordered_map<std::string, int> lastSelectedTabByGroup;
     std::unordered_set<RandomizerCheck> linkedChecks;
     std::unordered_map<RandomizerCheck, std::string> checkHints;
@@ -1896,11 +1895,6 @@ static void LinkMapMarkersToTabs(const std::vector<MapMarker>& mappedMarkers) {
         }
         int markerTabIndex = static_cast<int>(mapTrackerState.tabIndexByName[tabKey]);
         mapTrackerState.tabs[static_cast<size_t>(markerTabIndex)].markers.push_back(marker);
-
-        auto& checkTabIndices = mapTrackerState.tabIndicesByCheck[marker.check];
-        if (std::find(checkTabIndices.begin(), checkTabIndices.end(), markerTabIndex) == checkTabIndices.end()) {
-            checkTabIndices.push_back(markerTabIndex);
-        }
     }
 }
 
@@ -2165,55 +2159,6 @@ void DrawMapTrackerIssuesTab() {
         ImGui::Separator();
         ImGui::TextUnformatted("No issues found.");
     }
-}
-
-std::optional<int> FindClusterNavigationTargetTabIndex(const std::vector<RandomizerCheck>& clusterChecks,
-                                                       int currentTabIndex) {
-    if (clusterChecks.empty()) {
-        return std::nullopt;
-    }
-
-    std::vector<int> sharedTargetTabIndices;
-    bool hasIntersection = false;
-    std::unordered_set<RandomizerCheck> seenChecks;
-
-    for (RandomizerCheck check : clusterChecks) {
-        if (!seenChecks.insert(check).second) {
-            continue;
-        }
-
-        auto checkTabIndicesIt = mapTrackerState.tabIndicesByCheck.find(check);
-        if (checkTabIndicesIt == mapTrackerState.tabIndicesByCheck.end()) {
-            return std::nullopt;
-        }
-
-        std::vector<int> filteredCandidates;
-        for (int tabIndex : checkTabIndicesIt->second) {
-            if (tabIndex != currentTabIndex &&
-                std::find(filteredCandidates.begin(), filteredCandidates.end(), tabIndex) == filteredCandidates.end()) {
-                filteredCandidates.push_back(tabIndex);
-            }
-        }
-
-        if (!hasIntersection) {
-            sharedTargetTabIndices = std::move(filteredCandidates);
-            hasIntersection = true;
-        } else {
-            sharedTargetTabIndices.erase(
-                std::remove_if(sharedTargetTabIndices.begin(), sharedTargetTabIndices.end(), [&](int tabIndex) {
-                    return std::find(filteredCandidates.begin(), filteredCandidates.end(), tabIndex) ==
-                           filteredCandidates.end();
-                }),
-                sharedTargetTabIndices.end());
-        }
-
-        if (sharedTargetTabIndices.empty()) {
-            return std::nullopt;
-        }
-    }
-
-    return hasIntersection && sharedTargetTabIndices.size() == 1 ? std::optional<int>(sharedTargetTabIndices.front())
-                                                                  : std::nullopt;
 }
 
 struct RenderableMapMarker {
@@ -2574,20 +2519,6 @@ static std::vector<ImU32> BuildClusterSegmentColors(const std::vector<Renderable
     return segmentColors;
 }
 
-static std::optional<int> ResolveClusterNavigationTargetTabIndex(const std::vector<RenderableMapMarker>& renderableMarkers,
-                                                                 int currentTabIndex) {
-    if (currentTabIndex < 0) {
-        return std::nullopt;
-    }
-
-    std::vector<RandomizerCheck> clusterChecks;
-    clusterChecks.reserve(renderableMarkers.size());
-    for (const auto& renderableMarker : renderableMarkers) {
-        clusterChecks.push_back(renderableMarker.marker->check);
-    }
-    return FindClusterNavigationTargetTabIndex(clusterChecks, currentTabIndex);
-}
-
 static void DrawClusterPopupTargetHeader(const std::optional<int>& popupNavigationTargetTabIndex) {
     if (!popupNavigationTargetTabIndex.has_value() || *popupNavigationTargetTabIndex < 0 ||
         *popupNavigationTargetTabIndex >= static_cast<int>(mapTrackerState.tabs.size())) {
@@ -2865,12 +2796,6 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
         mapLinkPopupState.keepAliveUntil = 0.0;
     }
 
-    int currentTabIndex = -1;
-    if (auto tabIndexIt = mapTrackerState.tabIndexByName.find(NormalizeForMatching(tab.mapName));
-        tabIndexIt != mapTrackerState.tabIndexByName.end()) {
-        currentTabIndex = static_cast<int>(tabIndexIt->second);
-    }
-
     std::optional<int> playerFocusTargetTabIndex;
     if (auto focusTargetTabName = ResolvePreferredMapTabNameForArea(currentArea); focusTargetTabName.has_value()) {
         auto focusTargetTabIndexIt = mapTrackerState.tabIndexByName.find(*focusTargetTabName);
@@ -2912,15 +2837,6 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
 
         std::vector<ImU32> segmentColors = BuildClusterSegmentColors(renderableMarkers);
 
-        std::optional<int> navigationTargetTabIndex;
-        if (isMultiMarkerCluster) {
-            navigationTargetTabIndex = ResolveClusterNavigationTargetTabIndex(renderableMarkers, currentTabIndex);
-        }
-
-        bool isPlayerFocusClusterTarget =
-            isMultiMarkerCluster && navigationTargetTabIndex.has_value() && playerFocusTargetTabIndex.has_value() &&
-            (*navigationTargetTabIndex == *playerFocusTargetTabIndex);
-
         if (segmentColors.size() == 1) {
             drawList->AddRectFilled(markerMin, markerMax, segmentColors.front(), 1.0f);
         } else {
@@ -2935,34 +2851,8 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
             }
         }
         drawList->AddRect(markerMin, markerMax, CHECK_TRACKER_MAP_COLOR_BORDER, 1.0f, 0, 1.5f);
-        if (isPlayerFocusClusterTarget) {
-            ImVec2 highlightMin(markerMin.x - 3.0f, markerMin.y - 3.0f);
-            ImVec2 highlightMax(markerMax.x + 3.0f, markerMax.y + 3.0f);
-            drawList->AddRect(highlightMin, highlightMax, IM_COL32(255, 255, 255, 255), 1.0f, 0, 3.0f);
-
-            float arrowHalfWidth = std::max(3.0f, halfSize * 0.32f);
-            float arrowHeight = std::max(4.0f, halfSize * 0.50f);
-            ImVec2 arrowTip(center.x, highlightMin.y - 1.0f);
-            ImVec2 arrowLeft(center.x - arrowHalfWidth, arrowTip.y - arrowHeight);
-            ImVec2 arrowRight(center.x + arrowHalfWidth, arrowTip.y - arrowHeight);
-            drawList->AddTriangleFilled(arrowTip, arrowLeft, arrowRight, IM_COL32(255, 255, 255, 245));
-        }
 
         if (isMultiMarkerCluster) {
-            if (clicked && navigationTargetTabIndex.has_value() && *navigationTargetTabIndex >= 0 &&
-                *navigationTargetTabIndex < static_cast<int>(mapTrackerState.tabs.size())) {
-                int targetTabIndex = *navigationTargetTabIndex;
-                mapTrackerState.selectedTabIndex = targetTabIndex;
-                const MapTabData& targetTab = mapTrackerState.tabs[static_cast<size_t>(targetTabIndex)];
-                mapTrackerState.selectedGroupName = targetTab.groupName;
-                if (!mapTrackerState.selectedGroupName.empty()) {
-                    mapTrackerState.lastSelectedTabByGroup[mapTrackerState.selectedGroupName] = targetTabIndex;
-                }
-                // Force tab bar group selection on next frame so cross-group navigation is visible and stable.
-                mapTrackerState.requestedTabName = NormalizeForMatching(targetTab.mapName);
-                mapClusterPopupState.open = false;
-                continue;
-            }
             if (hovered) {
                 markerHoveredForPopup = true;
                 mapLinkPopupState.open = false;
@@ -2998,6 +2888,8 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
         const MapTabData& targetTab = mapTrackerState.tabs[static_cast<size_t>(targetTabIndex)];
         std::vector<RenderableMapMarker> linkRenderableMarkers = BuildRenderableMarkersForTab(targetTab, mqSpoilers);
         std::vector<ImU32> segmentColors = BuildClusterSegmentColors(linkRenderableMarkers);
+        bool isPlayerFocusLinkTarget =
+            playerFocusTargetTabIndex.has_value() && (*playerFocusTargetTabIndex == targetTabIndex);
 
         float halfSize = std::max(CHECK_TRACKER_MAP_MIN_MARKER_PIXEL_SIZE, std::max(0.0f, link.size) * imageScale) * 0.5f;
         ImVec2 center(imageStartPos.x + (link.x * imageScale), imageStartPos.y + (link.y * imageScale));
@@ -3030,6 +2922,17 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
             }
         }
         drawList->AddCircle(center, halfSize, CHECK_TRACKER_MAP_COLOR_BORDER, 16, 1.5f);
+        if (isPlayerFocusLinkTarget) {
+            float highlightRadius = halfSize + std::max(2.0f, halfSize * 0.22f);
+            drawList->AddCircle(center, highlightRadius, IM_COL32(255, 255, 255, 255), 20, 3.0f);
+
+            float arrowHalfWidth = std::max(3.0f, halfSize * 0.32f);
+            float arrowHeight = std::max(4.0f, halfSize * 0.50f);
+            ImVec2 arrowTip(center.x, center.y - highlightRadius - 1.0f);
+            ImVec2 arrowLeft(center.x - arrowHalfWidth, arrowTip.y - arrowHeight);
+            ImVec2 arrowRight(center.x + arrowHalfWidth, arrowTip.y - arrowHeight);
+            drawList->AddTriangleFilled(arrowTip, arrowLeft, arrowRight, IM_COL32(255, 255, 255, 245));
+        }
 
         if (clicked) {
             mapClusterPopupState.open = false;
@@ -3055,10 +2958,7 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
         if (popupClusterIt == renderableMarkersByStackKey.end() || popupClusterIt->second.size() < 2) {
             mapClusterPopupState.open = false;
         } else {
-            const auto popupNavigationTargetTabIndex =
-                ResolveClusterNavigationTargetTabIndex(popupClusterIt->second, currentTabIndex);
-            const ImVec2 popupWindowSize =
-                ComputeClusterPopupWindowSize(popupClusterIt->second, popupNavigationTargetTabIndex);
+            const ImVec2 popupWindowSize = ComputeClusterPopupWindowSize(popupClusterIt->second, std::nullopt);
 
             ImGui::SetNextWindowPos(mapClusterPopupState.popupPosition, ImGuiCond_Always);
             ImGui::SetNextWindowSize(popupWindowSize, ImGuiCond_Always);
@@ -3074,7 +2974,6 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
                 mapClusterPopupState.keepAliveUntil = std::max(mapClusterPopupState.keepAliveUntil, nowTime + 0.16);
             }
 
-            DrawClusterPopupTargetHeader(popupNavigationTargetTabIndex);
             DrawRenderableMarkerRows(popupClusterIt->second);
 
             ImGui::End();
