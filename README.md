@@ -1,7 +1,7 @@
 ![Ship of Harkinian](docs/shiptitle.darkmode.png#gh-dark-mode-only)
 ![Ship of Harkinian](docs/shiptitle.lightmode.png#gh-light-mode-only)
 
-This is a fork of jeromkiller/Shipwright_archipellago
+This is a fork of jeromkiller/Shipwright_archipellago that adds an auto Map Tracker
 
 It is a version of Ocarina of Time Ship of Harkanian with an auto MapTracker that aim to welcome new players to be able to enjoy the archipelago randomiser.
 
