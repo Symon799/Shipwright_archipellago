@@ -6,7 +6,7 @@ This is a fork of jeromkiller/Shipwright_archipellago that adds an auto Map Trac
 It is a version of Ocarina of Time Ship of Harkanian with an auto MapTracker that aim to welcome new players to be able to enjoy the archipelago randomiser.
 
 ## Map Tracker
-This map Tracker replaces the Check Tracker window (Still accessible) and add all of the maps with every check on it. It updated in real time when you change zone, when you do the checks or when the time of day or age of Link changes.
+This map Tracker replaces the Check Tracker imgui window (Still accessible) and adds all of the maps with every check on it. It is updated in real time when you change zone, when you do a check or when the time of day or age of Link changes.
 
 <img width="1461" height="950" alt="hyrule" src="https://github.com/user-attachments/assets/64a023f3-4485-47fd-9dc2-63d17811ded0" />
 <img width="1466" height="956" alt="Capture d&#39;écran 2026-03-03 125456" src="https://github.com/user-attachments/assets/df5fc914-3f80-4849-8218-b4224918a3ff" />
@@ -29,7 +29,10 @@ The Map tracker works with a ressource pack that can be edited using this python
 The Ressource pack in the mods/check_tracker_map_pack folder
 If a check is missing, or not at the right place or you want to add a hint you can edit the ressource pack using this tool
 
-Big thank you to Titrok with whom I made this auto Map Tracker
+There is probably still some wrong or misplaced checks in the ressource pack so feel free to contact me if you want to contribute to it !
+It would be very apprieciated if you could play the latest build and report if some things when wrong or could be improved since it takes a lot of time to test it fully.
+
+Big thank you to my great friend Titrok with whom I made this auto Map Tracker <3
 Also thank you to Peardian for the original images of the maps (https://www.vgmaps.com/Atlas/N64/index.htm)
 
 ----
