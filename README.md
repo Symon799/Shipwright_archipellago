@@ -26,6 +26,7 @@ There is also a hint system that adds hints on some of the checks. (witch can be
 
 ## Ressources
 The Map tracker works with a ressource pack that can be edited using this python tool : https://github.com/Symon799/SoH_Map_Ressource_Maker
+
 The Ressource pack in the mods/check_tracker_map_pack folder
 If a check is missing, or not at the right place or you want to add a hint you can edit the ressource pack using this tool
 
