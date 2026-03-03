@@ -33,6 +33,7 @@ There is probably still some wrong or misplaced checks in the ressource pack so 
 It would be very apprieciated if you could play the latest build and report if some things when wrong or could be improved since it takes a lot of time to test it fully.
 
 Big thank you to my great friend Titrok with whom I made this auto Map Tracker <3
+
 Also thank you to Peardian for the original images of the maps (https://www.vgmaps.com/Atlas/N64/index.htm)
 
 ----
