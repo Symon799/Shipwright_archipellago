@@ -2,7 +2,7 @@
 #include <nlohmann/json.hpp>
 #include <libultraship/libultraship.h>
 #include "soh/Enhancements/game-interactor/GameInteractor.h"
-#include "soh/OTRGlobals.h"
+#include "soh/Enhancements/randomizer/randomizer_check_tracker.h"
 
 extern "C" {
 #include "macros.h"
@@ -36,4 +36,5 @@ void Anchor::HandlePacket_UpdateBeansCount(nlohmann::json payload) {
 
     AMMO(ITEM_BEAN) = payload["amount"].get<s8>();
     BEANS_BOUGHT = payload["amountBought"].get<s8>();
+    CheckTracker::RecalculateAvailableChecks();
 }

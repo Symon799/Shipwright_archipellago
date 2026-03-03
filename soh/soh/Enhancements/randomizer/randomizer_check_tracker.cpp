@@ -415,6 +415,7 @@ struct MapTrackerState {
     int selectedTabIndex = 0;
     int lastMapViewTabIndex = -1;
     RandomizerCheckArea lastFocusedArea = RCAREA_INVALID;
+    SceneID lastFocusedScene = SCENE_ID_MAX;
 };
 
 static MapTrackerState mapTrackerState;
@@ -1342,11 +1343,30 @@ std::optional<std::string> ResolvePreferredMapTabNameForArea(RandomizerCheckArea
     return std::nullopt;
 }
 
+std::optional<std::string> ResolvePreferredMapTabNameForScene(SceneID scene) {
+    switch (scene) {
+        case SCENE_TEMPLE_OF_TIME:
+            for (const auto& preferredName : { "ToT", "Temple of Time", "Market", "Overworld" }) {
+                std::string normalized = NormalizeForMatching(preferredName);
+                if (mapTrackerState.tabIndexByName.contains(normalized)) {
+                    return normalized;
+                }
+            }
+            break;
+        default:
+            break;
+    }
+
+    return std::nullopt;
+}
+
 void UpdateRequestedMapTabFromCurrentArea(bool force) {
     RandomizerCheckArea focusArea = currentArea;
+    SceneID focusScene = SCENE_ID_MAX;
 
     // Keep auto-focus robust even if transition hooks are delayed/missed for a frame.
     if (gPlayState != nullptr) {
+        focusScene = static_cast<SceneID>(gPlayState->sceneNum);
         RandomizerCheckArea liveArea = GetCheckArea();
         if (liveArea != RCAREA_INVALID) {
             if (liveArea != currentArea) {
@@ -1357,12 +1377,16 @@ void UpdateRequestedMapTabFromCurrentArea(bool force) {
         }
     }
 
-    if (!force && focusArea == mapTrackerState.lastFocusedArea) {
+    if (!force && focusArea == mapTrackerState.lastFocusedArea && focusScene == mapTrackerState.lastFocusedScene) {
         return;
     }
     mapTrackerState.lastFocusedArea = focusArea;
+    mapTrackerState.lastFocusedScene = focusScene;
 
-    auto preferredTabName = ResolvePreferredMapTabNameForArea(focusArea);
+    auto preferredTabName = ResolvePreferredMapTabNameForScene(focusScene);
+    if (!preferredTabName.has_value()) {
+        preferredTabName = ResolvePreferredMapTabNameForArea(focusArea);
+    }
     if (preferredTabName.has_value()) {
         mapTrackerState.requestedTabName = *preferredTabName;
     }
@@ -3782,6 +3806,7 @@ void CheckTrackerItemReceive(GetItemEntry giEntry) {
             return;
         } else if (giEntry.itemId == ITEM_BEAN) {
             SetCheckCollected(RC_ZR_MAGIC_BEAN_SALESMAN);
+            RecalculateAvailableChecks();
             return;
         } else if (giEntry.itemId == ITEM_BRACELET) {
             SetCheckCollected(RC_GC_DARUNIAS_JOY);
