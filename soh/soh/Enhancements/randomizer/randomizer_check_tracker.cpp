@@ -1587,6 +1587,8 @@ std::optional<std::string> ResolvePreferredMapTabNameForScene(SceneID scene) {
         case SCENE_INSIDE_GANONS_CASTLE:
         case SCENE_GANONS_TOWER_COLLAPSE_INTERIOR:
         case SCENE_INSIDE_GANONS_CASTLE_COLLAPSE:
+        case SCENE_GANONDORF_BOSS:
+        case SCENE_GANON_BOSS:
             return resolveFromPreferredNames({ "Ganons Tower", "Ganon's Tower", "Ganons Castle", "Overworld" });
         case SCENE_OUTSIDE_GANONS_CASTLE:
             if (LINK_IS_ADULT) {
