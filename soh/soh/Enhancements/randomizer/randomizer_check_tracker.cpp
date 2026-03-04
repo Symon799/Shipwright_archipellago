@@ -1570,15 +1570,29 @@ static MapLinkBorderStyle GetMapLinkBorderStyle(const std::optional<CheckAgeTime
 }
 
 std::optional<std::string> ResolvePreferredMapTabNameForScene(SceneID scene) {
+    auto resolveFromPreferredNames = [](std::initializer_list<const char*> preferredNames) -> std::optional<std::string> {
+        for (const char* preferredName : preferredNames) {
+            std::string normalized = NormalizeForMatching(preferredName);
+            if (mapTrackerState.tabIndexByName.contains(normalized)) {
+                return normalized;
+            }
+        }
+        return std::nullopt;
+    };
+
     switch (scene) {
         case SCENE_TEMPLE_OF_TIME:
-            for (const auto& preferredName : { "ToT", "Temple of Time", "Market", "Overworld" }) {
-                std::string normalized = NormalizeForMatching(preferredName);
-                if (mapTrackerState.tabIndexByName.contains(normalized)) {
-                    return normalized;
-                }
+            return resolveFromPreferredNames({ "ToT", "Temple of Time", "Market", "Overworld" });
+        case SCENE_GANONS_TOWER:
+        case SCENE_INSIDE_GANONS_CASTLE:
+        case SCENE_GANONS_TOWER_COLLAPSE_INTERIOR:
+        case SCENE_INSIDE_GANONS_CASTLE_COLLAPSE:
+            return resolveFromPreferredNames({ "Ganons Tower", "Ganon's Tower", "Ganons Castle", "Overworld" });
+        case SCENE_OUTSIDE_GANONS_CASTLE:
+            if (LINK_IS_ADULT) {
+                return resolveFromPreferredNames({ "Ganons Castle", "Ganons Tower", "Hyrule Castle", "Overworld" });
             }
-            break;
+            return resolveFromPreferredNames({ "Hyrule Castle", "HC", "Overworld" });
         default:
             break;
     }
