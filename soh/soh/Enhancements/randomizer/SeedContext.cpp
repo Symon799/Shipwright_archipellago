@@ -521,36 +521,64 @@ void Context::ParseArchipelagoOptions() {
     mOptions[RSK_RAINBOW_BRIDGE_DUNGEON_COUNT].Set(slotData["rainbow_bridge_dungeons_required"]);
     mOptions[RSK_RAINBOW_BRIDGE_TOKEN_COUNT].Set(slotData["rainbow_bridge_skull_tokens_required"]);
     mOptions[RSK_BRIDGE_OPTIONS].Set(slotData["rainbow_bridge_greg_modifier"]);
-    // todo parse trials properly when we add the option to select trials
     if (slotData["skip_ganons_trials"] == 0) {
-        mOptions[RSK_GANONS_TRIALS].Set(RO_GANONS_TRIALS_SET_NUMBER);
-        mOptions[RSK_TRIAL_COUNT].Set(6);
-        mTrials->RequireAll();
-    } else {
         mOptions[RSK_GANONS_TRIALS].Set(RO_GANONS_TRIALS_SKIP);
         mOptions[RSK_TRIAL_COUNT].Set(0);
         mTrials->RemoveAllTrials();
+    } else {
+        mOptions[RSK_GANONS_TRIALS].Set(RO_GANONS_TRIALS_SET_NUMBER);
+        mOptions[RSK_TRIAL_COUNT].Set(slotData["ganons_trials_count"]);
+        std::vector<TrialKey> requiredTrials;
+        for(const nlohmann::basic_json<>& trialString : slotData["required_trials"]) {
+            if(trialString == "Forest Trial") {
+                requiredTrials.emplace_back(TrialKey::TK_FOREST_TRIAL);
+            } else if (trialString == "Fire Trial") {
+                requiredTrials.emplace_back(TrialKey::TK_FIRE_TRIAL);
+            } else if (trialString == "Water Trial") {
+                requiredTrials.emplace_back(TrialKey::TK_WATER_TRIAL);
+            } else if (trialString == "Shadow Trial") {
+                requiredTrials.emplace_back(TrialKey::TK_SHADOW_TRIAL);
+            } else if (trialString == "Spirit Trial") {
+                requiredTrials.emplace_back(TrialKey::TK_SPIRIT_TRIAL);
+            } else if (trialString == "Light Trial") {
+                requiredTrials.emplace_back(TrialKey::TK_LIGHT_TRIAL);
+            }
+        }
+
+        for (auto& trial : mTrials->GetTrialList()) {
+            trial->SetAsSkipped();
+            if(std::find(requiredTrials.begin(), requiredTrials.end(), trial->GetTrialKey()) != requiredTrials.end()) {
+                trial->SetAsRequired();
+            }
+        }
     }
-    mOptions[RSK_MEDALLION_LOCKED_TRIALS].Set(RO_GENERIC_NO);
-    mOptions[RSK_STARTING_OCARINA].Set(RO_GENERIC_NO);
+
+    mOptions[RSK_MEDALLION_LOCKED_TRIALS].Set(slotData["medallion_locked_trials"]);
+    if (slotData["ocarina_of_time"] == 0) {
+        mOptions[RSK_STARTING_OCARINA].Set(RO_STARTING_OCARINA_OFF);
+    } else if (slotData["ocarina_of_time"] == 1) {
+        mOptions[RSK_STARTING_OCARINA].Set(RO_STARTING_OCARINA_FAIRY);
+    } else if (slotData["ocarina_of_time"] == 2) {
+        mOptions[RSK_STARTING_OCARINA].Set(RO_STARTING_OCARINA_TIME);
+    }
     mOptions[RSK_SHUFFLE_OCARINA].Set(slotData["shuffle_ocarinas"]);
     mOptions[RSK_SHUFFLE_OCARINA_BUTTONS].Set(slotData["shuffle_ocarina_buttons"]);
     mOptions[RSK_SHUFFLE_SWIM].Set(slotData["shuffle_swim"]);
-    mOptions[RSK_STARTING_DEKU_SHIELD].Set(RO_GENERIC_NO);
-    mOptions[RSK_STARTING_KOKIRI_SWORD].Set(RO_GENERIC_NO);
-    mOptions[RSK_STARTING_MASTER_SWORD].Set(RO_GENERIC_NO);
-    mOptions[RSK_STARTING_ZELDAS_LULLABY].Set(RO_GENERIC_NO);
-    mOptions[RSK_STARTING_EPONAS_SONG].Set(RO_GENERIC_NO);
-    mOptions[RSK_STARTING_SARIAS_SONG].Set(RO_GENERIC_NO);
-    mOptions[RSK_STARTING_SUNS_SONG].Set(RO_GENERIC_NO);
-    mOptions[RSK_STARTING_SONG_OF_TIME].Set(RO_GENERIC_NO);
-    mOptions[RSK_STARTING_SONG_OF_STORMS].Set(RO_GENERIC_NO);
-    mOptions[RSK_STARTING_MINUET_OF_FOREST].Set(RO_GENERIC_NO);
-    mOptions[RSK_STARTING_BOLERO_OF_FIRE].Set(RO_GENERIC_NO);
-    mOptions[RSK_STARTING_SERENADE_OF_WATER].Set(RO_GENERIC_NO);
-    mOptions[RSK_STARTING_REQUIEM_OF_SPIRIT].Set(RO_GENERIC_NO);
-    mOptions[RSK_STARTING_NOCTURNE_OF_SHADOW].Set(RO_GENERIC_NO);
-    mOptions[RSK_STARTING_PRELUDE_OF_LIGHT].Set(RO_GENERIC_NO);
+    mOptions[RSK_STARTING_DEKU_SHIELD].Set(slotData["start_with_deku_shield"]);
+    mOptions[RSK_STARTING_KOKIRI_SWORD].Set(slotData["start_with_kokiri_sword"]);
+    mOptions[RSK_STARTING_MASTER_SWORD].Set(slotData["start_with_master_sword"]);
+    mOptions[RSK_STARTING_ZELDAS_LULLABY].Set(slotData["start_with_zeldas_lullaby"]);
+    mOptions[RSK_STARTING_EPONAS_SONG].Set(slotData["start_with_eponas_song"]);
+    mOptions[RSK_STARTING_SARIAS_SONG].Set(slotData["start_with_sarias_song"]);
+    mOptions[RSK_STARTING_SUNS_SONG].Set(slotData["start_with_suns_song"]);
+    mOptions[RSK_STARTING_SONG_OF_TIME].Set(slotData["start_with_song_of_time"]);
+    mOptions[RSK_STARTING_SONG_OF_STORMS].Set(slotData["start_with_song_of_storms"]);
+    mOptions[RSK_STARTING_MINUET_OF_FOREST].Set(slotData["start_with_minuet"]);
+    mOptions[RSK_STARTING_BOLERO_OF_FIRE].Set(slotData["start_with_bolero"]);
+    mOptions[RSK_STARTING_SERENADE_OF_WATER].Set(slotData["start_with_serenade"]);
+    mOptions[RSK_STARTING_REQUIEM_OF_SPIRIT].Set(slotData["start_with_requiem"]);
+    mOptions[RSK_STARTING_NOCTURNE_OF_SHADOW].Set(slotData["start_with_nocturne"]);
+    mOptions[RSK_STARTING_PRELUDE_OF_LIGHT].Set(slotData["start_with_prelude"]);
     mOptions[RSK_SHUFFLE_KOKIRI_SWORD].Set(slotData["shuffle_kokiri_sword"]);
     mOptions[RSK_SHUFFLE_MASTER_SWORD].Set(slotData["shuffle_master_sword"]);
     mOptions[RSK_SHUFFLE_CHILD_WALLET].Set(slotData["shuffle_childs_wallet"]);
@@ -560,6 +588,10 @@ void Context::ParseArchipelagoOptions() {
     } else if (slotData["shuffle_dungeon_rewards"] == 1) {
         mOptions[RSK_SHUFFLE_DUNGEON_REWARDS].Set(RO_DUNGEON_REWARDS_END_OF_DUNGEON);
     } else if (slotData["shuffle_dungeon_rewards"] == 2) {
+        mOptions[RSK_SHUFFLE_DUNGEON_REWARDS].Set(RO_DUNGEON_REWARDS_ANY_DUNGEON);
+    } else if (slotData["shuffle_dungeon_rewards"] == 3) {
+        mOptions[RSK_SHUFFLE_DUNGEON_REWARDS].Set(RO_DUNGEON_REWARDS_OVERWORLD);
+    } else if (slotData["shuffle_dungeon_rewards"] == 4) {
         mOptions[RSK_SHUFFLE_DUNGEON_REWARDS].Set(RO_DUNGEON_REWARDS_ANYWHERE);
     }
     if (slotData["shuffle_songs"] == 0) {
@@ -672,14 +704,16 @@ void Context::ParseArchipelagoOptions() {
         mOptions[RSK_SHUFFLE_MAPANDCOMPASS].Set(RO_DUNGEON_ITEM_LOC_ANYWHERE);
     }
     if (slotData["small_key_shuffle"] == 0) {
-        mOptions[RSK_KEYSANITY].Set(RO_DUNGEON_ITEM_LOC_VANILLA);
+        mOptions[RSK_KEYSANITY].Set(RO_DUNGEON_ITEM_LOC_STARTWITH);
     } else if (slotData["small_key_shuffle"] == 1) {
-        mOptions[RSK_KEYSANITY].Set(RO_DUNGEON_ITEM_LOC_OWN_DUNGEON);
+        mOptions[RSK_KEYSANITY].Set(RO_DUNGEON_ITEM_LOC_VANILLA);
     } else if (slotData["small_key_shuffle"] == 2) {
-        mOptions[RSK_KEYSANITY].Set(RO_DUNGEON_ITEM_LOC_ANY_DUNGEON);
+        mOptions[RSK_KEYSANITY].Set(RO_DUNGEON_ITEM_LOC_OWN_DUNGEON);
     } else if (slotData["small_key_shuffle"] == 3) {
-        mOptions[RSK_KEYSANITY].Set(RO_DUNGEON_ITEM_LOC_OVERWORLD);
+        mOptions[RSK_KEYSANITY].Set(RO_DUNGEON_ITEM_LOC_ANY_DUNGEON);
     } else if (slotData["small_key_shuffle"] == 4) {
+        mOptions[RSK_KEYSANITY].Set(RO_DUNGEON_ITEM_LOC_OVERWORLD);
+    } else if (slotData["small_key_shuffle"] == 5) {
         mOptions[RSK_KEYSANITY].Set(RO_DUNGEON_ITEM_LOC_ANYWHERE);
     }
     if (slotData["gerudo_fortress_key_shuffle"] == 0) {
@@ -692,14 +726,16 @@ void Context::ParseArchipelagoOptions() {
         mOptions[RSK_GERUDO_KEYS].Set(RO_GERUDO_KEYS_ANYWHERE);
     }
     if (slotData["boss_key_shuffle"] == 0) {
-        mOptions[RSK_BOSS_KEYSANITY].Set(RO_DUNGEON_ITEM_LOC_VANILLA);
+        mOptions[RSK_KEYSANITY].Set(RO_DUNGEON_ITEM_LOC_STARTWITH);
     } else if (slotData["boss_key_shuffle"] == 1) {
-        mOptions[RSK_BOSS_KEYSANITY].Set(RO_DUNGEON_ITEM_LOC_OWN_DUNGEON);
+        mOptions[RSK_BOSS_KEYSANITY].Set(RO_DUNGEON_ITEM_LOC_VANILLA);
     } else if (slotData["boss_key_shuffle"] == 2) {
-        mOptions[RSK_BOSS_KEYSANITY].Set(RO_DUNGEON_ITEM_LOC_ANY_DUNGEON);
+        mOptions[RSK_BOSS_KEYSANITY].Set(RO_DUNGEON_ITEM_LOC_OWN_DUNGEON);
     } else if (slotData["boss_key_shuffle"] == 3) {
-        mOptions[RSK_BOSS_KEYSANITY].Set(RO_DUNGEON_ITEM_LOC_OVERWORLD);
+        mOptions[RSK_BOSS_KEYSANITY].Set(RO_DUNGEON_ITEM_LOC_ANY_DUNGEON);
     } else if (slotData["boss_key_shuffle"] == 4) {
+        mOptions[RSK_BOSS_KEYSANITY].Set(RO_DUNGEON_ITEM_LOC_OVERWORLD);
+    } else if (slotData["boss_key_shuffle"] == 5) {
         mOptions[RSK_BOSS_KEYSANITY].Set(RO_DUNGEON_ITEM_LOC_ANYWHERE);
     }
     if (slotData["ganons_castle_boss_key"] == 0) {
@@ -721,9 +757,9 @@ void Context::ParseArchipelagoOptions() {
     }
     mOptions[RSK_SKIP_CHILD_STEALTH].Set(RO_GENERIC_NO);
     mOptions[RSK_SKIP_CHILD_ZELDA].Set(slotData["skip_child_zelda"]);
-    mOptions[RSK_STARTING_STICKS].Set(RO_GENERIC_NO);
-    mOptions[RSK_STARTING_NUTS].Set(RO_GENERIC_NO);
-    mOptions[RSK_STARTING_BEANS].Set(RO_GENERIC_NO);
+    mOptions[RSK_STARTING_STICKS].Set(slotData["start_with_stick_ammo"]);
+    mOptions[RSK_STARTING_NUTS].Set(slotData["start_with_nut_ammo"]);
+    mOptions[RSK_STARTING_BEANS].Set(slotData["start_with_magic_beans"]);
     mOptions[RSK_FULL_WALLETS].Set(slotData["full_wallets"]);
     mOptions[RSK_SHUFFLE_CHEST_MINIGAME].Set(RO_GENERIC_NO);
     mOptions[RSK_BIG_POE_COUNT].Set(slotData["big_poe_target_count"]);
@@ -749,7 +785,15 @@ void Context::ParseArchipelagoOptions() {
     mOptions[RSK_SLINGBOW_BREAK_BEEHIVES].Set(slotData["slingbow_break_beehives"]);
     mOptions[RSK_ENABLE_BOMBCHU_DROPS].Set(slotData["bombchu_drops"]);
     mOptions[RSK_BOMBCHU_BAG].Set(slotData["bombchu_bag"]);
-    mOptions[RSK_LINKS_POCKET].Set(RO_LINKS_POCKET_ANYTHING);
+    if(slotData["start_with_links_pocket"] == 0) {
+        mOptions[RSK_LINKS_POCKET].Set(RO_LINKS_POCKET_DUNGEON_REWARD);
+    } else if (slotData["start_with_links_pocket"] == 1) {
+        mOptions[RSK_LINKS_POCKET].Set(RO_LINKS_POCKET_ADVANCEMENT);
+    } else if (slotData["start_with_links_pocket"] == 2) {
+        mOptions[RSK_LINKS_POCKET].Set(RO_LINKS_POCKET_ANYTHING);
+    } else if (slotData["start_with_links_pocket"] == 3) {
+        mOptions[RSK_LINKS_POCKET].Set(RO_LINKS_POCKET_NOTHING);
+    }
     mOptions[RSK_MQ_DUNGEON_RANDOM].Set(0);
     mOptions[RSK_MQ_DUNGEON_COUNT].Set(0);
     mOptions[RSK_MQ_DUNGEON_SET].Set(0);
@@ -806,7 +850,8 @@ void Context::ParseArchipelagoOptions() {
     mOptions[RSK_MIX_GROTTO_ENTRANCES].Set(0);
     mOptions[RSK_DECOUPLED_ENTRANCES].Set(0);
     mOptions[RSK_STARTING_SKULLTULA_TOKEN].Set(0);
-    mOptions[RSK_STARTING_HEARTS].Set(2);
+    uint8_t slotDataStartingHearts = slotData["starting_hearts"];
+    mOptions[RSK_STARTING_HEARTS].Set(slotDataStartingHearts - 1);
     mOptions[RSK_DAMAGE_MULTIPLIER].Set(0);
     mOptions[RSK_ALL_LOCATIONS_REACHABLE].Set(0);
     mOptions[RSK_SHUFFLE_BOSS_ENTRANCES].Set(0);
