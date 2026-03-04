@@ -28,6 +28,7 @@
 #include <numeric>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <sstream>
 #include <unordered_set>
 #include <vector>
@@ -315,9 +316,12 @@ constexpr const char* CHECK_TRACKER_MAPS_JSON = "maps.json";
 constexpr const char* CHECK_TRACKER_LOCATIONS_DIR = "areas";
 constexpr ImU32 CHECK_TRACKER_MAP_COLOR_DONE = IM_COL32(130, 130, 130, 255);
 constexpr ImU32 CHECK_TRACKER_MAP_COLOR_AVAILABLE = IM_COL32(55, 185, 85, 255);
-constexpr ImU32 CHECK_TRACKER_MAP_COLOR_AGE_MISMATCH = IM_COL32(180, 145, 35, 255);
+constexpr ImU32 CHECK_TRACKER_MAP_COLOR_AGE_MISMATCH = IM_COL32(255, 219, 73, 255);
+constexpr ImU32 CHECK_TRACKER_MAP_TAB_COLOR_AGE_MISMATCH = IM_COL32(196, 156, 36, 255);
 constexpr ImU32 CHECK_TRACKER_MAP_COLOR_UNAVAILABLE = IM_COL32(200, 65, 65, 255);
 constexpr ImU32 CHECK_TRACKER_MAP_COLOR_BORDER = IM_COL32(255, 255, 255, 255);
+constexpr ImU32 CHECK_TRACKER_MAP_COLOR_LINK_BORDER_AGE_MISMATCH = IM_COL32(230, 188, 19, 255);
+constexpr ImU32 CHECK_TRACKER_MAP_COLOR_LINK_BORDER_UNAVAILABLE = IM_COL32(125, 28, 28, 255);
 constexpr float CHECK_TRACKER_MAP_MIN_MARKER_PIXEL_SIZE = 20.0f;
 constexpr float CHECK_TRACKER_MAP_MULTI_MARKER_SIZE_SCALE = 1.14f;
 constexpr float CHECK_TRACKER_MAP_TOOLTIP_MIN_CONTENT_WIDTH = 220.0f;
@@ -327,6 +331,8 @@ constexpr float CHECK_TRACKER_MAP_TOOLTIP_MAX_VIEWPORT_HEIGHT_RATIO = 0.9f;
 constexpr float CHECK_TRACKER_MAP_ZOOM_MIN = 1.0f;
 constexpr float CHECK_TRACKER_MAP_ZOOM_MAX = 5.0f;
 constexpr float CHECK_TRACKER_MAP_ZOOM_WHEEL_STEP = 1.15f;
+constexpr float CHECK_TRACKER_MAP_BORDER_THICKNESS = 1.5f;
+constexpr float CHECK_TRACKER_MAP_LINK_UNAVAILABLE_BORDER_THICKNESS = CHECK_TRACKER_MAP_BORDER_THICKNESS * 2.0f;
 
 struct MapPlacement {
     std::string mapName;
@@ -354,6 +360,8 @@ struct MapMarker {
 struct MapLink {
     std::string targetMapName;
     std::string normalizedTargetMapName;
+    int16_t entranceIndex = -1;
+    bool disableEntranceLogic = false;
     float x = 0.0f;
     float y = 0.0f;
     float size = 22.0f;
@@ -1099,6 +1107,90 @@ struct CheckAgeTimeAvailabilityInfo {
     CheckTimeRequirement timeRequirement = CheckTimeRequirement::Any;
 };
 
+struct MapLinkBorderStyle {
+    ImU32 color = CHECK_TRACKER_MAP_COLOR_BORDER;
+    float thickness = CHECK_TRACKER_MAP_BORDER_THICKNESS;
+};
+
+static CheckAgeTimeAvailabilityInfo BuildAgeTimeAvailabilityInfo(bool canChildDay, bool canChildNight, bool canAdultDay,
+                                                                 bool canAdultNight) {
+    CheckAgeTimeAvailabilityInfo info;
+    info.canChildDay = canChildDay;
+    info.canChildNight = canChildNight;
+    info.canAdultDay = canAdultDay;
+    info.canAdultNight = canAdultNight;
+    info.canDoAtAll = canChildDay || canChildNight || canAdultDay || canAdultNight;
+
+    bool canAsChild = canChildDay || canChildNight;
+    bool canAsAdult = canAdultDay || canAdultNight;
+    if (canAsChild != canAsAdult) {
+        info.ageRequirement = canAsChild ? CheckAgeRequirement::ChildOnly : CheckAgeRequirement::AdultOnly;
+    }
+
+    bool canAtDay = canChildDay || canAdultDay;
+    bool canAtNight = canChildNight || canAdultNight;
+    if (canAtDay != canAtNight) {
+        info.timeRequirement = canAtDay ? CheckTimeRequirement::DayOnly : CheckTimeRequirement::NightOnly;
+    }
+
+    bool currentIsAdult = LINK_IS_ADULT;
+    bool currentIsNight = IS_NIGHT;
+    if (currentIsAdult) {
+        info.canDoNow = currentIsNight ? canAdultNight : canAdultDay;
+    } else {
+        info.canDoNow = currentIsNight ? canChildNight : canChildDay;
+    }
+
+    return info;
+}
+
+static uint8_t BuildAgeTimeAvailabilityMask(const CheckAgeTimeAvailabilityInfo& availabilityInfo) {
+    uint8_t availabilityMask = 0;
+    availabilityMask |= availabilityInfo.canChildDay ? 0x1 : 0x0;
+    availabilityMask |= availabilityInfo.canChildNight ? 0x2 : 0x0;
+    availabilityMask |= availabilityInfo.canAdultDay ? 0x4 : 0x0;
+    availabilityMask |= availabilityInfo.canAdultNight ? 0x8 : 0x0;
+    return availabilityMask;
+}
+
+static std::string DescribeAvailabilityMask(uint8_t availabilityMask) {
+    switch (availabilityMask) {
+        case 0x0:
+        case 0xF:
+            return "";
+        case 0x1:
+            return "Child, Day";
+        case 0x2:
+            return "Child, Night";
+        case 0x3:
+            return "Child";
+        case 0x4:
+            return "Adult, Day";
+        case 0x5:
+            return "Day";
+        case 0x6:
+            return "Child, Night or Adult, Day";
+        case 0x7:
+            return "Child or Day";
+        case 0x8:
+            return "Adult, Night";
+        case 0x9:
+            return "Child, Day or Adult, Night";
+        case 0xA:
+            return "Night";
+        case 0xB:
+            return "Child or Night";
+        case 0xC:
+            return "Adult";
+        case 0xD:
+            return "Adult or Day";
+        case 0xE:
+            return "Adult or Night";
+        default:
+            return "";
+    }
+}
+
 static const LocationAccess* FindLocationAccessInParentRegion(RandomizerCheck rc, RandomizerRegion parentRegion) {
     if (parentRegion == RR_NONE || parentRegion >= RR_MAX) {
         return nullptr;
@@ -1161,21 +1253,19 @@ static bool EvaluateLocationConditionAtAgeTime(const LocationAccess& locationAcc
 }
 
 static CheckAgeTimeAvailabilityInfo EvaluateCheckAgeTimeAvailability(RandomizerCheck rc) {
-    CheckAgeTimeAvailabilityInfo info;
-
     auto* itemLocation = OTRGlobals::Instance->gRandoContext->GetItemLocation(rc);
     if (itemLocation == nullptr) {
-        return info;
+        return {};
     }
 
     RandomizerRegion parentRegion = itemLocation->GetParentRegionKey();
     const LocationAccess* locationAccess = FindLocationAccessInParentRegion(rc, parentRegion);
     if (locationAccess == nullptr) {
-        return info;
+        return {};
     }
 
     if (parentRegion == RR_NONE || parentRegion >= RR_MAX) {
-        return info;
+        return {};
     }
 
     Region& parent = areaTable[parentRegion];
@@ -1187,37 +1277,25 @@ static CheckAgeTimeAvailabilityInfo EvaluateCheckAgeTimeAvailability(RandomizerC
         return EvaluateLocationConditionAtAgeTime(*locationAccess, parentRegion, rc, evaluateAsAdult, evaluateAtNight);
     };
 
-    info.canChildDay = evaluateCombo(parent.childDay, false, false);
-    info.canChildNight = evaluateCombo(parent.childNight, false, true);
-    info.canAdultDay = evaluateCombo(parent.adultDay, true, false);
-    info.canAdultNight = evaluateCombo(parent.adultNight, true, true);
-
-    info.canDoAtAll = info.canChildDay || info.canChildNight || info.canAdultDay || info.canAdultNight;
-
-    bool canAsChild = info.canChildDay || info.canChildNight;
-    bool canAsAdult = info.canAdultDay || info.canAdultNight;
-    if (canAsChild != canAsAdult) {
-        info.ageRequirement = canAsChild ? CheckAgeRequirement::ChildOnly : CheckAgeRequirement::AdultOnly;
-    }
-
-    bool canAtDay = info.canChildDay || info.canAdultDay;
-    bool canAtNight = info.canChildNight || info.canAdultNight;
-    if (canAtDay != canAtNight) {
-        info.timeRequirement = canAtDay ? CheckTimeRequirement::DayOnly : CheckTimeRequirement::NightOnly;
-    }
-
-    bool currentIsAdult = LINK_IS_ADULT;
-    bool currentIsNight = IS_NIGHT;
-    if (currentIsAdult) {
-        info.canDoNow = currentIsNight ? info.canAdultNight : info.canAdultDay;
-    } else {
-        info.canDoNow = currentIsNight ? info.canChildNight : info.canChildDay;
-    }
-
-    return info;
+    return BuildAgeTimeAvailabilityInfo(evaluateCombo(parent.childDay, false, false),
+                                        evaluateCombo(parent.childNight, false, true),
+                                        evaluateCombo(parent.adultDay, true, false),
+                                        evaluateCombo(parent.adultNight, true, true));
 }
 
 static std::string BuildCheckRequirementSummary(const CheckAgeTimeAvailabilityInfo& availabilityInfo) {
+    auto prependRequiredLabel = [](const std::string& detail) {
+        if (detail.empty()) {
+            return std::string();
+        }
+        return "Required: " + detail;
+    };
+
+    std::string explicitRequirementSummary = DescribeAvailabilityMask(BuildAgeTimeAvailabilityMask(availabilityInfo));
+    if (!explicitRequirementSummary.empty()) {
+        return prependRequiredLabel(explicitRequirementSummary);
+    }
+
     std::vector<std::string> requirements;
 
     switch (availabilityInfo.ageRequirement) {
@@ -1341,6 +1419,154 @@ std::optional<std::string> ResolvePreferredMapTabNameForArea(RandomizerCheckArea
         }
     }
     return std::nullopt;
+}
+
+static int16_t ResolveMapLinkEntranceIndex(std::string_view normalizedSourceMapName,
+                                           std::string_view normalizedTargetMapName) {
+    static const std::array<std::tuple<std::string_view, std::string_view, int16_t>, 6> entranceIndexByMapPair = { {
+        { "lost_woods", "zora_river", ENTR_ZORAS_RIVER_UNDERWATER_SHORTCUT },
+        { "zora_river", "lost_woods", ENTR_LOST_WOODS_UNDERWATER_SHORTCUT },
+        { "lost_woods", "goron_city", ENTR_GORON_CITY_TUNNEL_SHORTCUT },
+        { "goron_city", "lost_woods", ENTR_LOST_WOODS_TUNNEL_SHORTCUT },
+        { "lost_woods", "sfm", ENTR_SACRED_FOREST_MEADOW_SOUTH_EXIT },
+        { "sfm", "lost_woods", ENTR_LOST_WOODS_NORTH_EXIT },
+    } };
+    static const std::array<std::pair<std::string_view, int16_t>, 14> entranceIndexByTargetMap = { {
+        { "deku_tree", ENTR_DEKU_TREE_ENTRANCE },
+        { "dodongos_cavern", ENTR_DODONGOS_CAVERN_ENTRANCE },
+        { "jabu_jabus_belly", ENTR_JABU_JABU_ENTRANCE },
+        { "forest_temple", ENTR_FOREST_TEMPLE_ENTRANCE },
+        { "fire_temple", ENTR_FIRE_TEMPLE_ENTRANCE },
+        { "water_temple", ENTR_WATER_TEMPLE_ENTRANCE },
+        { "spirit_temple", ENTR_SPIRIT_TEMPLE_ENTRANCE },
+        { "shadow_temple", ENTR_SHADOW_TEMPLE_ENTRANCE },
+        { "bottom_of_the_well", ENTR_BOTTOM_OF_THE_WELL_ENTRANCE },
+        { "ice_cavern", ENTR_ICE_CAVERN_ENTRANCE },
+        { "gerudo_training_ground", ENTR_GERUDO_TRAINING_GROUND_ENTRANCE },
+        { "ganons_castle", ENTR_INSIDE_GANONS_CASTLE_ENTRANCE },
+        { "ganons_tower", ENTR_INSIDE_GANONS_CASTLE_ENTRANCE },
+        { "temple_of_time", ENTR_TEMPLE_OF_TIME_ENTRANCE },
+    } };
+
+    for (const auto& [sourceMapName, targetMapName, entranceIndex] : entranceIndexByMapPair) {
+        if (normalizedSourceMapName == sourceMapName && normalizedTargetMapName == targetMapName) {
+            return entranceIndex;
+        }
+    }
+
+    for (const auto& [targetMapName, entranceIndex] : entranceIndexByTargetMap) {
+        if (normalizedTargetMapName == targetMapName) {
+            return entranceIndex;
+        }
+    }
+
+    return -1;
+}
+
+static bool EvaluateEntranceConditionAtAgeTime(const Rando::Entrance& entrance, RandomizerRegion parentRegion,
+                                               bool evaluateAsAdult, bool evaluateAtNight) {
+    auto ctx = Rando::Context::GetInstance();
+    if (ctx == nullptr) {
+        return false;
+    }
+
+    auto logicRef = ctx->GetLogic();
+    if (logicRef == nullptr) {
+        return false;
+    }
+
+    const bool previousIsChild = logicRef->IsChild;
+    const bool previousIsAdult = logicRef->IsAdult;
+    const bool previousAtDay = logicRef->AtDay;
+    const bool previousAtNight = logicRef->AtNight;
+    const RandomizerRegion previousRegionKey = logicRef->CurrentRegionKey;
+
+    logicRef->CurrentRegionKey = parentRegion;
+
+    bool conditionsMet = false;
+    if (evaluateAsAdult) {
+        if (evaluateAtNight) {
+            conditionsMet = entrance.CheckConditionAtAgeTime(logicRef->IsAdult, logicRef->AtNight);
+        } else {
+            conditionsMet = entrance.CheckConditionAtAgeTime(logicRef->IsAdult, logicRef->AtDay);
+        }
+    } else {
+        if (evaluateAtNight) {
+            conditionsMet = entrance.CheckConditionAtAgeTime(logicRef->IsChild, logicRef->AtNight);
+        } else {
+            conditionsMet = entrance.CheckConditionAtAgeTime(logicRef->IsChild, logicRef->AtDay);
+        }
+    }
+
+    logicRef->IsChild = previousIsChild;
+    logicRef->IsAdult = previousIsAdult;
+    logicRef->AtDay = previousAtDay;
+    logicRef->AtNight = previousAtNight;
+    logicRef->CurrentRegionKey = previousRegionKey;
+
+    return conditionsMet;
+}
+
+static std::optional<CheckAgeTimeAvailabilityInfo> EvaluateMapLinkAgeTimeAvailability(const MapLink& link) {
+    if (link.disableEntranceLogic || link.entranceIndex < 0) {
+        return std::nullopt;
+    }
+
+    Rando::Entrance* entrance = Rando::GetEntranceByIndex(link.entranceIndex);
+    if (entrance == nullptr) {
+        return std::nullopt;
+    }
+
+    RandomizerRegion parentRegion = entrance->GetParentRegionKey();
+    if (parentRegion == RR_NONE || parentRegion >= RR_MAX) {
+        return std::nullopt;
+    }
+
+    Region* parent = RegionTable(parentRegion);
+    if (parent == nullptr) {
+        return std::nullopt;
+    }
+
+    auto evaluateCombo = [&](bool parentHasAccess, bool evaluateAsAdult, bool evaluateAtNight) {
+        if (!parentHasAccess) {
+            return false;
+        }
+        return EvaluateEntranceConditionAtAgeTime(*entrance, parentRegion, evaluateAsAdult, evaluateAtNight);
+    };
+
+    return BuildAgeTimeAvailabilityInfo(evaluateCombo(parent->childDay, false, false),
+                                        evaluateCombo(parent->childNight, false, true),
+                                        evaluateCombo(parent->adultDay, true, false),
+                                        evaluateCombo(parent->adultNight, true, true));
+}
+
+static std::optional<std::string> GetMapLinkRequirementSummary(const MapLink& link) {
+    auto availabilityInfo = EvaluateMapLinkAgeTimeAvailability(link);
+    if (!availabilityInfo.has_value()) {
+        return std::nullopt;
+    }
+
+    std::string summary = BuildCheckRequirementSummary(*availabilityInfo);
+    if (summary.empty()) {
+        return std::nullopt;
+    }
+    return summary;
+}
+
+static MapLinkBorderStyle GetMapLinkBorderStyle(const std::optional<CheckAgeTimeAvailabilityInfo>& availabilityInfo) {
+    if (!availabilityInfo.has_value()) {
+        return {};
+    }
+
+    if (availabilityInfo->canDoNow) {
+        return {};
+    }
+
+    if (availabilityInfo->canDoAtAll) {
+        return { CHECK_TRACKER_MAP_COLOR_LINK_BORDER_AGE_MISMATCH, CHECK_TRACKER_MAP_LINK_UNAVAILABLE_BORDER_THICKNESS };
+    }
+
+    return { CHECK_TRACKER_MAP_COLOR_LINK_BORDER_UNAVAILABLE, CHECK_TRACKER_MAP_LINK_UNAVAILABLE_BORDER_THICKNESS };
 }
 
 std::optional<std::string> ResolvePreferredMapTabNameForScene(SceneID scene) {
@@ -1712,6 +1938,7 @@ static bool ParseMapMetadataEntries(const json& mapsJson, const std::string& map
                 MapLink link;
                 link.targetMapName = NormalizeMapNameForMapTracker(linkEntry["target_map"].get<std::string>());
                 link.normalizedTargetMapName = NormalizeForMatching(link.targetMapName);
+                link.entranceIndex = ResolveMapLinkEntranceIndex(normalizedMapName, link.normalizedTargetMapName);
                 if (link.targetMapName.empty() || link.normalizedTargetMapName.empty()) {
                     mapTrackerState.warnings.push_back({ "Invalid link in map " + mapName,
                                                          "A links entry has an empty target_map after normalization." });
@@ -1733,6 +1960,17 @@ static bool ParseMapMetadataEntries(const json& mapsJson, const std::string& map
                 }
 
                 links.push_back(std::move(link));
+            }
+
+            std::unordered_map<std::string, size_t> linkCountByTargetMapName;
+            for (const auto& link : links) {
+                linkCountByTargetMapName[link.normalizedTargetMapName]++;
+            }
+            for (auto& link : links) {
+                if (linkCountByTargetMapName[link.normalizedTargetMapName] > 1) {
+                    link.disableEntranceLogic = true;
+                    link.entranceIndex = -1;
+                }
             }
         }
 
@@ -2114,7 +2352,7 @@ ImVec4 GetMapTabBaseColor(const MapTabVisualSummary& summary) {
         return ImGui::ColorConvertU32ToFloat4(CHECK_TRACKER_MAP_COLOR_AVAILABLE);
     }
     if (summary.hasRequirementMismatchChecks) {
-        return ImGui::ColorConvertU32ToFloat4(CHECK_TRACKER_MAP_COLOR_AGE_MISMATCH);
+        return ImGui::ColorConvertU32ToFloat4(CHECK_TRACKER_MAP_TAB_COLOR_AGE_MISMATCH);
     }
     if (summary.hasUnavailableChecks) {
         return ImGui::ColorConvertU32ToFloat4(CHECK_TRACKER_MAP_COLOR_UNAVAILABLE);
@@ -2543,7 +2781,8 @@ static std::vector<ImU32> BuildClusterSegmentColors(const std::vector<Renderable
     return segmentColors;
 }
 
-static void DrawClusterPopupTargetHeader(const std::optional<int>& popupNavigationTargetTabIndex) {
+static void DrawClusterPopupTargetHeader(const std::optional<int>& popupNavigationTargetTabIndex,
+                                         const std::optional<std::string>& requirementSummary = std::nullopt) {
     if (!popupNavigationTargetTabIndex.has_value() || *popupNavigationTargetTabIndex < 0 ||
         *popupNavigationTargetTabIndex >= static_cast<int>(mapTrackerState.tabs.size())) {
         return;
@@ -2554,11 +2793,16 @@ static void DrawClusterPopupTargetHeader(const std::optional<int>& popupNavigati
     ImGui::TextUnformatted(popupTargetTab.mapName.c_str());
     ImGui::GetWindowDrawList()->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(mapNameStart.x + 0.9f, mapNameStart.y),
                                         ImGui::GetColorU32(ImGuiCol_Text), popupTargetTab.mapName.c_str());
+    if (requirementSummary.has_value() && !requirementSummary->empty()) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(%s)", requirementSummary->c_str());
+    }
     ImGui::Separator();
 }
 
 static ImVec2 ComputeClusterPopupWindowSize(const std::vector<RenderableMapMarker>& clusterMarkers,
-                                            const std::optional<int>& popupNavigationTargetTabIndex) {
+                                            const std::optional<int>& popupNavigationTargetTabIndex,
+                                            const std::optional<std::string>& requirementSummary = std::nullopt) {
     const ImGuiStyle& popupStyle = ImGui::GetStyle();
     float popupTextLineHeight = ImGui::GetTextLineHeight();
     float popupRowHeight = std::max(14.0f, popupTextLineHeight + 1.0f);
@@ -2570,7 +2814,11 @@ static ImVec2 ComputeClusterPopupWindowSize(const std::vector<RenderableMapMarke
     if (popupNavigationTargetTabIndex.has_value() && *popupNavigationTargetTabIndex >= 0 &&
         *popupNavigationTargetTabIndex < static_cast<int>(mapTrackerState.tabs.size())) {
         const MapTabData& popupTargetTab = mapTrackerState.tabs[static_cast<size_t>(*popupNavigationTargetTabIndex)];
-        measuredContentWidth = std::max(measuredContentWidth, ImGui::CalcTextSize(popupTargetTab.mapName.c_str()).x + 1.0f);
+        float headerWidth = ImGui::CalcTextSize(popupTargetTab.mapName.c_str()).x + 1.0f;
+        if (requirementSummary.has_value() && !requirementSummary->empty()) {
+            headerWidth += ImGui::CalcTextSize((" (" + *requirementSummary + ")").c_str()).x;
+        }
+        measuredContentWidth = std::max(measuredContentWidth, headerWidth);
         measuredContentHeight += popupTextLineHeight;
         measuredContentHeight += (popupStyle.ItemSpacing.y * 2.0f) + 2.0f;
     }
@@ -2599,10 +2847,24 @@ static ImVec2 ComputeClusterPopupWindowSize(const std::vector<RenderableMapMarke
     ImVec2 popupWindowSize(measuredContentWidth + (popupStyle.WindowPadding.x * 2.0f) + 4.0f,
                            measuredContentHeight + (popupStyle.WindowPadding.y * 2.0f) + 2.0f);
     if (const ImGuiViewport* viewport = ImGui::GetMainViewport(); viewport != nullptr) {
-        popupWindowSize.x = std::clamp(popupWindowSize.x, 180.0f, std::max(180.0f, viewport->WorkSize.x * 0.55f));
-        popupWindowSize.y = std::clamp(popupWindowSize.y, 90.0f, std::max(90.0f, viewport->WorkSize.y * 0.75f));
+        bool hasHeader = popupNavigationTargetTabIndex.has_value();
+        float minPopupWidth = hasHeader ? 180.0f : 96.0f;
+        float minPopupHeight = hasHeader ? 90.0f : 24.0f;
+        popupWindowSize.x =
+            std::clamp(popupWindowSize.x, minPopupWidth, std::max(minPopupWidth, viewport->WorkSize.x * 0.55f));
+        popupWindowSize.y =
+            std::clamp(popupWindowSize.y, minPopupHeight, std::max(minPopupHeight, viewport->WorkSize.y * 0.75f));
     }
     return popupWindowSize;
+}
+
+static const MapLink* FindMapLinkByTargetTabName(const MapTabData& sourceTab, const std::string& targetTabName) {
+    for (const auto& link : sourceTab.links) {
+        if (link.normalizedTargetMapName == targetTabName) {
+            return &link;
+        }
+    }
+    return nullptr;
 }
 
 static void NavigateToMapTab(int targetTabIndex) {
@@ -2945,7 +3207,8 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
                 drawList->PathFillConvex(segmentColors[segmentIndex]);
             }
         }
-        drawList->AddCircle(center, halfSize, CHECK_TRACKER_MAP_COLOR_BORDER, 16, 1.5f);
+        MapLinkBorderStyle linkBorderStyle = GetMapLinkBorderStyle(EvaluateMapLinkAgeTimeAvailability(link));
+        drawList->AddCircle(center, halfSize, linkBorderStyle.color, 16, linkBorderStyle.thickness);
         if (isPlayerFocusLinkTarget) {
             float highlightRadius = halfSize + std::max(2.0f, halfSize * 0.22f);
             drawList->AddCircle(center, highlightRadius, IM_COL32(255, 255, 255, 255), 20, 3.0f);
@@ -3012,8 +3275,11 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
         } else {
             const int targetTabIndex = static_cast<int>(targetTabIndexIt->second);
             const MapTabData& targetTab = mapTrackerState.tabs[static_cast<size_t>(targetTabIndex)];
+            const MapLink* popupLink = FindMapLinkByTargetTabName(tab, mapLinkPopupState.targetTabName);
+            std::optional<std::string> requirementSummary =
+                popupLink != nullptr ? GetMapLinkRequirementSummary(*popupLink) : std::nullopt;
             std::vector<RenderableMapMarker> popupMarkers = BuildRenderableMarkersForTab(targetTab, mqSpoilers);
-            const ImVec2 popupWindowSize = ComputeClusterPopupWindowSize(popupMarkers, targetTabIndex);
+            const ImVec2 popupWindowSize = ComputeClusterPopupWindowSize(popupMarkers, targetTabIndex, requirementSummary);
 
             ImGui::SetNextWindowPos(mapLinkPopupState.popupPosition, ImGuiCond_Always);
             ImGui::SetNextWindowSize(popupWindowSize, ImGuiCond_Always);
@@ -3029,7 +3295,7 @@ void DrawMapTabContent(MapTabData& tab, bool mqSpoilers) {
                 mapLinkPopupState.keepAliveUntil = std::max(mapLinkPopupState.keepAliveUntil, nowTime + 0.16);
             }
 
-            DrawClusterPopupTargetHeader(targetTabIndex);
+            DrawClusterPopupTargetHeader(targetTabIndex, requirementSummary);
             DrawRenderableMarkerRows(popupMarkers);
 
             ImGui::End();

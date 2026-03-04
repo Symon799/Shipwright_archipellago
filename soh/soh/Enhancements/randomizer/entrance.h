@@ -151,6 +151,8 @@ class EntranceShuffler {
     int mCurNumRandomizedEntrances = 0;
     bool mEntranceShuffleFailure = false;
 };
+
+Entrance* GetEntranceByIndex(int16_t index);
 } // namespace Rando
 
 extern "C" {

@@ -249,6 +249,14 @@ std::string EntranceNameByRegions(RandomizerRegion parentRegion, RandomizerRegio
 
 std::unordered_map<int16_t, Entrance*> entranceMap;
 
+Entrance* GetEntranceByIndex(int16_t index) {
+    auto entranceIt = entranceMap.find(index);
+    if (entranceIt == entranceMap.end()) {
+        return nullptr;
+    }
+    return entranceIt->second;
+}
+
 void SetAllEntrancesData() {
     std::vector<EntranceInfoPair> entranceShuffleTable = {
         // clang-format off
