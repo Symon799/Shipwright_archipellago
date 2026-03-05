@@ -1585,6 +1585,13 @@ void SohInputEditorWindow::DrawLinkTab() {
 
         if (ImGui::CollapsingHeader("Additional (\"Right\") Stick")) {
             DrawStickSection(portIndex, Ship::RIGHT, 1, CHIP_COLOR_N64_YELLOW);
+            CVarCheckbox("Better C-Buttons",
+                         CVAR_SETTING("Controls.RightStickSingleCButtonMode"),
+                         CheckboxOptions()
+                             .Color(THEME_COLOR)
+                             .Tooltip("When using the right stick for C-Buttons, only one C direction is activated at "
+                                      "a time and only after 80% stick deflection.\nUseful to avoid accidental "
+                                      "diagonal item inputs."));
         }
 
         if (ImGui::CollapsingHeader("Rumble")) {

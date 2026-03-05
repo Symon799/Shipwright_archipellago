@@ -4,6 +4,7 @@
 
 #include "soh/Enhancements/game-interactor/GameInteractor.h"
 #include "soh/Enhancements/controls/Mouse.h"
+#include "soh/Enhancements/controls/BetterCButtonMode.h"
 #include "soh/OTRGlobals.h"
 #include "soh/ResourceManagerHelpers.h"
 
@@ -251,6 +252,9 @@ void PadMgr_ProcessInputs(PadMgr* padMgr) {
                         input->cur.stick_y *= -1;
                     }
                 }
+
+                input->cur.button = BetterCButtonMode_ApplySingleDirectionWithDeadzoneToCButtons(
+                    i, input->cur.button, input->cur.right_stick_x, input->cur.right_stick_y);
 
                 if (!padMgr->ctrlrIsConnected[i]) {
                     padMgr->ctrlrIsConnected[i] = true;
