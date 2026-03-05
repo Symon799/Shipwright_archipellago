@@ -8,15 +8,20 @@ It is a version of Ocarina of Time Ship of Harkanian with an auto MapTracker tha
 ## Map Tracker
 This map Tracker replaces the Check Tracker imgui window (Still accessible) and adds all of the maps with every check on it. It is updated in real time when you change zone, when you do a check or when the time of day or age of Link changes.
 
-<img width="1461" height="950" alt="hyrule" src="https://github.com/user-attachments/assets/64a023f3-4485-47fd-9dc2-63d17811ded0" />
+<img width="1568" height="1002" alt="image" src="https://github.com/user-attachments/assets/608f477e-5d85-4ee0-bcd1-0fa222afe665" />
 <img width="1466" height="956" alt="Capture d&#39;écran 2026-03-03 125456" src="https://github.com/user-attachments/assets/df5fc914-3f80-4849-8218-b4224918a3ff" />
 <img width="1255" height="1207" alt="Capture d&#39;écran 2026-03-03 125531" src="https://github.com/user-attachments/assets/5819486f-99b9-413b-a011-b7a1253cda87" />
 <img width="1256" height="1152" alt="Capture d&#39;écran 2026-03-03 125707" src="https://github.com/user-attachments/assets/2c4bcf28-9ae2-409a-be68-d9f42574636e" />
+
 
 ## Time and Age requirements
 When a check is Yellow it means you can do the check but you need to change the time or the age. Hover on the check to see the requirements
 
 <img width="445" height="157" alt="Capture d’écran 2026-03-03 132536" src="https://github.com/user-attachments/assets/a00b5ed8-733d-4caf-84c0-665e4d061ca1" />
+
+## Link to other Zones
+Link to other zones are round and if the outline of the circle is red, you can't go to that zone, if it is yellow you need to change Age or Time
+<img width="593" height="520" alt="image" src="https://github.com/user-attachments/assets/811f1441-f569-4e0b-ab3b-c87319a32bd1" />
 
 ## Hints
 There is also a hint system that adds hints on some of the checks. (witch can be edited in the tool editor mentionnel just below) There is not many hints at the moment but it will improve over time.
