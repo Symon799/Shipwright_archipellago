@@ -17,6 +17,7 @@
 #include "soh/Network/Archipelago/ArchipelagoConsoleWindow.h"
 
 #include <fstream>
+#include <limits>
 #include <spdlog/spdlog.h>
 extern "C" {
 #include <functions.h>
@@ -504,6 +505,47 @@ void Context::ParseArchipelagoOptions() {
     // load those in instead.
 
     nlohmann::json slotData = ArchipelagoClient::GetInstance().GetSlotData();
+    const auto parseNumericSlotOption = [&slotData](const char* key, uint8_t defaultValue) -> uint8_t {
+        const auto valueIt = slotData.find(key);
+        if (valueIt == slotData.end() || valueIt->is_null()) {
+            return defaultValue;
+        }
+
+        if (valueIt->is_boolean()) {
+            return valueIt->get<bool>() ? RO_GENERIC_ON : RO_GENERIC_NO;
+        }
+
+        if (valueIt->is_number_unsigned()) {
+            const uint64_t value = valueIt->get<uint64_t>();
+            return value > std::numeric_limits<uint8_t>::max() ? std::numeric_limits<uint8_t>::max()
+                                                               : static_cast<uint8_t>(value);
+        }
+
+        if (valueIt->is_number_integer()) {
+            const int64_t value = valueIt->get<int64_t>();
+            if (value <= 0) {
+                return 0;
+            }
+            return value > std::numeric_limits<uint8_t>::max() ? std::numeric_limits<uint8_t>::max()
+                                                               : static_cast<uint8_t>(value);
+        }
+
+        if (valueIt->is_string()) {
+            try {
+                const int64_t value = std::stoll(valueIt->get_ref<const std::string&>());
+                if (value <= 0) {
+                    return 0;
+                }
+                return value > std::numeric_limits<uint8_t>::max() ? std::numeric_limits<uint8_t>::max()
+                                                                   : static_cast<uint8_t>(value);
+            } catch (...) {
+                return defaultValue;
+            }
+        }
+
+        return defaultValue;
+    };
+
     mOptions[RSK_LOGIC_RULES].Set(RO_LOGIC_GLITCHLESS);
     mOptions[RSK_FOREST].Set(slotData["closed_forest"]);
     mOptions[RSK_KAK_GATE].Set(slotData["kakariko_gate"]);
@@ -521,39 +563,52 @@ void Context::ParseArchipelagoOptions() {
     mOptions[RSK_RAINBOW_BRIDGE_DUNGEON_COUNT].Set(slotData["rainbow_bridge_dungeons_required"]);
     mOptions[RSK_RAINBOW_BRIDGE_TOKEN_COUNT].Set(slotData["rainbow_bridge_skull_tokens_required"]);
     mOptions[RSK_BRIDGE_OPTIONS].Set(slotData["rainbow_bridge_greg_modifier"]);
-    if (slotData["skip_ganons_trials"] == 0) {
+    const bool skipGanonsTrials = parseNumericSlotOption("skip_ganons_trials", 0) != 0;
+    if (!skipGanonsTrials) {
         mOptions[RSK_GANONS_TRIALS].Set(RO_GANONS_TRIALS_SKIP);
         mOptions[RSK_TRIAL_COUNT].Set(0);
         mTrials->RemoveAllTrials();
     } else {
         mOptions[RSK_GANONS_TRIALS].Set(RO_GANONS_TRIALS_SET_NUMBER);
-        mOptions[RSK_TRIAL_COUNT].Set(slotData["ganons_trials_count"]);
+        uint8_t ganonsTrialsCount = parseNumericSlotOption("ganons_trials_count", 0);
         std::vector<TrialKey> requiredTrials;
-        for(const nlohmann::basic_json<>& trialString : slotData["required_trials"]) {
-            if(trialString == "Forest Trial") {
-                requiredTrials.emplace_back(TrialKey::TK_FOREST_TRIAL);
-            } else if (trialString == "Fire Trial") {
-                requiredTrials.emplace_back(TrialKey::TK_FIRE_TRIAL);
-            } else if (trialString == "Water Trial") {
-                requiredTrials.emplace_back(TrialKey::TK_WATER_TRIAL);
-            } else if (trialString == "Shadow Trial") {
-                requiredTrials.emplace_back(TrialKey::TK_SHADOW_TRIAL);
-            } else if (trialString == "Spirit Trial") {
-                requiredTrials.emplace_back(TrialKey::TK_SPIRIT_TRIAL);
-            } else if (trialString == "Light Trial") {
-                requiredTrials.emplace_back(TrialKey::TK_LIGHT_TRIAL);
+        const auto requiredTrialsIt = slotData.find("required_trials");
+        if (requiredTrialsIt != slotData.end() && requiredTrialsIt->is_array()) {
+            for (const nlohmann::basic_json<>& trialString : *requiredTrialsIt) {
+                if (!trialString.is_string()) {
+                    continue;
+                }
+
+                if (trialString == "Forest Trial") {
+                    requiredTrials.emplace_back(TrialKey::TK_FOREST_TRIAL);
+                } else if (trialString == "Fire Trial") {
+                    requiredTrials.emplace_back(TrialKey::TK_FIRE_TRIAL);
+                } else if (trialString == "Water Trial") {
+                    requiredTrials.emplace_back(TrialKey::TK_WATER_TRIAL);
+                } else if (trialString == "Shadow Trial") {
+                    requiredTrials.emplace_back(TrialKey::TK_SHADOW_TRIAL);
+                } else if (trialString == "Spirit Trial") {
+                    requiredTrials.emplace_back(TrialKey::TK_SPIRIT_TRIAL);
+                } else if (trialString == "Light Trial") {
+                    requiredTrials.emplace_back(TrialKey::TK_LIGHT_TRIAL);
+                }
             }
         }
+        if (ganonsTrialsCount == 0) {
+            ganonsTrialsCount = static_cast<uint8_t>(requiredTrials.size());
+        }
+        mOptions[RSK_TRIAL_COUNT].Set(ganonsTrialsCount);
 
         for (auto& trial : mTrials->GetTrialList()) {
             trial->SetAsSkipped();
-            if(std::find(requiredTrials.begin(), requiredTrials.end(), trial->GetTrialKey()) != requiredTrials.end()) {
+            if (std::find(requiredTrials.begin(), requiredTrials.end(), trial->GetTrialKey()) != requiredTrials.end()) {
                 trial->SetAsRequired();
             }
         }
     }
 
-    mOptions[RSK_MEDALLION_LOCKED_TRIALS].Set(slotData["medallion_locked_trials"]);
+    const uint8_t medallionLockedTrials = parseNumericSlotOption("medallion_locked_trials", RO_GENERIC_NO);
+    mOptions[RSK_MEDALLION_LOCKED_TRIALS].Set(medallionLockedTrials);
     if (slotData["ocarina_of_time"] == 0) {
         mOptions[RSK_STARTING_OCARINA].Set(RO_STARTING_OCARINA_OFF);
     } else if (slotData["ocarina_of_time"] == 1) {
@@ -564,21 +619,21 @@ void Context::ParseArchipelagoOptions() {
     mOptions[RSK_SHUFFLE_OCARINA].Set(slotData["shuffle_ocarinas"]);
     mOptions[RSK_SHUFFLE_OCARINA_BUTTONS].Set(slotData["shuffle_ocarina_buttons"]);
     mOptions[RSK_SHUFFLE_SWIM].Set(slotData["shuffle_swim"]);
-    mOptions[RSK_STARTING_DEKU_SHIELD].Set(slotData["start_with_deku_shield"]);
-    mOptions[RSK_STARTING_KOKIRI_SWORD].Set(slotData["start_with_kokiri_sword"]);
-    mOptions[RSK_STARTING_MASTER_SWORD].Set(slotData["start_with_master_sword"]);
-    mOptions[RSK_STARTING_ZELDAS_LULLABY].Set(slotData["start_with_zeldas_lullaby"]);
-    mOptions[RSK_STARTING_EPONAS_SONG].Set(slotData["start_with_eponas_song"]);
-    mOptions[RSK_STARTING_SARIAS_SONG].Set(slotData["start_with_sarias_song"]);
-    mOptions[RSK_STARTING_SUNS_SONG].Set(slotData["start_with_suns_song"]);
-    mOptions[RSK_STARTING_SONG_OF_TIME].Set(slotData["start_with_song_of_time"]);
-    mOptions[RSK_STARTING_SONG_OF_STORMS].Set(slotData["start_with_song_of_storms"]);
-    mOptions[RSK_STARTING_MINUET_OF_FOREST].Set(slotData["start_with_minuet"]);
-    mOptions[RSK_STARTING_BOLERO_OF_FIRE].Set(slotData["start_with_bolero"]);
-    mOptions[RSK_STARTING_SERENADE_OF_WATER].Set(slotData["start_with_serenade"]);
-    mOptions[RSK_STARTING_REQUIEM_OF_SPIRIT].Set(slotData["start_with_requiem"]);
-    mOptions[RSK_STARTING_NOCTURNE_OF_SHADOW].Set(slotData["start_with_nocturne"]);
-    mOptions[RSK_STARTING_PRELUDE_OF_LIGHT].Set(slotData["start_with_prelude"]);
+    mOptions[RSK_STARTING_DEKU_SHIELD].Set(parseNumericSlotOption("start_with_deku_shield", RO_GENERIC_NO));
+    mOptions[RSK_STARTING_KOKIRI_SWORD].Set(parseNumericSlotOption("start_with_kokiri_sword", RO_GENERIC_NO));
+    mOptions[RSK_STARTING_MASTER_SWORD].Set(parseNumericSlotOption("start_with_master_sword", RO_GENERIC_NO));
+    mOptions[RSK_STARTING_ZELDAS_LULLABY].Set(parseNumericSlotOption("start_with_zeldas_lullaby", RO_GENERIC_NO));
+    mOptions[RSK_STARTING_EPONAS_SONG].Set(parseNumericSlotOption("start_with_eponas_song", RO_GENERIC_NO));
+    mOptions[RSK_STARTING_SARIAS_SONG].Set(parseNumericSlotOption("start_with_sarias_song", RO_GENERIC_NO));
+    mOptions[RSK_STARTING_SUNS_SONG].Set(parseNumericSlotOption("start_with_suns_song", RO_GENERIC_NO));
+    mOptions[RSK_STARTING_SONG_OF_TIME].Set(parseNumericSlotOption("start_with_song_of_time", RO_GENERIC_NO));
+    mOptions[RSK_STARTING_SONG_OF_STORMS].Set(parseNumericSlotOption("start_with_song_of_storms", RO_GENERIC_NO));
+    mOptions[RSK_STARTING_MINUET_OF_FOREST].Set(parseNumericSlotOption("start_with_minuet", RO_GENERIC_NO));
+    mOptions[RSK_STARTING_BOLERO_OF_FIRE].Set(parseNumericSlotOption("start_with_bolero", RO_GENERIC_NO));
+    mOptions[RSK_STARTING_SERENADE_OF_WATER].Set(parseNumericSlotOption("start_with_serenade", RO_GENERIC_NO));
+    mOptions[RSK_STARTING_REQUIEM_OF_SPIRIT].Set(parseNumericSlotOption("start_with_requiem", RO_GENERIC_NO));
+    mOptions[RSK_STARTING_NOCTURNE_OF_SHADOW].Set(parseNumericSlotOption("start_with_nocturne", RO_GENERIC_NO));
+    mOptions[RSK_STARTING_PRELUDE_OF_LIGHT].Set(parseNumericSlotOption("start_with_prelude", RO_GENERIC_NO));
     mOptions[RSK_SHUFFLE_KOKIRI_SWORD].Set(slotData["shuffle_kokiri_sword"]);
     mOptions[RSK_SHUFFLE_MASTER_SWORD].Set(slotData["shuffle_master_sword"]);
     mOptions[RSK_SHUFFLE_CHILD_WALLET].Set(slotData["shuffle_childs_wallet"]);
@@ -757,9 +812,9 @@ void Context::ParseArchipelagoOptions() {
     }
     mOptions[RSK_SKIP_CHILD_STEALTH].Set(RO_GENERIC_NO);
     mOptions[RSK_SKIP_CHILD_ZELDA].Set(slotData["skip_child_zelda"]);
-    mOptions[RSK_STARTING_STICKS].Set(slotData["start_with_stick_ammo"]);
-    mOptions[RSK_STARTING_NUTS].Set(slotData["start_with_nut_ammo"]);
-    mOptions[RSK_STARTING_BEANS].Set(slotData["start_with_magic_beans"]);
+    mOptions[RSK_STARTING_STICKS].Set(parseNumericSlotOption("start_with_stick_ammo", RO_GENERIC_NO));
+    mOptions[RSK_STARTING_NUTS].Set(parseNumericSlotOption("start_with_nut_ammo", RO_GENERIC_NO));
+    mOptions[RSK_STARTING_BEANS].Set(parseNumericSlotOption("start_with_magic_beans", RO_GENERIC_NO));
     mOptions[RSK_FULL_WALLETS].Set(slotData["full_wallets"]);
     mOptions[RSK_SHUFFLE_CHEST_MINIGAME].Set(RO_GENERIC_NO);
     mOptions[RSK_BIG_POE_COUNT].Set(slotData["big_poe_target_count"]);
@@ -850,7 +905,10 @@ void Context::ParseArchipelagoOptions() {
     mOptions[RSK_MIX_GROTTO_ENTRANCES].Set(0);
     mOptions[RSK_DECOUPLED_ENTRANCES].Set(0);
     mOptions[RSK_STARTING_SKULLTULA_TOKEN].Set(0);
-    uint8_t slotDataStartingHearts = slotData["starting_hearts"];
+    uint8_t slotDataStartingHearts = parseNumericSlotOption("starting_hearts", 3);
+    if (slotDataStartingHearts == 0) {
+        slotDataStartingHearts = 1;
+    }
     mOptions[RSK_STARTING_HEARTS].Set(slotDataStartingHearts - 1);
     mOptions[RSK_DAMAGE_MULTIPLIER].Set(0);
     mOptions[RSK_ALL_LOCATIONS_REACHABLE].Set(0);
@@ -858,8 +916,14 @@ void Context::ParseArchipelagoOptions() {
     mOptions[RSK_SHUFFLE_100_GS_REWARD].Set(slotData["shuffle_100_gs_reward"]);
     mOptions[RSK_TRIFORCE_HUNT].Set(slotData["triforce_hunt"]);
     // For some reason, ship adds 1 after the option is parsed in normal rando, so we subtract 1 here.
-    uint8_t triforcePieceTotal = slotData["triforce_hunt_pieces_total"];
-    uint8_t triforcePieceRequired = slotData["triforce_hunt_pieces_required"];
+    uint8_t triforcePieceTotal = parseNumericSlotOption("triforce_hunt_pieces_total", 1);
+    uint8_t triforcePieceRequired = parseNumericSlotOption("triforce_hunt_pieces_required", 1);
+    if (triforcePieceTotal == 0) {
+        triforcePieceTotal = 1;
+    }
+    if (triforcePieceRequired == 0) {
+        triforcePieceRequired = 1;
+    }
     mOptions[RSK_TRIFORCE_HUNT_PIECES_TOTAL].Set((triforcePieceTotal - 1));
     mOptions[RSK_TRIFORCE_HUNT_PIECES_REQUIRED].Set((triforcePieceRequired - 1));
     mOptions[RSK_SHUFFLE_BEAN_SOULS].Set(RO_GENERIC_NO);
