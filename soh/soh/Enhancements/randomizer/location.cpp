@@ -1,4 +1,5 @@
 #include "location.h"
+#include "randomizer_check_ids.h"
 #include "static_data.h"
 #include <algorithm>
 #include <assert.h>
@@ -50,6 +51,10 @@ const std::string& Rando::Location::GetName() const {
 
 const std::string& Rando::Location::GetShortName() const {
     return shortName;
+}
+
+std::string_view Rando::Location::GetMapTrackerId() const {
+    return GetRandomizerCheckTrackerId(rc);
 }
 
 bool Rando::Location::IsDungeon() const {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -117,6 +118,7 @@ class Location {
     HintText* GetHint();
     const std::string& GetName() const;
     const std::string& GetShortName() const;
+    std::string_view GetMapTrackerId() const;
     bool IsDungeon() const;
     bool IsOverworld() const;
     bool IsShop() const;

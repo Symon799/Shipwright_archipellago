@@ -2,6 +2,10 @@
 #include "SeedContext.h"
 #include "logic.h"
 
+namespace CheckTracker {
+void InvalidateMapTrackerRenderCache();
+}
+
 namespace Rando {
 ItemLocation::ItemLocation() : rc(RC_UNKNOWN_CHECK) {
 }
@@ -135,7 +139,11 @@ bool ItemLocation::HasObtained() const {
 void ItemLocation::SetCheckStatus(RandomizerCheckStatus status_) {
     if (rc == RC_ARCHIPELAGO_RECEIVED_ITEM) // never count the AP receive trigger as 'collected'
         return;
+    if (status == status_) {
+        return;
+    }
     status = status_;
+    CheckTracker::InvalidateMapTrackerRenderCache();
     GameInteractor::Instance->ExecuteHooks<GameInteractor::OnRandoSetCheckStatus>(rc, status);
 }
 
@@ -144,7 +152,12 @@ RandomizerCheckStatus ItemLocation::GetCheckStatus() {
 }
 
 void ItemLocation::SetIsSkipped(bool isSkipped_) {
+    if (isSkipped == isSkipped_) {
+        return;
+    }
+
     isSkipped = isSkipped_;
+    CheckTracker::InvalidateMapTrackerRenderCache();
     GameInteractor::Instance->ExecuteHooks<GameInteractor::OnRandoSetIsSkipped>(rc, isSkipped);
 }
 
