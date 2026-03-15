@@ -357,12 +357,14 @@ static CachedMapTabRenderData BuildCachedMapTabRenderData(const MapTabData& tab,
     return cachedTabRenderData;
 }
 
-void InvalidateMapTrackerRenderCache() {
+void InvalidateMapTrackerRenderCache(bool closePopups) {
     mapTrackerRenderCache.valid = false;
     mapTrackerRenderCache.cachedGeneration = 0;
     mapTrackerRenderCache.generation++;
-    mapClusterPopupState.open = false;
-    mapLinkPopupState.open = false;
+    if (closePopups) {
+        mapClusterPopupState.open = false;
+        mapLinkPopupState.open = false;
+    }
 }
 
 static bool IsMapTrackerRenderCacheCurrent(bool mqSpoilers) {
@@ -1447,4 +1449,3 @@ void DrawMapTrackerContent() {
 }
 
 } // namespace CheckTracker
-

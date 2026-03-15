@@ -160,7 +160,7 @@ void ResetMapTrackerState(bool unloadTextures);
 void LoadMapTrackerData();
 void DrawMapTrackerContent();
 void UpdateRequestedMapTabFromCurrentArea(bool force);
-void InvalidateMapTrackerRenderCache();
+void InvalidateMapTrackerRenderCache(bool closePopups = true);
 
 std::string TrimCopy(const std::string& value);
 std::string GetGameCheckMapTrackerId(RandomizerCheck rc);

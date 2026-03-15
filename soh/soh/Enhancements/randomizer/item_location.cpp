@@ -3,7 +3,7 @@
 #include "logic.h"
 
 namespace CheckTracker {
-void InvalidateMapTrackerRenderCache();
+void InvalidateMapTrackerRenderCache(bool closePopups);
 }
 
 namespace Rando {
@@ -143,7 +143,7 @@ void ItemLocation::SetCheckStatus(RandomizerCheckStatus status_) {
         return;
     }
     status = status_;
-    CheckTracker::InvalidateMapTrackerRenderCache();
+    CheckTracker::InvalidateMapTrackerRenderCache(false);
     GameInteractor::Instance->ExecuteHooks<GameInteractor::OnRandoSetCheckStatus>(rc, status);
 }
 
@@ -157,7 +157,7 @@ void ItemLocation::SetIsSkipped(bool isSkipped_) {
     }
 
     isSkipped = isSkipped_;
-    CheckTracker::InvalidateMapTrackerRenderCache();
+    CheckTracker::InvalidateMapTrackerRenderCache(false);
     GameInteractor::Instance->ExecuteHooks<GameInteractor::OnRandoSetIsSkipped>(rc, isSkipped);
 }
 
