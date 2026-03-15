@@ -79,7 +79,6 @@ struct MapTabData {
     std::string groupName;
     std::string imageRelativePath;
     std::string imageResourcePath;
-    std::filesystem::path imageAbsolutePath;
     std::string textureName;
     ImTextureID texture = 0;
     ImVec2 textureSize = { 0.0f, 0.0f };
@@ -97,7 +96,6 @@ struct MapIssueEntry {
 };
 
 struct MapPackAreaFileRef {
-    std::filesystem::path diskPath;
     std::string resourcePath;
     std::string displayName;
 };
@@ -107,8 +105,8 @@ struct MapTrackerState {
     bool loaded = false;
     std::filesystem::path assetsRoot;
     std::filesystem::path assetsArchiveMountRoot;
+    std::filesystem::path mountedArchivePath;
     std::string resourcePathPrefix;
-    bool usingArchivePack = false;
     std::vector<std::string> fatalErrors;
     std::vector<MapIssueEntry> warnings;
     std::vector<MapIssueEntry> unresolvedLinks;
@@ -166,7 +164,6 @@ void InvalidateMapTrackerRenderCache();
 
 std::string TrimCopy(const std::string& value);
 std::string GetGameCheckMapTrackerId(RandomizerCheck rc);
-bool LoadJsonWithComments(const std::filesystem::path& filePath, nlohmann::json& outJson, std::string& outError);
 
 bool IsCheckHidden(RandomizerCheck rc);
 bool CanToggleSkippedStateForCheck(RandomizerCheck rc);

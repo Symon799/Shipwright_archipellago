@@ -1,4 +1,5 @@
 #include "map_tracker_internal.h"
+#include "map_tracker_link_resolver.h"
 #include "randomizer_entrance_tracker.h"
 #include "randomizer_item_tracker.h"
 #include "randomizerTypes.h"
@@ -21,7 +22,6 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
-#include <fstream>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -44,44 +44,7 @@ using json = nlohmann::json;
 using namespace UIWidgets;
 
 MapTrackerState mapTrackerState;
-
-namespace MapIds {
-inline constexpr const char* BottomOfTheWell = "bottom_of_the_well";
-inline constexpr const char* DekuTree = "deku_tree";
-inline constexpr const char* DesertColossus = "desert_colossus";
-inline constexpr const char* DodongosCavern = "dodongos_cavern";
-inline constexpr const char* Dmc = "dmc";
-inline constexpr const char* Dmt = "dmt";
-inline constexpr const char* FireTemple = "fire_temple";
-inline constexpr const char* ForestTemple = "forest_temple";
-inline constexpr const char* GanonsCastle = "ganons_castle";
-inline constexpr const char* GanonsTower = "ganons_tower";
-inline constexpr const char* GerudoFortress = "gerudo_fortress";
-inline constexpr const char* GerudoTrainingGround = "gerudo_training_ground";
-inline constexpr const char* GerudoValley = "gerudo_valley";
-inline constexpr const char* GoronCity = "goron_city";
-inline constexpr const char* Graveyard = "graveyard";
-inline constexpr const char* HyruleCastle = "hyrule_castle";
-inline constexpr const char* HyruleFields = "hyrule_fields";
-inline constexpr const char* IceCavern = "ice_cavern";
-inline constexpr const char* JabuJabusBelly = "jabu_jabus_belly";
-inline constexpr const char* KakarikoVillage = "kakariko_village";
-inline constexpr const char* KokiriForest = "kokiri_forest";
-inline constexpr const char* LakeHylia = "lake_hylia";
-inline constexpr const char* LonLonRanch = "lon_lon_ranch";
-inline constexpr const char* LostWoods = "lost_woods";
-inline constexpr const char* Market = "market";
-inline constexpr const char* Overworld = "overworld";
-inline constexpr const char* SacredForestMeadow = "sfm";
-inline constexpr const char* ShadowTemple = "shadow_temple";
-inline constexpr const char* SpiritTemple = "spirit_temple";
-inline constexpr const char* TempleOfTime = "temple_of_time";
-inline constexpr const char* Wasteland = "wasteland";
-inline constexpr const char* WaterTemple = "water_temple";
-inline constexpr const char* ZoraRiver = "zora_river";
-inline constexpr const char* ZorasDomain = "zoras_domain";
-inline constexpr const char* ZorasFountain = "zoras_fountain";
-} // namespace MapIds
+static uint64_t mapTrackerTextureLoadGeneration = 1;
 
 std::string TrimCopy(const std::string& value) {
     size_t start = value.find_first_not_of(" \t\r\n");
@@ -159,25 +122,6 @@ bool TryReadFloat(const json& value, float& outValue) {
         }
     }
     return false;
-}
-
-bool LoadJsonWithComments(const std::filesystem::path& filePath, json& outJson, std::string& outError) {
-    std::ifstream inputFile(filePath);
-    if (!inputFile.is_open()) {
-        outError = "Could not open file";
-        return false;
-    }
-
-    std::stringstream buffer;
-    buffer << inputFile.rdbuf();
-    try {
-        outJson = json::parse(buffer.str(), nullptr, true, true);
-    } catch (const std::exception& exception) {
-        outError = exception.what();
-        return false;
-    }
-
-    return true;
 }
 
 std::vector<std::filesystem::path> BuildMapTrackerAssetsRootCandidates() {
@@ -258,12 +202,25 @@ std::vector<std::filesystem::path> FindMapPackZipFiles(const std::filesystem::pa
     }
 
     std::sort(zipFiles.begin(), zipFiles.end(), [](const std::filesystem::path& left, const std::filesystem::path& right) {
+        std::error_code leftEc;
+        std::error_code rightEc;
+        const auto leftWriteTime = std::filesystem::last_write_time(left, leftEc);
+        const auto rightWriteTime = std::filesystem::last_write_time(right, rightEc);
+
+        if (leftEc != rightEc) {
+            return !leftEc;
+        }
+
+        if (!leftEc && leftWriteTime != rightWriteTime) {
+            return leftWriteTime > rightWriteTime;
+        }
+
         return left.filename().string() < right.filename().string();
     });
     return zipFiles;
 }
 
-std::filesystem::path GetFirstMapPackZip(const std::filesystem::path& packFolderPath) {
+std::filesystem::path GetNewestMapPackZip(const std::filesystem::path& packFolderPath) {
     auto zipFiles = FindMapPackZipFiles(packFolderPath);
     if (zipFiles.empty()) {
         return {};
@@ -279,6 +236,87 @@ std::string GetMapTrackerAssetsRootAbsoluteString() {
         return resolvedRoot.string();
     }
     return absolutePath.string();
+}
+
+static bool IsArchivePathMounted(const std::filesystem::path& archivePath) {
+    auto context = Ship::Context::GetInstance();
+    if (context == nullptr || context->GetResourceManager() == nullptr ||
+        context->GetResourceManager()->GetArchiveManager() == nullptr) {
+        return false;
+    }
+
+    const std::string requestedArchivePath = archivePath.lexically_normal().generic_string();
+    auto mountedArchives = context->GetResourceManager()->GetArchiveManager()->GetArchives();
+    if (mountedArchives == nullptr) {
+        return false;
+    }
+
+    for (const auto& archive : *mountedArchives) {
+        if (archive == nullptr) {
+            continue;
+        }
+
+        const std::filesystem::path mountedArchivePath = archive->GetPath();
+        if (mountedArchivePath.lexically_normal().generic_string() == requestedArchivePath) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static void UnloadMapTrackerResources(MapTrackerState& state, bool unloadTextures) {
+    auto context = Ship::Context::GetInstance();
+    if (unloadTextures && context != nullptr && context->GetWindow() != nullptr) {
+        auto gui = context->GetWindow()->GetGui();
+        if (gui != nullptr) {
+            for (const auto& tab : state.tabs) {
+                if (!tab.textureName.empty() && gui->HasTextureByName(tab.textureName)) {
+                    gui->UnloadTexture(tab.textureName);
+                }
+            }
+        }
+    }
+
+    if (!state.mountedArchivePath.empty() && context != nullptr && context->GetResourceManager() != nullptr &&
+        context->GetResourceManager()->GetArchiveManager() != nullptr) {
+        context->GetResourceManager()->GetArchiveManager()->RemoveArchive(state.mountedArchivePath.string());
+    }
+}
+
+static void PreserveMapTrackerSessionState(const MapTrackerState& previousState, MapTrackerState& loadedState) {
+    loadedState.revealedCheckHints = previousState.revealedCheckHints;
+    loadedState.selectedGroupName = previousState.selectedGroupName;
+    loadedState.lastSelectedTabByGroup = previousState.lastSelectedTabByGroup;
+    loadedState.lastMapViewTabIndex = previousState.lastMapViewTabIndex;
+    loadedState.lastFocusedArea = previousState.lastFocusedArea;
+    loadedState.lastFocusedScene = previousState.lastFocusedScene;
+    loadedState.requestedTabId = previousState.requestedTabId;
+
+    if (loadedState.requestedTabId.empty() && previousState.selectedTabIndex >= 0 &&
+        previousState.selectedTabIndex < static_cast<int>(previousState.tabs.size())) {
+        loadedState.requestedTabId = previousState.tabs[static_cast<size_t>(previousState.selectedTabIndex)].mapId;
+    }
+}
+
+static void AppendReloadFailureWarning(MapTrackerState& stateToKeep, const MapTrackerState& failedState) {
+    if (failedState.fatalErrors.empty()) {
+        return;
+    }
+
+    std::vector<std::string> failureSummary;
+    failureSummary.reserve(std::min<size_t>(3, failedState.fatalErrors.size()));
+    for (size_t i = 0; i < failedState.fatalErrors.size() && i < 3; i++) {
+        failureSummary.push_back(failedState.fatalErrors[i]);
+    }
+
+    stateToKeep.warnings.insert(stateToKeep.warnings.begin(),
+                                { "Reload failed; keeping previous map pack active",
+                                  JoinWithCommaLimited(failureSummary, failureSummary.size()) });
+}
+
+static std::string BuildMapTextureName(uint64_t loadGeneration, std::string_view mapId) {
+    return fmt::format("CHECK_TRACKER_MAP_{}_{}", loadGeneration, mapId);
 }
 
 std::string BuildMapTrackerResourcePath(const std::string& resourcePathPrefix, const std::string& relativePath) {
@@ -312,14 +350,6 @@ bool LoadJsonFromArchiveResource(const std::string& resourcePath, json& outJson,
     return true;
 }
 
-bool LoadJsonFromMapPack(const std::filesystem::path& diskPath, const std::string& resourcePath, json& outJson,
-                         std::string& outError) {
-    if (!diskPath.empty()) {
-        return LoadJsonWithComments(diskPath, outJson, outError);
-    }
-    return LoadJsonFromArchiveResource(resourcePath, outJson, outError);
-}
-
 bool EnsureMapTrackerZipArchiveMounted(const std::filesystem::path& archivePath, const std::string& preferredPrefix,
                                        std::filesystem::path& outArchiveMountRoot, std::string& outResourcePathPrefix,
                                        std::string& outError) {
@@ -334,7 +364,7 @@ bool EnsureMapTrackerZipArchiveMounted(const std::filesystem::path& archivePath,
     outArchiveMountRoot = archivePath;
 
     std::string preferredProbePath = BuildMapTrackerResourcePath(preferredPrefix, CHECK_TRACKER_MAPS_JSON);
-    if (!archiveManager->HasFile(preferredProbePath) && !archiveManager->HasFile(CHECK_TRACKER_MAPS_JSON)) {
+    if (!IsArchivePathMounted(archivePath)) {
         auto archive = archiveManager->AddArchive(archivePath.string());
         if (archive == nullptr) {
             outError = "Failed to mount archive file: " + archivePath.string();
@@ -391,63 +421,6 @@ bool EnsureMapTrackerZipArchiveMounted(const std::filesystem::path& archivePath,
     return true;
 }
 
-bool EnsureMapTrackerArchiveMounted(const std::filesystem::path& assetsRoot, std::filesystem::path& outArchiveMountRoot,
-                                    std::string& outResourcePathPrefix, std::string& outError) {
-    auto context = Ship::Context::GetInstance();
-    if (context == nullptr || context->GetResourceManager() == nullptr ||
-        context->GetResourceManager()->GetArchiveManager() == nullptr) {
-        outError = "Resource manager is unavailable.";
-        return false;
-    }
-
-    outArchiveMountRoot = assetsRoot.parent_path();
-    if (outArchiveMountRoot.empty() || !std::filesystem::exists(outArchiveMountRoot) ||
-        !std::filesystem::is_directory(outArchiveMountRoot)) {
-        outError = "Invalid archive mount directory: " + outArchiveMountRoot.string();
-        return false;
-    }
-
-    outResourcePathPrefix = assetsRoot.filename().string();
-    if (outResourcePathPrefix.empty()) {
-        outError = "Could not derive resource path prefix from assets root: " + assetsRoot.string();
-        return false;
-    }
-
-    auto archiveManager = context->GetResourceManager()->GetArchiveManager();
-    const std::string mapsProbePath =
-        (std::filesystem::path(outResourcePathPrefix) / CHECK_TRACKER_MAPS_JSON).lexically_normal().generic_string();
-
-    if (!archiveManager->HasFile(mapsProbePath)) {
-        auto archive = archiveManager->AddArchive(outArchiveMountRoot.string());
-        if (archive == nullptr) {
-            outError = "Failed to mount archive folder: " + outArchiveMountRoot.string();
-            return false;
-        }
-    }
-
-    if (!archiveManager->HasFile(mapsProbePath)) {
-        outError = "Map pack is not indexed after mount. Missing virtual file: " + mapsProbePath;
-        return false;
-    }
-
-    return true;
-}
-
-bool ValidateMapImageFile(const std::filesystem::path& imagePath, std::string& outError) {
-    if (!std::filesystem::exists(imagePath)) {
-        outError = "Image file not found: " + imagePath.string();
-        return false;
-    }
-
-    std::error_code errorCode;
-    if (!std::filesystem::is_regular_file(imagePath, errorCode)) {
-        outError = "Image path is not a regular file: " + imagePath.string();
-        return false;
-    }
-
-    return true;
-}
-
 bool IsMapModeEnabled() {
     return CVarGetInteger(CHECK_TRACKER_MAP_MODE_CVAR, 1) != 0;
 }
@@ -456,28 +429,42 @@ void SetMapModeEnabled(bool enabled) {
     CVarSetInteger(CHECK_TRACKER_MAP_MODE_CVAR, enabled ? 1 : 0);
 }
 
-std::vector<MapPlacement> ExtractPlacementsFromNode(const json& node, const std::string& sourceFile,
-                                                    std::vector<MapIssueEntry>& warnings) {
+static void AddSchemaWarning(MapTrackerState& state, std::string summary, std::string details) {
+    state.warnings.push_back({ std::move(summary), std::move(details) });
+}
+
+std::vector<MapPlacement> ExtractPlacementsFromNode(MapTrackerState& state, const json& node, const std::string& sourceFile,
+                                                    const std::string& checkLabel, bool& hadSchemaError) {
     std::vector<MapPlacement> placements;
     if (!node.contains("map_locations") || !node["map_locations"].is_array()) {
         return placements;
     }
 
-    for (const auto& mapLoc : node["map_locations"]) {
+    for (size_t placementIndex = 0; placementIndex < node["map_locations"].size(); placementIndex++) {
+        const auto& mapLoc = node["map_locations"][placementIndex];
         if (!mapLoc.is_object()) {
+            hadSchemaError = true;
+            AddSchemaWarning(state, "Invalid map location in " + sourceFile,
+                             fmt::format("Check \"{}\" has a non-object map_locations entry at index {}.", checkLabel,
+                                         placementIndex));
             continue;
         }
 
         if (!mapLoc.contains("map_id") || !mapLoc["map_id"].is_string()) {
-            warnings.push_back({ "Invalid map location in " + sourceFile,
-                                 "One node is missing a valid \"map_id\" string in map_locations." });
+            hadSchemaError = true;
+            AddSchemaWarning(state, "Invalid map location in " + sourceFile,
+                             fmt::format("Check \"{}\" is missing a valid string map_id at map_locations[{}].",
+                                         checkLabel, placementIndex));
             continue;
         }
 
         MapPlacement placement;
         placement.mapId = TrimCopy(mapLoc["map_id"].get<std::string>());
         if (placement.mapId.empty()) {
-            warnings.push_back({ "Invalid map location in " + sourceFile, "A map_locations entry has an empty map_id." });
+            hadSchemaError = true;
+            AddSchemaWarning(state, "Invalid map location in " + sourceFile,
+                             fmt::format("Check \"{}\" has an empty map_id at map_locations[{}].", checkLabel,
+                                         placementIndex));
             continue;
         }
 
@@ -491,9 +478,10 @@ std::vector<MapPlacement> ExtractPlacementsFromNode(const json& node, const std:
         }
 
         if (!hasX || !hasY || !hasSize) {
-            warnings.push_back(
-                { "Invalid map coordinates in " + sourceFile,
-                  "A map_locations entry has invalid x/y/size values for map_id \"" + placement.mapId + "\"." });
+            hadSchemaError = true;
+            AddSchemaWarning(state, "Invalid map coordinates in " + sourceFile,
+                             fmt::format("Check \"{}\" has invalid x/y/size values at map_locations[{}] for map_id \"{}\".",
+                                         checkLabel, placementIndex, placement.mapId));
             continue;
         }
 
@@ -527,16 +515,7 @@ std::vector<CheckDescriptor> BuildVisibleCheckDescriptors() {
 }
 
 void ResetMapTrackerState(bool unloadTextures) {
-    if (unloadTextures) {
-        auto gui = Ship::Context::GetInstance()->GetWindow()->GetGui();
-        if (gui != nullptr) {
-            for (const auto& tab : mapTrackerState.tabs) {
-                if (!tab.textureName.empty() && gui->HasTextureByName(tab.textureName)) {
-                    gui->UnloadTexture(tab.textureName);
-                }
-            }
-        }
-    }
+    UnloadMapTrackerResources(mapTrackerState, unloadTextures);
     mapTrackerState = {};
     InvalidateMapTrackerRenderCache();
 }
@@ -735,10 +714,11 @@ std::string GetCheckRequirementSummary(RandomizerCheck rc) {
 }
 
 static std::optional<std::string> ResolveFirstExistingMapTabId(
-    const std::initializer_list<const char*>& preferredMapIds) {
-    for (const char* preferredMapId : preferredMapIds) {
-        if (mapTrackerState.tabIndexById.contains(preferredMapId)) {
-            return std::string(preferredMapId);
+    const std::initializer_list<std::string_view>& preferredMapIds) {
+    for (std::string_view preferredMapId : preferredMapIds) {
+        const std::string preferredMapIdString(preferredMapId);
+        if (mapTrackerState.tabIndexById.contains(preferredMapIdString)) {
+            return preferredMapIdString;
         }
     }
 
@@ -814,47 +794,6 @@ std::optional<std::string> ResolvePreferredMapTabIdForArea(RandomizerCheckArea a
         default:
             return std::nullopt;
     }
-}
-
-static int16_t ResolveMapLinkEntranceIndex(std::string_view sourceMapId, std::string_view targetMapId) {
-    static const std::array<std::tuple<std::string_view, std::string_view, int16_t>, 6> entranceIndexByMapPair = { {
-        { MapIds::LostWoods, MapIds::ZoraRiver, ENTR_ZORAS_RIVER_UNDERWATER_SHORTCUT },
-        { MapIds::ZoraRiver, MapIds::LostWoods, ENTR_LOST_WOODS_UNDERWATER_SHORTCUT },
-        { MapIds::LostWoods, MapIds::GoronCity, ENTR_GORON_CITY_TUNNEL_SHORTCUT },
-        { MapIds::GoronCity, MapIds::LostWoods, ENTR_LOST_WOODS_TUNNEL_SHORTCUT },
-        { MapIds::LostWoods, MapIds::SacredForestMeadow, ENTR_SACRED_FOREST_MEADOW_SOUTH_EXIT },
-        { MapIds::SacredForestMeadow, MapIds::LostWoods, ENTR_LOST_WOODS_NORTH_EXIT },
-    } };
-    static const std::array<std::pair<std::string_view, int16_t>, 14> entranceIndexByTargetMap = { {
-        { MapIds::DekuTree, ENTR_DEKU_TREE_ENTRANCE },
-        { MapIds::DodongosCavern, ENTR_DODONGOS_CAVERN_ENTRANCE },
-        { MapIds::JabuJabusBelly, ENTR_JABU_JABU_ENTRANCE },
-        { MapIds::ForestTemple, ENTR_FOREST_TEMPLE_ENTRANCE },
-        { MapIds::FireTemple, ENTR_FIRE_TEMPLE_ENTRANCE },
-        { MapIds::WaterTemple, ENTR_WATER_TEMPLE_ENTRANCE },
-        { MapIds::SpiritTemple, ENTR_SPIRIT_TEMPLE_ENTRANCE },
-        { MapIds::ShadowTemple, ENTR_SHADOW_TEMPLE_ENTRANCE },
-        { MapIds::BottomOfTheWell, ENTR_BOTTOM_OF_THE_WELL_ENTRANCE },
-        { MapIds::IceCavern, ENTR_ICE_CAVERN_ENTRANCE },
-        { MapIds::GerudoTrainingGround, ENTR_GERUDO_TRAINING_GROUND_ENTRANCE },
-        { MapIds::GanonsCastle, ENTR_INSIDE_GANONS_CASTLE_ENTRANCE },
-        { MapIds::GanonsTower, ENTR_INSIDE_GANONS_CASTLE_ENTRANCE },
-        { MapIds::TempleOfTime, ENTR_TEMPLE_OF_TIME_ENTRANCE },
-    } };
-
-    for (const auto& [entrySourceMapId, entryTargetMapId, entranceIndex] : entranceIndexByMapPair) {
-        if (sourceMapId == entrySourceMapId && targetMapId == entryTargetMapId) {
-            return entranceIndex;
-        }
-    }
-
-    for (const auto& [entryTargetMapId, entranceIndex] : entranceIndexByTargetMap) {
-        if (targetMapId == entryTargetMapId) {
-            return entranceIndex;
-        }
-    }
-
-    return -1;
 }
 
 static bool EvaluateEntranceConditionAtAgeTime(const Rando::Entrance& entrance, RandomizerRegion parentRegion,
@@ -1060,58 +999,32 @@ std::unordered_map<std::string, RandomizerCheck> BuildGameCheckLookupByMapTracke
     return checksByMapTrackerId;
 }
 
-std::vector<MapPackAreaFileRef> CollectMapPackAreaFiles(const std::filesystem::path& packFolderPath, bool usingArchivePack,
-                                                        const std::string& resourcePathPrefix,
+std::vector<MapPackAreaFileRef> CollectMapPackAreaFiles(const std::string& resourcePathPrefix,
                                                         std::vector<MapIssueEntry>& warnings) {
     std::vector<MapPackAreaFileRef> areaFiles;
-    if (!usingArchivePack) {
-        std::filesystem::path areaDirPath = packFolderPath / CHECK_TRACKER_LOCATIONS_DIR;
-        if (!std::filesystem::exists(areaDirPath) || !std::filesystem::is_directory(areaDirPath)) {
-            warnings.push_back({ "Missing areas directory", "Expected directory: " + areaDirPath.string() });
-            return areaFiles;
+    auto context = Ship::Context::GetInstance();
+    if (context == nullptr || context->GetResourceManager() == nullptr ||
+        context->GetResourceManager()->GetArchiveManager() == nullptr) {
+        warnings.push_back({ "Archive manager unavailable", "Could not list map pack area files from archive." });
+        return areaFiles;
+    }
+
+    auto archiveManager = context->GetResourceManager()->GetArchiveManager();
+    std::unordered_set<std::string> seenResourcePaths;
+    for (const char* extensionPattern : { "*.json", "*.jsonc" }) {
+        std::string listPattern = BuildMapTrackerResourcePath(resourcePathPrefix,
+                                                              fmt::format("{}/{}", CHECK_TRACKER_LOCATIONS_DIR,
+                                                                          extensionPattern));
+        auto matchedPaths = archiveManager->ListFiles(listPattern);
+        if (matchedPaths == nullptr) {
+            continue;
         }
 
-        for (const auto& directoryEntry : std::filesystem::directory_iterator(areaDirPath)) {
-            if (!directoryEntry.is_regular_file()) {
+        for (const auto& resourcePath : *matchedPaths) {
+            if (!seenResourcePaths.insert(resourcePath).second) {
                 continue;
             }
-
-            std::filesystem::path filePath = directoryEntry.path();
-            const std::filesystem::path extension = filePath.extension();
-            if (extension != ".json" && extension != ".jsonc") {
-                continue;
-            }
-
-            std::string relativeResourcePath =
-                (std::filesystem::path(CHECK_TRACKER_LOCATIONS_DIR) / filePath.filename()).lexically_normal().generic_string();
-            areaFiles.push_back(
-                { filePath, BuildMapTrackerResourcePath(resourcePathPrefix, relativeResourcePath), filePath.filename().string() });
-        }
-    } else {
-        auto context = Ship::Context::GetInstance();
-        if (context == nullptr || context->GetResourceManager() == nullptr ||
-            context->GetResourceManager()->GetArchiveManager() == nullptr) {
-            warnings.push_back({ "Archive manager unavailable", "Could not list map pack area files from archive." });
-            return areaFiles;
-        }
-
-        auto archiveManager = context->GetResourceManager()->GetArchiveManager();
-        std::unordered_set<std::string> seenResourcePaths;
-        for (const char* extensionPattern : { "*.json", "*.jsonc" }) {
-            std::string listPattern = BuildMapTrackerResourcePath(resourcePathPrefix,
-                                                                  fmt::format("{}/{}", CHECK_TRACKER_LOCATIONS_DIR,
-                                                                              extensionPattern));
-            auto matchedPaths = archiveManager->ListFiles(listPattern);
-            if (matchedPaths == nullptr) {
-                continue;
-            }
-
-            for (const auto& resourcePath : *matchedPaths) {
-                if (!seenResourcePaths.insert(resourcePath).second) {
-                    continue;
-                }
-                areaFiles.push_back({ {}, resourcePath, std::filesystem::path(resourcePath).filename().string() });
-            }
+            areaFiles.push_back({ resourcePath, std::filesystem::path(resourcePath).filename().string() });
         }
     }
 
@@ -1126,41 +1039,65 @@ std::vector<MapPackAreaFileRef> CollectMapPackAreaFiles(const std::filesystem::p
 }
 
 std::vector<MapMarker> ParseMapMarkersFromPackAreas(
-    const std::vector<MapPackAreaFileRef>& areaFiles,
+    MapTrackerState& state, const std::vector<MapPackAreaFileRef>& areaFiles,
     const std::unordered_map<std::string, RandomizerCheck>& checksByMapTrackerId,
-    std::unordered_set<RandomizerCheck>& outLinkedChecks, std::vector<MapIssueEntry>& warnings,
-    std::vector<MapIssueEntry>& unresolvedLinks) {
+    std::unordered_set<RandomizerCheck>& outLinkedChecks, std::vector<MapIssueEntry>& unresolvedLinks) {
     std::vector<MapMarker> mappedMarkers;
     outLinkedChecks.clear();
     std::unordered_set<std::string> seenMarkerKeys;
+    bool hadSchemaError = false;
 
     std::string parseError;
     for (const auto& areaFile : areaFiles) {
         json areaJson;
-        if (!LoadJsonFromMapPack(areaFile.diskPath, areaFile.resourcePath, areaJson, parseError)) {
-            warnings.push_back(
+        if (!LoadJsonFromArchiveResource(areaFile.resourcePath, areaJson, parseError)) {
+            state.warnings.push_back(
                 { "Failed to parse area file " + areaFile.displayName,
                   "Parse error: " + parseError + " | Resource: " + areaFile.resourcePath });
             continue;
         }
 
         if (!areaJson.is_object() || !areaJson.contains("checks") || !areaJson["checks"].is_array()) {
-            warnings.push_back(
-                { "Invalid area schema in " + areaFile.displayName,
-                  "Expected an object with a \"checks\" array. Resource: " + areaFile.resourcePath });
+            hadSchemaError = true;
+            AddSchemaWarning(state, "Invalid area schema in " + areaFile.displayName,
+                             "Expected an object with a \"checks\" array. Resource: " + areaFile.resourcePath);
             continue;
         }
 
-        for (const auto& checkNode : areaJson["checks"]) {
+        for (size_t checkIndex = 0; checkIndex < areaJson["checks"].size(); checkIndex++) {
+            const auto& checkNode = areaJson["checks"][checkIndex];
             if (!checkNode.is_object()) {
+                hadSchemaError = true;
+                AddSchemaWarning(state, "Invalid check entry in " + areaFile.displayName,
+                                 fmt::format("checks[{}] must be an object.", checkIndex));
                 continue;
             }
 
-            std::string checkName = checkNode.value("name", "");
-            std::string sohId = TrimCopy(checkNode.value("soh_id", ""));
+            std::string checkName;
+            if (checkNode.contains("name")) {
+                if (!checkNode["name"].is_string()) {
+                    hadSchemaError = true;
+                    AddSchemaWarning(state, "Invalid check entry in " + areaFile.displayName,
+                                     fmt::format("checks[{}].name must be a string.", checkIndex));
+                    continue;
+                }
+                checkName = checkNode["name"].get<std::string>();
+            }
+
+            if (!checkNode.contains("soh_id") || !checkNode["soh_id"].is_string()) {
+                hadSchemaError = true;
+                AddSchemaWarning(state, "Invalid check entry in " + areaFile.displayName,
+                                 fmt::format("Check \"{}\" is missing required string soh_id at checks[{}].",
+                                             checkName, checkIndex));
+                continue;
+            }
+
+            std::string sohId = TrimCopy(checkNode["soh_id"].get<std::string>());
             if (sohId.empty()) {
-                unresolvedLinks.push_back({ "Missing soh_id in " + areaFile.displayName,
-                                            "Check \"" + checkName + "\" is missing a valid soh_id." });
+                hadSchemaError = true;
+                AddSchemaWarning(state, "Invalid check entry in " + areaFile.displayName,
+                                 fmt::format("Check \"{}\" has an empty soh_id at checks[{}].", checkName,
+                                             checkIndex));
                 continue;
             }
 
@@ -1173,16 +1110,32 @@ std::vector<MapMarker> ParseMapMarkersFromPackAreas(
                 continue;
             }
 
+            if (checkNode.contains("hint") && !checkNode["hint"].is_string()) {
+                hadSchemaError = true;
+                AddSchemaWarning(state, "Invalid check entry in " + areaFile.displayName,
+                                 fmt::format("Check \"{}\" has a non-string hint field.", checkName));
+                continue;
+            }
+
             if (checkNode.contains("hint") && checkNode["hint"].is_string()) {
                 const std::string hintText = TrimCopy(checkNode["hint"].get<std::string>());
                 if (!hintText.empty()) {
-                    mapTrackerState.checkHints[checkMatch->second] = hintText;
+                    state.checkHints[checkMatch->second] = hintText;
                 }
             }
 
-            std::vector<MapPlacement> placements = ExtractPlacementsFromNode(checkNode, areaFile.displayName, warnings);
+            if (!checkNode.contains("map_locations") || !checkNode["map_locations"].is_array()) {
+                hadSchemaError = true;
+                AddSchemaWarning(state, "Invalid check entry in " + areaFile.displayName,
+                                 fmt::format("Check \"{}\" is missing required map_locations array.", checkName));
+                continue;
+            }
+
+            std::vector<MapPlacement> placements =
+                ExtractPlacementsFromNode(state, checkNode, areaFile.displayName, checkName.empty() ? sohId : checkName,
+                                          hadSchemaError);
             if (placements.empty()) {
-                warnings.push_back(
+                state.warnings.push_back(
                     { "Missing map_locations in " + areaFile.displayName,
                       "Check \"" + checkName + "\" has no valid map_locations entries." });
                 continue;
@@ -1193,7 +1146,7 @@ std::vector<MapMarker> ParseMapMarkersFromPackAreas(
                 marker.check = checkMatch->second;
                 marker.mapId = placement.mapId;
                 if (marker.mapId.empty()) {
-                    warnings.push_back(
+                    state.warnings.push_back(
                         { "Invalid marker map id in " + areaFile.displayName,
                           "Check \"" + checkName + "\" has an empty map_id." });
                     continue;
@@ -1219,6 +1172,10 @@ std::vector<MapMarker> ParseMapMarkersFromPackAreas(
         }
     }
 
+    if (hadSchemaError) {
+        state.fatalErrors.push_back("One or more area files failed schema validation. Fix warnings and reload.");
+    }
+
     return mappedMarkers;
 }
 
@@ -1230,101 +1187,139 @@ struct MapsMetadataParseResult {
     std::vector<std::string> orderedMapIds;
 };
 
-static void InitializeMapTrackerLoadState() {
-    ResetMapTrackerState(true);
-    mapTrackerState.attemptedLoad = true;
-    mapTrackerState.assetsRoot = GetMapTrackerAssetsRoot();
+static MapTrackerState CreateMapTrackerLoadState() {
+    MapTrackerState state;
+    state.attemptedLoad = true;
+    state.assetsRoot = GetMapTrackerAssetsRoot();
+    return state;
 }
 
-static bool EnsureMapPackArchiveMounted(const std::filesystem::path& packFolderPath) {
+static bool EnsureMapPackArchiveMounted(MapTrackerState& state, const std::filesystem::path& packFolderPath) {
     bool packFolderExists = std::filesystem::exists(packFolderPath) && std::filesystem::is_directory(packFolderPath);
 
     if (!packFolderExists) {
-        mapTrackerState.fatalErrors.push_back("Map pack not found.");
-        mapTrackerState.fatalErrors.push_back("Expected folder: " + packFolderPath.string());
-        mapTrackerState.fatalErrors.push_back("Tried these candidate roots: " + BuildMapTrackerAssetsRootCandidatesSummary());
-        mapTrackerState.fatalErrors.push_back("Put a map pack zip in mods/check_tracker_map_pack.");
+        state.fatalErrors.push_back("Map pack not found.");
+        state.fatalErrors.push_back("Expected folder: " + packFolderPath.string());
+        state.fatalErrors.push_back("Tried these candidate roots: " + BuildMapTrackerAssetsRootCandidatesSummary());
+        state.fatalErrors.push_back("Put a map pack zip in mods/check_tracker_map_pack.");
         SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: pack folder not found. folder='{}'", packFolderPath.string());
         return false;
     }
 
-    const std::filesystem::path packArchivePath = GetFirstMapPackZip(packFolderPath);
+    const std::filesystem::path packArchivePath = GetNewestMapPackZip(packFolderPath);
     if (packArchivePath.empty()) {
-        mapTrackerState.fatalErrors.push_back("No map pack zip found.");
-        mapTrackerState.fatalErrors.push_back("Expected at least one .zip in: " + packFolderPath.string());
-        mapTrackerState.fatalErrors.push_back("Any zip filename is supported.");
+        state.fatalErrors.push_back("No map pack zip found.");
+        state.fatalErrors.push_back("Expected at least one .zip in: " + packFolderPath.string());
+        state.fatalErrors.push_back("When multiple zips exist, the newest modified file is used.");
         SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: no zip found in folder='{}'", packFolderPath.string());
         return false;
     }
-    mapTrackerState.usingArchivePack = true;
-    mapTrackerState.assetsRoot = packArchivePath;
+    state.assetsRoot = packArchivePath;
+    state.mountedArchivePath = packArchivePath;
 
     std::string mountError;
     std::string preferredPrefix = packArchivePath.stem().string();
-    if (!EnsureMapTrackerZipArchiveMounted(packArchivePath, preferredPrefix, mapTrackerState.assetsArchiveMountRoot,
-                                           mapTrackerState.resourcePathPrefix, mountError)) {
-        mapTrackerState.fatalErrors.push_back("Failed to mount map pack zip archive: " + mountError);
+    if (!EnsureMapTrackerZipArchiveMounted(packArchivePath, preferredPrefix, state.assetsArchiveMountRoot,
+                                           state.resourcePathPrefix, mountError)) {
+        state.fatalErrors.push_back("Failed to mount map pack zip archive: " + mountError);
         return false;
     }
     return true;
 }
 
-static bool LoadMapTrackerMetadataJson(const std::filesystem::path& packFolderPath, json& outMapsJson,
-                                       std::filesystem::path& outMapsDiskPath, std::string& outMapsResourcePath) {
+static bool LoadMapTrackerMetadataJson(MapTrackerState& state, json& outMapsJson, std::string& outMapsResourcePath) {
     std::string parseError;
-    outMapsResourcePath = BuildMapTrackerResourcePath(mapTrackerState.resourcePathPrefix, CHECK_TRACKER_MAPS_JSON);
-    if (!LoadJsonFromMapPack(outMapsDiskPath, outMapsResourcePath, outMapsJson, parseError)) {
-        mapTrackerState.fatalErrors.push_back("Could not parse map metadata: " + parseError);
-        mapTrackerState.fatalErrors.push_back("Tried disk path: " + (packFolderPath / CHECK_TRACKER_MAPS_JSON).string());
-        mapTrackerState.fatalErrors.push_back("Tried resource path: " + outMapsResourcePath);
+    outMapsResourcePath = BuildMapTrackerResourcePath(state.resourcePathPrefix, CHECK_TRACKER_MAPS_JSON);
+    if (!LoadJsonFromArchiveResource(outMapsResourcePath, outMapsJson, parseError)) {
+        state.fatalErrors.push_back("Could not parse map metadata: " + parseError);
+        state.fatalErrors.push_back("Tried resource path: " + outMapsResourcePath);
         return false;
     }
     return true;
 }
 
-static bool ParseMapMetadataEntries(const json& mapsJson, const std::string& mapsResourcePath,
-                                    const std::filesystem::path& mapsDiskPath, MapsMetadataParseResult& outMetadata) {
+static bool ParseMapMetadataEntries(MapTrackerState& state, const json& mapsJson, const std::string& mapsResourcePath,
+                                    MapsMetadataParseResult& outMetadata) {
     if (!mapsJson.is_array()) {
-        mapTrackerState.fatalErrors.push_back("Expected an array in maps.json.");
-        SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: maps metadata root is not an array. resource='{}' disk='{}'",
-                     mapsResourcePath, mapsDiskPath.string());
+        state.fatalErrors.push_back("Expected an array in maps.json.");
+        SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: maps metadata root is not an array. resource='{}'", mapsResourcePath);
         return false;
     }
 
-    for (const auto& mapEntry : mapsJson) {
-        if (!mapEntry.is_object() || !mapEntry.contains("id") || !mapEntry["id"].is_string() || !mapEntry.contains("name") ||
-            !mapEntry["name"].is_string()) {
+    bool hadSchemaError = false;
+    for (size_t mapEntryIndex = 0; mapEntryIndex < mapsJson.size(); mapEntryIndex++) {
+        const auto& mapEntry = mapsJson[mapEntryIndex];
+        if (!mapEntry.is_object()) {
+            hadSchemaError = true;
+            AddSchemaWarning(state, "Invalid maps.json entry",
+                             fmt::format("Entry {} must be an object.", mapEntryIndex));
+            continue;
+        }
+
+        if (!mapEntry.contains("id") || !mapEntry["id"].is_string()) {
+            hadSchemaError = true;
+            AddSchemaWarning(state, "Invalid maps.json entry",
+                             fmt::format("Entry {} is missing required string id.", mapEntryIndex));
+            continue;
+        }
+        if (!mapEntry.contains("name") || !mapEntry["name"].is_string()) {
+            hadSchemaError = true;
+            AddSchemaWarning(state, "Invalid maps.json entry",
+                             fmt::format("Map \"{}\" is missing required string name.", mapEntry["id"].dump()));
             continue;
         }
 
         std::string mapId = TrimCopy(mapEntry["id"].get<std::string>());
         std::string mapName = TrimCopy(mapEntry["name"].get<std::string>());
         if (mapId.empty() || mapName.empty()) {
+            hadSchemaError = true;
+            AddSchemaWarning(state, "Invalid maps.json entry",
+                             fmt::format("Entry {} has an empty id or name.", mapEntryIndex));
             continue;
         }
 
         if (outMetadata.mapNamesById.contains(mapId)) {
-            mapTrackerState.warnings.push_back(
-                { "Duplicate map id in maps.json", "Map id \"" + mapId + "\" is declared more than once." });
+            AddSchemaWarning(state, "Duplicate map id in maps.json",
+                             "Map id \"" + mapId + "\" is declared more than once.");
+            hadSchemaError = true;
             continue;
         }
         outMetadata.orderedMapIds.push_back(mapId);
         outMetadata.mapNamesById[mapId] = mapName;
 
         std::string mapGroup;
-        if (mapEntry.contains("group") && mapEntry["group"].is_string()) {
+        if (mapEntry.contains("group")) {
+            if (!mapEntry["group"].is_string()) {
+                hadSchemaError = true;
+                AddSchemaWarning(state, "Invalid maps.json entry",
+                                 fmt::format("Map \"{}\" has a non-string group value.", mapId));
+                continue;
+            }
             mapGroup = TrimCopy(mapEntry["group"].get<std::string>());
         }
         outMetadata.mapGroupById[mapId] = mapGroup;
 
-        if (mapEntry.contains("links") && mapEntry["links"].is_array()) {
+        if (mapEntry.contains("links")) {
+            if (!mapEntry["links"].is_array()) {
+                hadSchemaError = true;
+                AddSchemaWarning(state, "Invalid link list in maps.json",
+                                 fmt::format("Map \"{}\" has a non-array links value.", mapId));
+                continue;
+            }
+
             auto& links = outMetadata.mapLinksById[mapId];
-            for (const auto& linkEntry : mapEntry["links"]) {
-                if (!linkEntry.is_object() || !linkEntry.contains("target_map_id") ||
-                    !linkEntry["target_map_id"].is_string()) {
-                    mapTrackerState.warnings.push_back(
-                        { "Invalid link in map " + mapName,
-                          "A links entry is missing a valid \"target_map_id\" string." });
+            for (size_t linkIndex = 0; linkIndex < mapEntry["links"].size(); linkIndex++) {
+                const auto& linkEntry = mapEntry["links"][linkIndex];
+                if (!linkEntry.is_object()) {
+                    hadSchemaError = true;
+                    AddSchemaWarning(state, "Invalid link in map " + mapName,
+                                     fmt::format("links[{}] must be an object.", linkIndex));
+                    continue;
+                }
+                if (!linkEntry.contains("target_map_id") || !linkEntry["target_map_id"].is_string()) {
+                    hadSchemaError = true;
+                    AddSchemaWarning(state, "Invalid link in map " + mapName,
+                                     fmt::format("links[{}] is missing required string target_map_id.", linkIndex));
                     continue;
                 }
 
@@ -1332,8 +1327,9 @@ static bool ParseMapMetadataEntries(const json& mapsJson, const std::string& map
                 link.targetMapId = TrimCopy(linkEntry["target_map_id"].get<std::string>());
                 link.entranceIndex = ResolveMapLinkEntranceIndex(mapId, link.targetMapId);
                 if (link.targetMapId.empty()) {
-                    mapTrackerState.warnings.push_back(
-                        { "Invalid link in map " + mapName, "A links entry has an empty target_map_id." });
+                    hadSchemaError = true;
+                    AddSchemaWarning(state, "Invalid link in map " + mapName,
+                                     "A links entry has an empty target_map_id.");
                     continue;
                 }
 
@@ -1345,9 +1341,10 @@ static bool ParseMapMetadataEntries(const json& mapsJson, const std::string& map
                 }
 
                 if (!hasX || !hasY || !hasSize) {
-                    mapTrackerState.warnings.push_back(
-                        { "Invalid link coordinates in map " + mapName,
-                          "A links entry has invalid x/y/size values for target_map_id \"" + link.targetMapId + "\"." });
+                    hadSchemaError = true;
+                    AddSchemaWarning(state, "Invalid link coordinates in map " + mapName,
+                                     "A links entry has invalid x/y/size values for target_map_id \"" +
+                                         link.targetMapId + "\".");
                     continue;
                 }
 
@@ -1369,71 +1366,73 @@ static bool ParseMapMetadataEntries(const json& mapsJson, const std::string& map
         if (mapEntry.contains("img") && mapEntry["img"].is_string()) {
             outMetadata.mapImagePathsById[mapId] = mapEntry["img"].get<std::string>();
         } else {
-            mapTrackerState.warnings.push_back({ "Missing image path for map " + mapName,
-                                                 "The map entry in maps.json is missing an \"img\" value." });
+            AddSchemaWarning(state, "Missing image path for map " + mapName,
+                             "The map entry in maps.json is missing an \"img\" value.");
         }
     }
     SPDLOG_INFO("[CheckTrackerMapDiag] Parsed maps metadata. rawEntries={} uniqueMaps={} warnings={}",
-                mapsJson.size(), outMetadata.orderedMapIds.size(), mapTrackerState.warnings.size());
+                mapsJson.size(), outMetadata.orderedMapIds.size(), state.warnings.size());
     if (outMetadata.orderedMapIds.empty()) {
-        mapTrackerState.fatalErrors.push_back("No maps were found in maps.json.");
+        state.fatalErrors.push_back("No maps were found in maps.json.");
+        return false;
+    }
+    if (hadSchemaError) {
+        state.fatalErrors.push_back("maps.json failed schema validation. Fix warnings and reload.");
         return false;
     }
     return true;
 }
 
-static bool BuildMapMarkersAndCheckLinks(const std::filesystem::path& packFolderPath,
-                                         std::vector<MapMarker>& outMappedMarkers) {
-    std::vector<MapPackAreaFileRef> areaFiles =
-        CollectMapPackAreaFiles(packFolderPath, mapTrackerState.usingArchivePack, mapTrackerState.resourcePathPrefix,
-                                mapTrackerState.warnings);
+static bool BuildMapMarkersAndCheckLinks(MapTrackerState& state, std::vector<MapMarker>& outMappedMarkers) {
+    std::vector<MapPackAreaFileRef> areaFiles = CollectMapPackAreaFiles(state.resourcePathPrefix, state.warnings);
     if (areaFiles.empty()) {
-        mapTrackerState.fatalErrors.push_back("No area files found in map pack.");
-        mapTrackerState.fatalErrors.push_back("Expected folder/resource pattern: " +
-                                              BuildMapTrackerResourcePath(mapTrackerState.resourcePathPrefix,
-                                                                          std::string(CHECK_TRACKER_LOCATIONS_DIR) +
-                                                                              "/*.json"));
+        state.fatalErrors.push_back("No area files found in map pack.");
+        state.fatalErrors.push_back("Expected folder/resource pattern: " +
+                                    BuildMapTrackerResourcePath(state.resourcePathPrefix,
+                                                                std::string(CHECK_TRACKER_LOCATIONS_DIR) + "/*.json"));
         return false;
     }
 
     std::unordered_map<std::string, RandomizerCheck> checksByMapTrackerId =
-        BuildGameCheckLookupByMapTrackerId(mapTrackerState.warnings);
+        BuildGameCheckLookupByMapTrackerId(state.warnings);
     if (checksByMapTrackerId.empty()) {
-        mapTrackerState.fatalErrors.push_back("No in-game checks were available for soh_id mapping.");
+        state.fatalErrors.push_back("No in-game checks were available for soh_id mapping.");
         return false;
     }
-    outMappedMarkers = ParseMapMarkersFromPackAreas(areaFiles, checksByMapTrackerId, mapTrackerState.linkedChecks,
-                                                    mapTrackerState.warnings, mapTrackerState.unresolvedLinks);
+    outMappedMarkers =
+        ParseMapMarkersFromPackAreas(state, areaFiles, checksByMapTrackerId, state.linkedChecks, state.unresolvedLinks);
+    if (!state.fatalErrors.empty()) {
+        return false;
+    }
 
     std::vector<CheckDescriptor> descriptors = BuildVisibleCheckDescriptors();
     if (descriptors.empty()) {
-        mapTrackerState.fatalErrors.push_back("No visible checks available to map. Load a randomizer save first.");
+        state.fatalErrors.push_back("No visible checks available to map. Load a randomizer save first.");
         return false;
     }
     for (const auto& descriptor : descriptors) {
-        if (!mapTrackerState.linkedChecks.contains(descriptor.check)) {
-            mapTrackerState.unassignedCheckIds.push_back(descriptor.check);
-            mapTrackerState.unresolvedLinks.push_back(
+        if (!state.linkedChecks.contains(descriptor.check)) {
+            state.unassignedCheckIds.push_back(descriptor.check);
+            state.unresolvedLinks.push_back(
                 { "Unassigned in-game check: " + descriptor.checkDisplayName,
                   "No map marker with matching soh_id was found in the pack. Area: " +
                       RandomizerCheckObjects::GetRCAreaName(descriptor.area) });
         }
     }
-    std::sort(mapTrackerState.unassignedCheckIds.begin(), mapTrackerState.unassignedCheckIds.end(),
+    std::sort(state.unassignedCheckIds.begin(), state.unassignedCheckIds.end(),
               [](RandomizerCheck left, RandomizerCheck right) {
                   return static_cast<int>(left) < static_cast<int>(right);
               });
-    mapTrackerState.unassignedCheckIds.erase(
-        std::unique(mapTrackerState.unassignedCheckIds.begin(), mapTrackerState.unassignedCheckIds.end()),
-        mapTrackerState.unassignedCheckIds.end());
+    state.unassignedCheckIds.erase(std::unique(state.unassignedCheckIds.begin(), state.unassignedCheckIds.end()),
+                                   state.unassignedCheckIds.end());
 
     SPDLOG_INFO("[CheckTrackerMapDiag] soh_id mapping summary. mappedMarkers={} linkedChecks={} unresolved={} unassigned={}",
-                outMappedMarkers.size(), mapTrackerState.linkedChecks.size(), mapTrackerState.unresolvedLinks.size(),
-                mapTrackerState.unassignedCheckIds.size());
+                outMappedMarkers.size(), state.linkedChecks.size(), state.unresolvedLinks.size(),
+                state.unassignedCheckIds.size());
     return true;
 }
 
-static void BuildMapTabsFromMetadata(const std::filesystem::path& packFolderPath, const MapsMetadataParseResult& metadata) {
+static void BuildMapTabsFromMetadata(MapTrackerState& state, const MapsMetadataParseResult& metadata) {
     for (const auto& mapId : metadata.orderedMapIds) {
         MapTabData tab;
         tab.mapId = mapId;
@@ -1446,25 +1445,19 @@ static void BuildMapTabsFromMetadata(const std::filesystem::path& packFolderPath
         }
         if (metadata.mapImagePathsById.contains(mapId)) {
             tab.imageRelativePath = metadata.mapImagePathsById.at(mapId);
-            if (!mapTrackerState.usingArchivePack) {
-                tab.imageAbsolutePath = packFolderPath / tab.imageRelativePath;
-            }
-            tab.imageResourcePath = BuildMapTrackerResourcePath(mapTrackerState.resourcePathPrefix, tab.imageRelativePath);
-            if (!mapTrackerState.usingArchivePack && !std::filesystem::exists(tab.imageAbsolutePath)) {
-                tab.imageError = "Image file not found: " + tab.imageAbsolutePath.string();
-            }
+            tab.imageResourcePath = BuildMapTrackerResourcePath(state.resourcePathPrefix, tab.imageRelativePath);
         } else {
             tab.imageError = "No image entry found in maps.json for map_id \"" + mapId + "\".";
         }
 
-        mapTrackerState.tabIndexById[tab.mapId] = mapTrackerState.tabs.size();
-        mapTrackerState.tabs.push_back(std::move(tab));
+        state.tabIndexById[tab.mapId] = state.tabs.size();
+        state.tabs.push_back(std::move(tab));
     }
 
-    for (const auto& tab : mapTrackerState.tabs) {
+    for (const auto& tab : state.tabs) {
         for (const auto& link : tab.links) {
-            if (!mapTrackerState.tabIndexById.contains(link.targetMapId)) {
-                mapTrackerState.warnings.push_back(
+            if (!state.tabIndexById.contains(link.targetMapId)) {
+                state.warnings.push_back(
                     { "Missing target map for link",
                       "Map \"" + tab.mapName + "\" links to map_id \"" + link.targetMapId +
                           "\", but no tab with that id exists in maps.json." });
@@ -1473,9 +1466,9 @@ static void BuildMapTabsFromMetadata(const std::filesystem::path& packFolderPath
     }
 }
 
-static void BuildMapTabGroups() {
+static void BuildMapTabGroups(MapTrackerState& state) {
     bool hasNamedGroups = false;
-    for (auto& tab : mapTrackerState.tabs) {
+    for (auto& tab : state.tabs) {
         tab.groupName = TrimCopy(tab.groupName);
         if (!tab.groupName.empty()) {
             hasNamedGroups = true;
@@ -1483,53 +1476,53 @@ static void BuildMapTabGroups() {
     }
 
     if (hasNamedGroups) {
-        for (auto& tab : mapTrackerState.tabs) {
+        for (auto& tab : state.tabs) {
             if (tab.groupName.empty()) {
                 tab.groupName = "Others";
             }
         }
     }
 
-    for (size_t tabIndex = 0; tabIndex < mapTrackerState.tabs.size(); tabIndex++) {
-        const std::string groupName = mapTrackerState.tabs[tabIndex].groupName;
+    for (size_t tabIndex = 0; tabIndex < state.tabs.size(); tabIndex++) {
+        const std::string groupName = state.tabs[tabIndex].groupName;
         if (groupName.empty()) {
             continue;
         }
-        if (!mapTrackerState.tabIndicesByGroup.contains(groupName)) {
-            mapTrackerState.mapGroups.push_back(groupName);
+        if (!state.tabIndicesByGroup.contains(groupName)) {
+            state.mapGroups.push_back(groupName);
         }
-        mapTrackerState.tabIndicesByGroup[groupName].push_back(static_cast<int>(tabIndex));
+        state.tabIndicesByGroup[groupName].push_back(static_cast<int>(tabIndex));
     }
-    for (const auto& [groupName, groupTabIndices] : mapTrackerState.tabIndicesByGroup) {
+    for (const auto& [groupName, groupTabIndices] : state.tabIndicesByGroup) {
         if (!groupTabIndices.empty()) {
-            mapTrackerState.lastSelectedTabByGroup[groupName] = groupTabIndices.front();
+            state.lastSelectedTabByGroup[groupName] = groupTabIndices.front();
         }
     }
-    if (!mapTrackerState.mapGroups.empty()) {
-        mapTrackerState.selectedGroupName = mapTrackerState.mapGroups.front();
+    if (!state.mapGroups.empty()) {
+        state.selectedGroupName = state.mapGroups.front();
     } else {
-        mapTrackerState.selectedGroupName.clear();
+        state.selectedGroupName.clear();
     }
 }
 
-static void LinkMapMarkersToTabs(const std::vector<MapMarker>& mappedMarkers) {
+static void LinkMapMarkersToTabs(MapTrackerState& state, const std::vector<MapMarker>& mappedMarkers) {
     for (const auto& marker : mappedMarkers) {
-        if (!mapTrackerState.tabIndexById.contains(marker.mapId)) {
-            mapTrackerState.unresolvedLinks.push_back(
+        if (!state.tabIndexById.contains(marker.mapId)) {
+            state.unresolvedLinks.push_back(
                 { "Missing map tab for linked marker",
                   "Could not find a tab for map_id \"" + marker.mapId + "\" while linking " +
                       GetCheckDisplayName(marker.check) + "." });
             continue;
         }
-        int markerTabIndex = static_cast<int>(mapTrackerState.tabIndexById[marker.mapId]);
-        mapTrackerState.tabs[static_cast<size_t>(markerTabIndex)].markers.push_back(marker);
+        int markerTabIndex = static_cast<int>(state.tabIndexById[marker.mapId]);
+        state.tabs[static_cast<size_t>(markerTabIndex)].markers.push_back(marker);
     }
 }
 
-static bool LoadMapTabTextures(const std::filesystem::path& packFolderPath) {
+static bool LoadMapTabTextures(MapTrackerState& state, uint64_t loadGeneration) {
     auto gui = Ship::Context::GetInstance()->GetWindow()->GetGui();
     if (gui == nullptr) {
-        mapTrackerState.fatalErrors.push_back("Could not access GUI texture loader.");
+        state.fatalErrors.push_back("Could not access GUI texture loader.");
         SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: GUI texture loader was null.");
         return false;
     }
@@ -1537,13 +1530,13 @@ static bool LoadMapTabTextures(const std::filesystem::path& packFolderPath) {
     auto context = Ship::Context::GetInstance();
     if (context == nullptr || context->GetResourceManager() == nullptr ||
         context->GetResourceManager()->GetArchiveManager() == nullptr) {
-        mapTrackerState.fatalErrors.push_back("Could not access archive manager for map texture resources.");
+        state.fatalErrors.push_back("Could not access archive manager for map texture resources.");
         SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: archive manager unavailable.");
         return false;
     }
     auto archiveManager = context->GetResourceManager()->GetArchiveManager();
 
-    for (auto& tab : mapTrackerState.tabs) {
+    for (auto& tab : state.tabs) {
         std::sort(tab.markers.begin(), tab.markers.end(), [](const MapMarker& left, const MapMarker& right) {
             if (left.check == right.check) {
                 return left.packCheckName < right.packCheckName;
@@ -1555,21 +1548,13 @@ static bool LoadMapTabTextures(const std::filesystem::path& packFolderPath) {
             continue;
         }
 
-        if (!mapTrackerState.usingArchivePack) {
-            std::string imageValidationError;
-            if (!ValidateMapImageFile(tab.imageAbsolutePath, imageValidationError)) {
-                tab.imageError = imageValidationError;
-                continue;
-            }
-        }
-
         if (!archiveManager->HasFile(tab.imageResourcePath)) {
             tab.imageError = "Image resource not indexed in archive: " + tab.imageResourcePath +
-                             " | Archive mount root: " + mapTrackerState.assetsArchiveMountRoot.string();
+                             " | Archive mount root: " + state.assetsArchiveMountRoot.string();
             continue;
         }
 
-        tab.textureName = "CHECK_TRACKER_MAP_" + tab.mapId;
+        tab.textureName = BuildMapTextureName(loadGeneration, tab.mapId);
         if (gui->HasTextureByName(tab.textureName)) {
             gui->UnloadTexture(tab.textureName);
         }
@@ -1580,70 +1565,68 @@ static bool LoadMapTabTextures(const std::filesystem::path& packFolderPath) {
             tab.textureSize = gui->GetTextureSize(tab.textureName);
             tab.imageLoaded = tab.texture != 0 && tab.textureSize.x > 0.0f && tab.textureSize.y > 0.0f;
             if (!tab.imageLoaded) {
-                tab.imageError = mapTrackerState.usingArchivePack
-                                     ? "Failed to load map texture from resource path: " + tab.imageResourcePath
-                                     : "Failed to load map texture from: " + tab.imageAbsolutePath.string() +
-                                           " | Resource path: " + tab.imageResourcePath;
+                tab.imageError = "Failed to load map texture from resource path: " + tab.imageResourcePath;
             }
         } catch (...) {
-            tab.imageError = mapTrackerState.usingArchivePack
-                                 ? "Failed to load map texture from resource path: " + tab.imageResourcePath
-                                 : "Failed to load map texture from: " + tab.imageAbsolutePath.string() +
-                                       " | Resource path: " + tab.imageResourcePath;
+            tab.imageError = "Failed to load map texture from resource path: " + tab.imageResourcePath;
         }
     }
     return true;
 }
 
-static void FinalizeMapTrackerLoadSuccess() {
-    mapTrackerState.loaded = true;
+static void FinalizeMapTrackerLoadSuccess(MapTrackerState& state) {
+    state.loaded = true;
 }
 
-static void LogMapTrackerLoadSuccess(const std::chrono::steady_clock::time_point& loadStartTime) {
+static void LogMapTrackerLoadSuccess(const MapTrackerState& state, const std::chrono::steady_clock::time_point& loadStartTime) {
     SPDLOG_INFO("[CheckTrackerMapDiag] Load completed in {} ms. tabs={} warnings={} fatalErrors={}",
-                GetElapsedMilliseconds(loadStartTime), mapTrackerState.tabs.size(), mapTrackerState.warnings.size(),
-                mapTrackerState.fatalErrors.size());
+                GetElapsedMilliseconds(loadStartTime), state.tabs.size(), state.warnings.size(), state.fatalErrors.size());
 }
 
 void LoadMapTrackerData() {
     const auto loadStartTime = std::chrono::steady_clock::now();
-    InitializeMapTrackerLoadState();
-    const std::filesystem::path packFolderPath = mapTrackerState.assetsRoot;
+    MapTrackerState previousState = std::move(mapTrackerState);
+    MapTrackerState loadedState = CreateMapTrackerLoadState();
+    const std::filesystem::path packFolderPath = loadedState.assetsRoot;
+    const uint64_t textureLoadGeneration = mapTrackerTextureLoadGeneration++;
 
-    SPDLOG_INFO("[CheckTrackerMapDiag] Load start. assets='{}' candidates='{}'", mapTrackerState.assetsRoot.string(),
+    SPDLOG_INFO("[CheckTrackerMapDiag] Load start. assets='{}' candidates='{}'", loadedState.assetsRoot.string(),
                 BuildMapTrackerAssetsRootCandidatesSummary());
 
-    if (!EnsureMapPackArchiveMounted(packFolderPath)) {
-        return;
-    }
-
+    bool loadSucceeded = false;
     json mapsJson;
-    std::filesystem::path mapsDiskPath;
     std::string mapsResourcePath;
-    if (!LoadMapTrackerMetadataJson(packFolderPath, mapsJson, mapsDiskPath, mapsResourcePath)) {
-        return;
-    }
-
     MapsMetadataParseResult metadata;
-    if (!ParseMapMetadataEntries(mapsJson, mapsResourcePath, mapsDiskPath, metadata)) {
-        return;
-    }
-
     std::vector<MapMarker> mappedMarkers;
-    if (!BuildMapMarkersAndCheckLinks(packFolderPath, mappedMarkers)) {
+
+    if (EnsureMapPackArchiveMounted(loadedState, packFolderPath) &&
+        LoadMapTrackerMetadataJson(loadedState, mapsJson, mapsResourcePath) &&
+        ParseMapMetadataEntries(loadedState, mapsJson, mapsResourcePath, metadata) &&
+        BuildMapMarkersAndCheckLinks(loadedState, mappedMarkers)) {
+        BuildMapTabsFromMetadata(loadedState, metadata);
+        BuildMapTabGroups(loadedState);
+        LinkMapMarkersToTabs(loadedState, mappedMarkers);
+        loadSucceeded = LoadMapTabTextures(loadedState, textureLoadGeneration);
+    }
+
+    if (!loadSucceeded) {
+        UnloadMapTrackerResources(loadedState, true);
+        if (previousState.loaded) {
+            AppendReloadFailureWarning(previousState, loadedState);
+            mapTrackerState = std::move(previousState);
+        } else {
+            mapTrackerState = std::move(loadedState);
+            InvalidateMapTrackerRenderCache();
+        }
         return;
     }
 
-    BuildMapTabsFromMetadata(packFolderPath, metadata);
-    BuildMapTabGroups();
-    LinkMapMarkersToTabs(mappedMarkers);
-
-    if (!LoadMapTabTextures(packFolderPath)) {
-        return;
-    }
-
-    FinalizeMapTrackerLoadSuccess();
-    LogMapTrackerLoadSuccess(loadStartTime);
+    PreserveMapTrackerSessionState(previousState, loadedState);
+    UnloadMapTrackerResources(previousState, true);
+    FinalizeMapTrackerLoadSuccess(loadedState);
+    mapTrackerState = std::move(loadedState);
+    InvalidateMapTrackerRenderCache();
+    LogMapTrackerLoadSuccess(mapTrackerState, loadStartTime);
 }
 
 } // namespace CheckTracker

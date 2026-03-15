@@ -2,10 +2,13 @@
 
 #include <array>
 #include <assert.h>
+#include <unordered_set>
 
 namespace Rando {
 namespace {
 
+// Runtime source of truth for map tracker soh_id values.
+// Keep this array in exact RandomizerCheck enum order and aligned with RC_MAX.
 constexpr std::array<std::string_view, 2520> kRandomizerCheckTrackerIds = {
     "",
     "links_pocket",
@@ -2529,9 +2532,39 @@ constexpr std::array<std::string_view, 2520> kRandomizerCheckTrackerIds = {
     "archipelago_received_item",
 };
 
+static_assert(kRandomizerCheckTrackerIds.size() == static_cast<size_t>(RC_MAX),
+              "Randomizer check tracker id table must match RC_MAX.");
+
+#ifndef NDEBUG
+void ValidateRandomizerCheckTrackerIds() {
+    static const bool validated = []() {
+        std::unordered_set<std::string_view> seenIds;
+        seenIds.reserve(kRandomizerCheckTrackerIds.size());
+
+        for (size_t checkIndex = 0; checkIndex < kRandomizerCheckTrackerIds.size(); checkIndex++) {
+            const std::string_view trackerId = kRandomizerCheckTrackerIds[checkIndex];
+            if (checkIndex == static_cast<size_t>(RC_UNKNOWN_CHECK)) {
+                assert(trackerId.empty() && "RC_UNKNOWN_CHECK must keep an empty tracker id");
+                continue;
+            }
+            assert(!trackerId.empty() && "Randomizer check tracker ids must not be empty");
+            assert(seenIds.insert(trackerId).second && "Randomizer check tracker ids must be unique");
+        }
+
+        return true;
+    }();
+
+    (void)validated;
+}
+#endif
+
 } // namespace
 
 std::string_view GetRandomizerCheckTrackerId(RandomizerCheck check) {
+#ifndef NDEBUG
+    ValidateRandomizerCheckTrackerIds();
+#endif
+
     const size_t checkIndex = static_cast<size_t>(check);
     if (checkIndex >= kRandomizerCheckTrackerIds.size()) {
         assert(false && "Invalid RandomizerCheck passed to GetRandomizerCheckTrackerId");
