@@ -3,16 +3,16 @@
 
 This is a fork of jeromkiller/Shipwright_archipellago that adds an auto Map Tracker
 
-It is a version of Ocarina of Time Ship of Harkanian with an auto MapTracker that aims to welcome new players to be able to enjoy the archipelago randomizer.
+It is a version of Ocarina of Time Ship of Harkinian with an auto MapTracker that aims to welcome new players to be able to enjoy the archipelago randomizer.
 
 ## Map Tracker
 This map Tracker replaces the Check Tracker imgui window (Still accessible) and adds all of the maps with every check on it. It is updated in real time when you change zone, when you do a check or when the time of day or age of Link changes.
 
-<img width="1568" height="1002" alt="image" src="https://github.com/user-attachments/assets/608f477e-5d85-4ee0-bcd1-0fa222afe665" />
-<img width="1466" height="956" alt="Capture d&#39;écran 2026-03-03 125456" src="https://github.com/user-attachments/assets/df5fc914-3f80-4849-8218-b4224918a3ff" />
-<img width="1255" height="1207" alt="Capture d&#39;écran 2026-03-03 125531" src="https://github.com/user-attachments/assets/5819486f-99b9-413b-a011-b7a1253cda87" />
-<img width="1256" height="1152" alt="Capture d&#39;écran 2026-03-03 125707" src="https://github.com/user-attachments/assets/2c4bcf28-9ae2-409a-be68-d9f42574636e" />
-
+<img width="1260" height="845" alt="Hyrule" src="https://github.com/user-attachments/assets/ead492f2-fa17-424d-be42-9320db7d5077" />
+<img width="1606" height="887" alt="Kokiri" src="https://github.com/user-attachments/assets/8e29efe7-271b-4eb9-954c-d8f8f7a93e86" />
+<img width="1433" height="874" alt="HyruleField" src="https://github.com/user-attachments/assets/40a4354d-eb36-43e8-b3ab-46b3885989cb" />
+<img width="1285" height="996" alt="Lost Woods" src="https://github.com/user-attachments/assets/1f4c0db7-2e7e-4c2e-b523-bb1429184f1a" />
+<img width="1162" height="1082" alt="FireTemple" src="https://github.com/user-attachments/assets/4a9aa93f-4a4d-441e-934a-2771cb6dc170" />
 
 ## Time and Age requirements
 When a check is Yellow it means you can do the check but you need to change the time or the age. Hover on the check to see the requirements
