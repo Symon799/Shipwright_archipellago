@@ -5,6 +5,8 @@ This is a fork of jeromkiller/Shipwright_archipellago that adds an auto Map Trac
 
 It is a version of Ocarina of Time Ship of Harkinian with an auto MapTracker that aims to welcome new players to be able to enjoy the archipelago randomizer.
 
+You can open the MapTracker using : Echap -> Randomizer -> Check Tracker -> Toggle Check Tracker
+
 ## Map Tracker
 This map Tracker replaces the Check Tracker imgui window (Still accessible) and adds all of the maps with every check on it. It is updated in real time when you change zone, when you do a check or when the time of day or age of Link changes.
 
