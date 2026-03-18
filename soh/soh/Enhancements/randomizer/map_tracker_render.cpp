@@ -10,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 extern "C" {
@@ -614,7 +615,31 @@ static void DrawClusterPopupTargetHeader(const std::optional<int>& popupNavigati
     ImGui::Separator();
 }
 
-static ImVec2 ComputeClusterPopupWindowSize(const std::vector<RenderableMapMarker>& clusterMarkers,
+static std::vector<const RenderableMapMarker*> BuildPopupRenderableMarkersWithoutDuplicateChecks(
+    const std::vector<RenderableMapMarker>& renderableMarkers) {
+    std::vector<const RenderableMapMarker*> uniqueRenderableMarkers;
+    uniqueRenderableMarkers.reserve(renderableMarkers.size());
+
+    std::unordered_set<uint32_t> seenChecks;
+    seenChecks.reserve(renderableMarkers.size());
+
+    for (const auto& renderableMarker : renderableMarkers) {
+        const uint32_t checkId = static_cast<uint32_t>(renderableMarker.marker->check);
+        if (seenChecks.insert(checkId).second) {
+            uniqueRenderableMarkers.push_back(&renderableMarker);
+        }
+    }
+
+    return uniqueRenderableMarkers;
+}
+
+static bool IsMouseInsidePopupWindowRect(const ImVec2& popupPosition, const ImVec2& popupWindowSize,
+                                         const ImVec2& mousePosition) {
+    return mousePosition.x >= popupPosition.x && mousePosition.x <= (popupPosition.x + popupWindowSize.x) &&
+           mousePosition.y >= popupPosition.y && mousePosition.y <= (popupPosition.y + popupWindowSize.y);
+}
+
+static ImVec2 ComputeClusterPopupWindowSize(const std::vector<const RenderableMapMarker*>& clusterMarkers,
                                             const std::optional<int>& popupNavigationTargetTabIndex,
                                             const std::optional<std::string>& requirementSummary = std::nullopt) {
     const ImGuiStyle& popupStyle = ImGui::GetStyle();
@@ -638,7 +663,7 @@ static ImVec2 ComputeClusterPopupWindowSize(const std::vector<RenderableMapMarke
     }
 
     for (size_t clusterIndex = 0; clusterIndex < clusterMarkers.size(); clusterIndex++) {
-        const auto& renderableMarker = clusterMarkers[clusterIndex];
+        const RenderableMapMarker& renderableMarker = *clusterMarkers[clusterIndex];
         const MapMarker& marker = *renderableMarker.marker;
 
         std::string checkName = GetCheckDisplayName(marker.check);
@@ -696,9 +721,9 @@ static void NavigateToMapTab(int targetTabIndex) {
     mapTrackerState.requestedTabId = targetTab.mapId;
 }
 
-static void DrawRenderableMarkerRows(const std::vector<RenderableMapMarker>& renderableMarkers) {
+static void DrawRenderableMarkerRows(const std::vector<const RenderableMapMarker*>& renderableMarkers) {
     for (size_t markerIndex = 0; markerIndex < renderableMarkers.size(); markerIndex++) {
-        const auto& renderableMarker = renderableMarkers[markerIndex];
+        const RenderableMapMarker& renderableMarker = *renderableMarkers[markerIndex];
         const MapMarker& marker = *renderableMarker.marker;
         bool canToggle = CanToggleSkippedStateForCheck(marker.check);
         std::string checkName = GetCheckDisplayName(marker.check);
@@ -834,11 +859,61 @@ void DrawMapTabContent(int tabIndex, const MapTrackerRenderCache& renderCache) {
     ImVec2 imageStartPos(mapCursorScreenPos.x + horizontalPadding + tab.panOffset.x,
                          mapCursorScreenPos.y + verticalPadding + tab.panOffset.y);
 
-    float wheelDelta = ImGui::GetIO().MouseWheel;
+    if (mapClusterPopupState.tabId != tab.mapId) {
+        mapClusterPopupState.open = false;
+        mapClusterPopupState.tabId = tab.mapId;
+        mapClusterPopupState.stackKey.clear();
+        mapClusterPopupState.keepAliveUntil = 0.0;
+    }
+    if (mapLinkPopupState.tabId != tab.mapId) {
+        mapLinkPopupState.open = false;
+        mapLinkPopupState.tabId = tab.mapId;
+        mapLinkPopupState.targetTabId.clear();
+        mapLinkPopupState.keepAliveUntil = 0.0;
+    }
+
     ImVec2 mousePos = ImGui::GetIO().MousePos;
+    bool mouseOverPopupWindow = false;
+
+    if (mapClusterPopupState.open && mapClusterPopupState.tabId == tab.mapId) {
+        auto popupClusterIt = cachedTabRenderData.renderableMarkersByStackKey.find(mapClusterPopupState.stackKey);
+        if (popupClusterIt != cachedTabRenderData.renderableMarkersByStackKey.end() && !popupClusterIt->second.empty()) {
+            const auto popupMarkers = BuildPopupRenderableMarkersWithoutDuplicateChecks(popupClusterIt->second);
+            if (!popupMarkers.empty()) {
+                const ImVec2 popupWindowSize = ComputeClusterPopupWindowSize(popupMarkers, std::nullopt);
+                mouseOverPopupWindow |=
+                    IsMouseInsidePopupWindowRect(mapClusterPopupState.popupPosition, popupWindowSize, mousePos);
+            }
+        }
+    }
+
+    if (mapLinkPopupState.open && mapLinkPopupState.tabId == tab.mapId) {
+        auto targetTabIndexIt = mapTrackerState.tabIndexById.find(mapLinkPopupState.targetTabId);
+        if (targetTabIndexIt != mapTrackerState.tabIndexById.end()) {
+            const int targetTabIndex = static_cast<int>(targetTabIndexIt->second);
+            const CachedMapTabRenderData& targetTabRenderData =
+                renderCache.tabRenderDataByIndex[static_cast<size_t>(targetTabIndex)];
+            std::optional<std::string> requirementSummary = std::nullopt;
+            if (auto popupLinkIndex = FindMapLinkIndexByTargetTabId(tab, mapLinkPopupState.targetTabId);
+                popupLinkIndex.has_value() && *popupLinkIndex < cachedTabRenderData.linkRequirementSummariesByIndex.size()) {
+                requirementSummary = cachedTabRenderData.linkRequirementSummariesByIndex[*popupLinkIndex];
+            }
+
+            const auto popupMarkers =
+                BuildPopupRenderableMarkersWithoutDuplicateChecks(targetTabRenderData.renderableMarkers);
+            if (!popupMarkers.empty()) {
+                const ImVec2 popupWindowSize =
+                    ComputeClusterPopupWindowSize(popupMarkers, targetTabIndex, requirementSummary);
+                mouseOverPopupWindow |=
+                    IsMouseInsidePopupWindowRect(mapLinkPopupState.popupPosition, popupWindowSize, mousePos);
+            }
+        }
+    }
+
+    float wheelDelta = ImGui::GetIO().MouseWheel;
     bool mouseInsideImage = mousePos.x >= imageStartPos.x && mousePos.x <= (imageStartPos.x + drawSize.x) &&
                             mousePos.y >= imageStartPos.y && mousePos.y <= (imageStartPos.y + drawSize.y);
-    if (wheelDelta != 0.0f && mouseInsideImage) {
+    if (wheelDelta != 0.0f && mouseInsideImage && !mouseOverPopupWindow) {
         float previousZoomFactor = tab.zoomFactor;
         float zoomStep = std::pow(CHECK_TRACKER_MAP_ZOOM_WHEEL_STEP, wheelDelta);
         float nextZoomFactor =
@@ -883,20 +958,7 @@ void DrawMapTabContent(int tabIndex, const MapTrackerRenderCache& renderCache) {
         ImVec2 dragDelta = ImGui::GetIO().MouseDelta;
         tab.panOffset.x += dragDelta.x;
         tab.panOffset.y += dragDelta.y;
-            clampPanOffset(drawSize, horizontalPadding, verticalPadding);
-    }
-
-    if (mapClusterPopupState.tabId != tab.mapId) {
-        mapClusterPopupState.open = false;
-        mapClusterPopupState.tabId = tab.mapId;
-        mapClusterPopupState.stackKey.clear();
-        mapClusterPopupState.keepAliveUntil = 0.0;
-    }
-    if (mapLinkPopupState.tabId != tab.mapId) {
-        mapLinkPopupState.open = false;
-        mapLinkPopupState.tabId = tab.mapId;
-        mapLinkPopupState.targetTabId.clear();
-        mapLinkPopupState.keepAliveUntil = 0.0;
+        clampPanOffset(drawSize, horizontalPadding, verticalPadding);
     }
 
     std::optional<int> playerFocusTargetTabIndex;
@@ -1062,10 +1124,11 @@ void DrawMapTabContent(int tabIndex, const MapTrackerRenderCache& renderCache) {
     bool popupHovered = false;
     if (mapClusterPopupState.open && mapClusterPopupState.tabId == tab.mapId) {
         auto popupClusterIt = cachedTabRenderData.renderableMarkersByStackKey.find(mapClusterPopupState.stackKey);
-        if (popupClusterIt == cachedTabRenderData.renderableMarkersByStackKey.end() || popupClusterIt->second.size() < 2) {
+        if (popupClusterIt == cachedTabRenderData.renderableMarkersByStackKey.end() || popupClusterIt->second.empty()) {
             mapClusterPopupState.open = false;
         } else {
-            const ImVec2 popupWindowSize = ComputeClusterPopupWindowSize(popupClusterIt->second, std::nullopt);
+            const auto popupMarkers = BuildPopupRenderableMarkersWithoutDuplicateChecks(popupClusterIt->second);
+            const ImVec2 popupWindowSize = ComputeClusterPopupWindowSize(popupMarkers, std::nullopt);
 
             ImGui::SetNextWindowPos(mapClusterPopupState.popupPosition, ImGuiCond_Always);
             ImGui::SetNextWindowSize(popupWindowSize, ImGuiCond_Always);
@@ -1081,7 +1144,7 @@ void DrawMapTabContent(int tabIndex, const MapTrackerRenderCache& renderCache) {
                 mapClusterPopupState.keepAliveUntil = std::max(mapClusterPopupState.keepAliveUntil, nowTime + 0.16);
             }
 
-            DrawRenderableMarkerRows(popupClusterIt->second);
+            DrawRenderableMarkerRows(popupMarkers);
 
             ImGui::End();
         }
@@ -1103,7 +1166,7 @@ void DrawMapTabContent(int tabIndex, const MapTrackerRenderCache& renderCache) {
                 requirementSummary = cachedTabRenderData.linkRequirementSummariesByIndex[*popupLinkIndex];
             }
 
-            const auto& popupMarkers = targetTabRenderData.renderableMarkers;
+            const auto popupMarkers = BuildPopupRenderableMarkersWithoutDuplicateChecks(targetTabRenderData.renderableMarkers);
             const ImVec2 popupWindowSize = ComputeClusterPopupWindowSize(popupMarkers, targetTabIndex, requirementSummary);
 
             ImGui::SetNextWindowPos(mapLinkPopupState.popupPosition, ImGuiCond_Always);
