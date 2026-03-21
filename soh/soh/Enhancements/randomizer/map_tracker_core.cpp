@@ -599,98 +599,6 @@ static std::string DescribeAvailabilityMask(uint8_t availabilityMask) {
     }
 }
 
-static const LocationAccess* FindLocationAccessInParentRegion(RandomizerCheck rc, RandomizerRegion parentRegion) {
-    if (parentRegion == RR_NONE || parentRegion >= RR_MAX) {
-        return nullptr;
-    }
-
-    for (const auto& locationInRegion : areaTable[parentRegion].locations) {
-        if (locationInRegion.GetLocation() == rc) {
-            return &locationInRegion;
-        }
-    }
-
-    return nullptr;
-}
-
-static bool EvaluateLocationConditionAtAgeTime(const LocationAccess& locationAccess, RandomizerRegion parentRegion,
-                                               RandomizerCheck rc, bool evaluateAsAdult, bool evaluateAtNight) {
-    auto ctx = Rando::Context::GetInstance();
-    if (ctx == nullptr) {
-        return false;
-    }
-
-    auto logicRef = ctx->GetLogic();
-    if (logicRef == nullptr) {
-        return false;
-    }
-
-    const bool previousIsChild = logicRef->IsChild;
-    const bool previousIsAdult = logicRef->IsAdult;
-    const bool previousAtDay = logicRef->AtDay;
-    const bool previousAtNight = logicRef->AtNight;
-    const RandomizerRegion previousRegionKey = logicRef->CurrentRegionKey;
-    const RandomizerCheck previousCheckKey = logicRef->CurrentCheckKey;
-
-    logicRef->CurrentRegionKey = parentRegion;
-    logicRef->CurrentCheckKey = rc;
-
-    bool conditionsMet = false;
-    if (evaluateAsAdult) {
-        if (evaluateAtNight) {
-            conditionsMet = locationAccess.CheckConditionAtAgeTime(logicRef->IsAdult, logicRef->AtNight);
-        } else {
-            conditionsMet = locationAccess.CheckConditionAtAgeTime(logicRef->IsAdult, logicRef->AtDay);
-        }
-    } else {
-        if (evaluateAtNight) {
-            conditionsMet = locationAccess.CheckConditionAtAgeTime(logicRef->IsChild, logicRef->AtNight);
-        } else {
-            conditionsMet = locationAccess.CheckConditionAtAgeTime(logicRef->IsChild, logicRef->AtDay);
-        }
-    }
-
-    logicRef->IsChild = previousIsChild;
-    logicRef->IsAdult = previousIsAdult;
-    logicRef->AtDay = previousAtDay;
-    logicRef->AtNight = previousAtNight;
-    logicRef->CurrentRegionKey = previousRegionKey;
-    logicRef->CurrentCheckKey = previousCheckKey;
-
-    return conditionsMet;
-}
-
-static CheckAgeTimeAvailabilityInfo EvaluateCheckAgeTimeAvailability(RandomizerCheck rc) {
-    auto* itemLocation = OTRGlobals::Instance->gRandoContext->GetItemLocation(rc);
-    if (itemLocation == nullptr) {
-        return {};
-    }
-
-    RandomizerRegion parentRegion = itemLocation->GetParentRegionKey();
-    const LocationAccess* locationAccess = FindLocationAccessInParentRegion(rc, parentRegion);
-    if (locationAccess == nullptr) {
-        return {};
-    }
-
-    if (parentRegion == RR_NONE || parentRegion >= RR_MAX) {
-        return {};
-    }
-
-    Region& parent = areaTable[parentRegion];
-
-    auto evaluateCombo = [&](bool parentHasAccess, bool evaluateAsAdult, bool evaluateAtNight) {
-        if (!parentHasAccess) {
-            return false;
-        }
-        return EvaluateLocationConditionAtAgeTime(*locationAccess, parentRegion, rc, evaluateAsAdult, evaluateAtNight);
-    };
-
-    return BuildAgeTimeAvailabilityInfo(evaluateCombo(parent.childDay, false, false),
-                                        evaluateCombo(parent.childNight, false, true),
-                                        evaluateCombo(parent.adultDay, true, false),
-                                        evaluateCombo(parent.adultNight, true, true));
-}
-
 static std::string BuildCheckRequirementSummary(const CheckAgeTimeAvailabilityInfo& availabilityInfo) {
     std::string explicitRequirementSummary = DescribeAvailabilityMask(BuildAgeTimeAvailabilityMask(availabilityInfo));
     if (!explicitRequirementSummary.empty()) {
@@ -702,15 +610,6 @@ static std::string BuildCheckRequirementSummary(const CheckAgeTimeAvailabilityIn
     }
 
     return "";
-}
-
-bool IsCheckAvailableButWrongAgeOrTime(RandomizerCheck rc) {
-    CheckAgeTimeAvailabilityInfo availabilityInfo = EvaluateCheckAgeTimeAvailability(rc);
-    return availabilityInfo.canDoAtAll && !availabilityInfo.canDoNow;
-}
-
-std::string GetCheckRequirementSummary(RandomizerCheck rc) {
-    return BuildCheckRequirementSummary(EvaluateCheckAgeTimeAvailability(rc));
 }
 
 static std::optional<std::string> ResolveFirstExistingMapTabId(

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "randomizer_check_tracker.h"
+#include "randomizer_check_logic.h"
 #include "soh/cvar_prefixes.h"
 
 #include <filesystem>
@@ -12,9 +13,6 @@
 #include <vector>
 
 namespace CheckTracker {
-
-enum class CheckAgeRequirement { Any, ChildOnly, AdultOnly };
-enum class CheckTimeRequirement { Any, DayOnly, NightOnly };
 
 inline constexpr const char* CHECK_TRACKER_MAP_MODE_CVAR = CVAR_TRACKER_CHECK("MapMode");
 inline constexpr const char* CHECK_TRACKER_MAP_DEBUG_CVAR = CVAR_TRACKER_CHECK("MapDebugInfo");
@@ -127,17 +125,6 @@ struct MapTrackerState {
     SceneID lastFocusedScene = SCENE_ID_MAX;
 };
 
-struct CheckAgeTimeAvailabilityInfo {
-    bool canChildDay = false;
-    bool canChildNight = false;
-    bool canAdultDay = false;
-    bool canAdultNight = false;
-    bool canDoNow = false;
-    bool canDoAtAll = false;
-    CheckAgeRequirement ageRequirement = CheckAgeRequirement::Any;
-    CheckTimeRequirement timeRequirement = CheckTimeRequirement::Any;
-};
-
 struct MapLinkBorderStyle {
     ImU32 color = CHECK_TRACKER_MAP_COLOR_BORDER;
     float thickness = CHECK_TRACKER_MAP_BORDER_THICKNESS;
@@ -171,9 +158,6 @@ bool ToggleSkippedStateForCheck(RandomizerCheck rc);
 std::string GetCheckDisplayName(RandomizerCheck rc);
 std::string GetCheckExtraInfoText(RandomizerCheck rc);
 Color_RGBA8 GetLegacyCheckExtraColor(RandomizerCheck rc);
-std::string GetCheckLogicString(RandomizerCheck rc);
-bool IsCheckAvailableButWrongAgeOrTime(RandomizerCheck rc);
-std::string GetCheckRequirementSummary(RandomizerCheck rc);
 std::optional<std::string> ResolvePreferredMapTabIdForArea(RandomizerCheckArea area);
 std::optional<CheckAgeTimeAvailabilityInfo> EvaluateMapLinkAgeTimeAvailability(const MapLink& link);
 std::optional<std::string> GetMapLinkRequirementSummary(const MapLink& link);

@@ -238,7 +238,7 @@ struct MarkerTooltipContent {
     Color_RGBA8 extraColor = { 255, 255, 255, 255 };
     std::string hintText;
     bool showHintPrompt = false;
-    std::string logicString;
+    std::vector<std::string> logicBranches;
     std::string checkMapTrackerId;
     std::string packCheckName;
 };
@@ -319,7 +319,7 @@ static MarkerTooltipContent BuildMarkerTooltipContent(RandomizerCheck check, con
         content.showHintPrompt = true;
     }
     if (showLogicTooltip) {
-        content.logicString = GetCheckLogicString(check);
+        content.logicBranches = GetCheckLogicBranches(check);
     }
     if (showMapDebugDetails) {
         content.checkMapTrackerId = GetGameCheckMapTrackerId(check);
@@ -431,7 +431,7 @@ static MarkerTooltipLayout ComputeMarkerTooltipLayout(const MarkerTooltipContent
     } else if (content.showHintPrompt) {
         contentWidth = std::max(contentWidth, ImGui::CalcTextSize("Right click to show hint").x);
     }
-    if (!content.logicString.empty()) {
+    if (!content.logicBranches.empty()) {
         contentWidth = std::max(contentWidth, CHECK_TRACKER_MAP_TOOLTIP_LOGIC_MIN_CONTENT_WIDTH);
     }
     if (!content.checkMapTrackerId.empty()) {
@@ -464,10 +464,15 @@ static MarkerTooltipLayout ComputeMarkerTooltipLayout(const MarkerTooltipContent
         contentHeight += std::max(lineHeight, hintHeight);
         hasDetailsSection = true;
     }
-    if (!content.logicString.empty()) {
+    if (!content.logicBranches.empty()) {
         contentHeight += (style.ItemSpacing.y * 2.0f) + 2.0f;
-        float logicHeight = ImGui::CalcTextSize(content.logicString.c_str(), nullptr, false, contentWidth).y;
-        contentHeight += std::max(lineHeight, logicHeight);
+        for (size_t branchIndex = 0; branchIndex < content.logicBranches.size(); branchIndex++) {
+            float logicHeight = ImGui::CalcTextSize(content.logicBranches[branchIndex].c_str(), nullptr, false, contentWidth).y;
+            contentHeight += std::max(lineHeight, logicHeight);
+            if (branchIndex + 1 < content.logicBranches.size()) {
+                contentHeight += (style.ItemSpacing.y * 2.0f) + lineHeight;
+            }
+        }
         hasDetailsSection = true;
     }
     if (!content.checkMapTrackerId.empty()) {
@@ -525,11 +530,16 @@ static void DrawMarkerTooltip(const MarkerTooltipContent& content) {
         hasTooltipDetails = true;
     }
 
-    if (!content.logicString.empty()) {
+    if (!content.logicBranches.empty()) {
         ImGui::Separator();
-        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + layout.contentWidth);
-        ImGui::TextUnformatted(content.logicString.c_str());
-        ImGui::PopTextWrapPos();
+        for (size_t branchIndex = 0; branchIndex < content.logicBranches.size(); branchIndex++) {
+            if (branchIndex > 0) {
+                ImGui::TextDisabled("%s", "----- OR -----");
+            }
+            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + layout.contentWidth);
+            ImGui::TextUnformatted(content.logicBranches[branchIndex].c_str());
+            ImGui::PopTextWrapPos();
+        }
         hasTooltipDetails = true;
     }
 

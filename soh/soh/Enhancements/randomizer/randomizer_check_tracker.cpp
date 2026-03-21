@@ -2018,20 +2018,6 @@ std::string GetCheckExtraInfoText(RandomizerCheck rc) {
     return txt;
 }
 
-std::string GetCheckLogicString(RandomizerCheck rc) {
-    auto* itemLoc = OTRGlobals::Instance->gRandoContext->GetItemLocation(rc);
-    for (auto& locationInRegion : areaTable[itemLoc->GetParentRegionKey()].locations) {
-        if (locationInRegion.GetLocation() == rc) {
-            std::string conditionStr = locationInRegion.GetConditionStr();
-            if (conditionStr != "true") {
-                return conditionStr;
-            }
-            break;
-        }
-    }
-    return "";
-}
-
 Color_RGBA8 GetLegacyCheckExtraColor(RandomizerCheck rc) {
     auto* itemLoc = OTRGlobals::Instance->gRandoContext->GetItemLocation(rc);
     RandomizerCheckStatus status = itemLoc->GetCheckStatus();
