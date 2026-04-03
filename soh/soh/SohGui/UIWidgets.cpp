@@ -2,6 +2,7 @@
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include <imgui_internal.h>
 #include <libultraship/libultraship.h>
+#include <algorithm>
 #include <string>
 #include <math.h>
 #include <unordered_map>
@@ -53,9 +54,24 @@ void PaddedSeparator(bool padTop, bool padBottom, float extraVerticalTopPadding,
 }
 
 void Tooltip(const char* text) {
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("%s", WrappedText(text).c_str());
+    if (!ImGui::IsItemHovered() || text == nullptr || text[0] == '\0') {
+        return;
     }
+
+    ImGuiWindow* sourceWindow = ImGui::GetCurrentWindowRead();
+    const float sourceFontScale = sourceWindow != nullptr ? sourceWindow->FontWindowScale : 1.0f;
+    const ImGuiViewport* viewport = ImGui::GetWindowViewport();
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float maxWindowWidth =
+        viewport != nullptr ? std::clamp(viewport->WorkSize.x * 0.45f, 240.0f, 720.0f) : 480.0f;
+    const float wrapWidth = std::max(1.0f, maxWindowWidth - (style.WindowPadding.x * 2.0f));
+
+    ImGui::BeginTooltip();
+    ImGui::SetWindowFontScale(sourceFontScale);
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + wrapWidth);
+    ImGui::TextUnformatted(text);
+    ImGui::PopTextWrapPos();
+    ImGui::EndTooltip();
 }
 
 void PushStyleMenu(const ImVec4& color) {
