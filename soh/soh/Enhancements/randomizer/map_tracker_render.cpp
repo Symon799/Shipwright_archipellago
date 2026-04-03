@@ -357,10 +357,18 @@ static std::string BuildPopupExtraLabel(const std::string& extraText) {
     return extraText.empty() ? std::string() : fmt::format("({})", extraText);
 }
 
+static ImVec2 CalcPopupTextSize(const std::string& text, float wrapWidth = 0.0f) {
+    if (text.empty()) {
+        return ImVec2(0.0f, 0.0f);
+    }
+
+    return ImGui::CalcTextSize(text.c_str(), nullptr, false, wrapWidth > 0.0f ? wrapWidth : -1.0f);
+}
+
 static PopupRowLayout ComputePopupRowLayout(const std::string& checkName, const std::string& extraText,
                                             float rowAvailableWidth) {
     const ImGuiStyle& style = ImGui::GetStyle();
-    const float lineHeight = GetCheckTrackerTextLineHeight();
+    const float lineHeight = ImGui::GetTextLineHeight();
 
     PopupRowLayout layout;
     layout.statusSize = std::max(10.0f, lineHeight - 2.0f);
@@ -368,14 +376,13 @@ static PopupRowLayout ComputePopupRowLayout(const std::string& checkName, const 
     layout.textAvailableWidth = std::max(24.0f, rowAvailableWidth - layout.statusSize - layout.statusSpacing);
     layout.checkNameWrapWidth = layout.textAvailableWidth;
 
-    const float checkNameSingleLineWidth = CalcCheckTrackerTextSize(checkName).x;
-    const float checkNameHeight =
-        std::max(lineHeight, CalcCheckTrackerTextSize(checkName, layout.textAvailableWidth).y);
+    const float checkNameSingleLineWidth = CalcPopupTextSize(checkName).x;
+    const float checkNameHeight = std::max(lineHeight, CalcPopupTextSize(checkName, layout.textAvailableWidth).y);
 
     float textHeight = checkNameHeight;
     std::string extraLabel = BuildPopupExtraLabel(extraText);
     if (!extraLabel.empty()) {
-        const float extraLabelWidth = CalcCheckTrackerTextSize(extraLabel).x;
+        const float extraLabelWidth = CalcPopupTextSize(extraLabel).x;
         const bool canFitInline =
             (checkNameSingleLineWidth + style.ItemSpacing.x + extraLabelWidth) <= layout.textAvailableWidth;
         if (canFitInline) {
@@ -383,8 +390,7 @@ static PopupRowLayout ComputePopupRowLayout(const std::string& checkName, const 
             layout.checkNameWrapWidth =
                 std::max(1.0f, layout.textAvailableWidth - style.ItemSpacing.x - extraLabelWidth);
         } else {
-            const float extraHeight =
-                std::max(lineHeight, CalcCheckTrackerTextSize(extraLabel, layout.textAvailableWidth).y);
+            const float extraHeight = std::max(lineHeight, CalcPopupTextSize(extraLabel, layout.textAvailableWidth).y);
             textHeight += style.ItemSpacing.y + extraHeight;
         }
     }
@@ -401,10 +407,9 @@ static float ComputePopupHeaderDesiredContentWidth(const std::optional<int>& pop
     }
 
     const MapTabData& popupTargetTab = mapTrackerState.tabs[static_cast<size_t>(*popupNavigationTargetTabIndex)];
-    float desiredContentWidth = CalcCheckTrackerTextSize(popupTargetTab.mapName).x + 1.0f;
+    float desiredContentWidth = CalcPopupTextSize(popupTargetTab.mapName).x + 1.0f;
     if (requirementSummary.has_value() && !requirementSummary->empty()) {
-        desiredContentWidth =
-            std::max(desiredContentWidth, CalcCheckTrackerTextSize(BuildPopupExtraLabel(*requirementSummary)).x);
+        desiredContentWidth = std::max(desiredContentWidth, CalcPopupTextSize(BuildPopupExtraLabel(*requirementSummary)).x);
     }
 
     return desiredContentWidth;
@@ -418,13 +423,13 @@ static float ComputePopupHeaderHeight(const std::optional<int>& popupNavigationT
     }
 
     const ImGuiStyle& popupStyle = ImGui::GetStyle();
-    const float lineHeight = GetCheckTrackerTextLineHeight();
+    const float lineHeight = ImGui::GetTextLineHeight();
     const MapTabData& popupTargetTab = mapTrackerState.tabs[static_cast<size_t>(*popupNavigationTargetTabIndex)];
 
-    float headerHeight = std::max(lineHeight, CalcCheckTrackerTextSize(popupTargetTab.mapName, contentWidth).y);
+    float headerHeight = std::max(lineHeight, CalcPopupTextSize(popupTargetTab.mapName, contentWidth).y);
     if (requirementSummary.has_value() && !requirementSummary->empty()) {
         const std::string summaryLabel = BuildPopupExtraLabel(*requirementSummary);
-        const float summaryHeight = std::max(lineHeight, CalcCheckTrackerTextSize(summaryLabel, contentWidth).y);
+        const float summaryHeight = std::max(lineHeight, CalcPopupTextSize(summaryLabel, contentWidth).y);
         headerHeight += popupStyle.ItemSpacing.y + summaryHeight;
     }
 
@@ -1089,7 +1094,7 @@ static PopupWindowLayout ComputeClusterPopupLayout(const std::vector<const Rende
                                                    const std::optional<std::string>& requirementSummary,
                                                    const ImGuiViewport* viewport) {
     const ImGuiStyle& popupStyle = ImGui::GetStyle();
-    float popupTextLineHeight = GetCheckTrackerTextLineHeight();
+    float popupTextLineHeight = ImGui::GetTextLineHeight();
     float popupStatusWidth = std::max(10.0f, popupTextLineHeight - 2.0f);
     const float popupStatusSpacing = std::max(6.0f, popupStyle.ItemInnerSpacing.x);
 
@@ -1100,12 +1105,12 @@ static PopupWindowLayout ComputeClusterPopupLayout(const std::vector<const Rende
         const MapMarker& marker = *renderableMarker.marker;
 
         std::string checkName = GetCheckDisplayName(marker.check);
-        float rowWidth = popupStatusWidth + popupStatusSpacing + CalcCheckTrackerTextSize(checkName).x;
+        float rowWidth = popupStatusWidth + popupStatusSpacing + CalcPopupTextSize(checkName).x;
 
         std::string extraText = GetCheckExtraInfoText(marker.check);
         if (!extraText.empty()) {
             std::string extraLabel = BuildPopupExtraLabel(extraText);
-            rowWidth += popupStyle.ItemSpacing.x + CalcCheckTrackerTextSize(extraLabel).x;
+            rowWidth += popupStyle.ItemSpacing.x + CalcPopupTextSize(extraLabel).x;
         }
 
         desiredContentWidth = std::max(desiredContentWidth, rowWidth);
@@ -1124,24 +1129,41 @@ static PopupWindowLayout ComputeClusterPopupLayout(const std::vector<const Rende
     PopupWindowLayout layout;
     layout.windowSize.x = std::clamp(desiredContentWidth + (popupStyle.WindowPadding.x * 2.0f) + 4.0f, minPopupWidth,
                                      maxPopupWidth);
-    const float popupContentWidth = GetPopupContentWidthFromWindowWidth(layout.windowSize.x);
-    const float measuredHeaderHeight =
-        ComputePopupHeaderHeight(popupNavigationTargetTabIndex, requirementSummary, popupContentWidth);
-
-    float measuredRowContentHeight = 0.0f;
-    for (size_t clusterIndex = 0; clusterIndex < clusterMarkers.size(); clusterIndex++) {
-        const RenderableMapMarker& renderableMarker = *clusterMarkers[clusterIndex];
-        const MapMarker& marker = *renderableMarker.marker;
-        const PopupRowLayout rowLayout = ComputePopupRowLayout(GetCheckDisplayName(marker.check),
-                                                               GetCheckExtraInfoText(marker.check), popupContentWidth);
-        measuredRowContentHeight += rowLayout.rowHeight;
-        if (clusterIndex + 1 < clusterMarkers.size()) {
-            measuredRowContentHeight += popupStyle.ItemSpacing.y;
+    auto computeMeasuredRowContentHeight = [&](float rowContentWidth) {
+        float rowContentHeight = 0.0f;
+        for (size_t clusterIndex = 0; clusterIndex < clusterMarkers.size(); clusterIndex++) {
+            const RenderableMapMarker& renderableMarker = *clusterMarkers[clusterIndex];
+            const MapMarker& marker = *renderableMarker.marker;
+            const PopupRowLayout rowLayout = ComputePopupRowLayout(GetCheckDisplayName(marker.check),
+                                                                   GetCheckExtraInfoText(marker.check), rowContentWidth);
+            rowContentHeight += rowLayout.rowHeight;
+            if (clusterIndex + 1 < clusterMarkers.size()) {
+                rowContentHeight += popupStyle.ItemSpacing.y;
+            }
         }
+        return rowContentHeight;
+    };
+
+    float popupContentWidth = GetPopupContentWidthFromWindowWidth(layout.windowSize.x);
+    float measuredHeaderHeight =
+        ComputePopupHeaderHeight(popupNavigationTargetTabIndex, requirementSummary, popupContentWidth);
+    float measuredRowContentHeight = computeMeasuredRowContentHeight(popupContentWidth);
+    float availableChildHeight =
+        std::max(popupTextLineHeight, maxPopupHeight - (popupStyle.WindowPadding.y * 2.0f) - measuredHeaderHeight);
+
+    if (measuredRowContentHeight > availableChildHeight) {
+        layout.windowSize.x = std::min(maxPopupWidth, layout.windowSize.x + popupStyle.ScrollbarSize);
+        popupContentWidth = GetPopupContentWidthFromWindowWidth(layout.windowSize.x);
+        measuredHeaderHeight = ComputePopupHeaderHeight(popupNavigationTargetTabIndex, requirementSummary, popupContentWidth);
+
+        // When the list scrolls, the child window loses horizontal space to the scrollbar.
+        // Reserve that width up front so borderline rows do not wrap after the scrollbar appears.
+        const float scrollableRowContentWidth = std::max(24.0f, popupContentWidth - popupStyle.ScrollbarSize);
+        measuredRowContentHeight = computeMeasuredRowContentHeight(scrollableRowContentWidth);
+        availableChildHeight =
+            std::max(popupTextLineHeight, maxPopupHeight - (popupStyle.WindowPadding.y * 2.0f) - measuredHeaderHeight);
     }
 
-    const float availableChildHeight =
-        std::max(popupTextLineHeight, maxPopupHeight - (popupStyle.WindowPadding.y * 2.0f) - measuredHeaderHeight);
     layout.childHeight = std::clamp(measuredRowContentHeight, popupTextLineHeight, availableChildHeight);
     layout.windowSize.y = std::clamp(measuredHeaderHeight + layout.childHeight + (popupStyle.WindowPadding.y * 2.0f) + 2.0f,
                                      minPopupHeight, maxPopupHeight);
