@@ -7,6 +7,8 @@ It is a version of Ocarina of Time Ship of Harkinian with an auto MapTracker tha
 
 You can open the MapTracker using : Esc -> Randomizer -> Check Tracker -> Toggle Check Tracker
 
+MapTracker discord Thread : https://discord.com/channels/731205301247803413/1481299118264680448
+
 ## Map Tracker
 This map Tracker replaces the Check Tracker imgui window (Still accessible) and adds all of the maps with every check on it. It is updated in real time when you change zone, when you do a check or when the time of day or age of Link changes.
 
