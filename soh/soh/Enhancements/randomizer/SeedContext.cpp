@@ -2,7 +2,6 @@
 #include "static_data.h"
 #include "soh/OTRGlobals.h"
 #include "soh/Enhancements/item-tables/ItemTableManager.h"
-#include "3drando/shops.hpp"
 #include "dungeon.h"
 #include "logic.h"
 #include "entrance.h"
@@ -15,6 +14,7 @@
 #include "../kaleido.h"
 #include "soh/Network/Archipelago/Archipelago.h"
 #include "soh/Network/Archipelago/ArchipelagoConsoleWindow.h"
+#include "soh/Enhancements/randomizer/Traps.h"
 
 #include <fstream>
 #include <limits>
@@ -138,8 +138,8 @@ ItemOverride& Context::GetItemOverride(size_t locKey) {
 void Context::PlaceItemInLocation(const RandomizerCheck locKey, const RandomizerGet item,
                                   const bool applyEffectImmediately, const bool setHidden) {
     const auto loc = GetItemLocation(locKey);
-    SPDLOG_DEBUG(StaticData::RetrieveItem(item).GetName().GetEnglish() + " placed at " +
-                 StaticData::GetLocation(locKey)->GetName() + "\n");
+    SPDLOG_DEBUG("{} placed at {}", StaticData::RetrieveItem(item).GetName().GetEnglish(),
+                 StaticData::GetLocation(locKey)->GetName());
 
     if (applyEffectImmediately || mOptions[RSK_LOGIC_RULES].Is(RO_LOGIC_GLITCHLESS)) {
         StaticData::RetrieveItem(item).ApplyEffect();
@@ -334,35 +334,21 @@ void Context::HintReset() {
 }
 
 void Context::CreateItemOverrides() {
-    SPDLOG_DEBUG("NOW CREATING OVERRIDES\n\n");
+    SPDLOG_DEBUG("NOW CREATING OVERRIDES");
     for (RandomizerCheck locKey : allLocations) {
         const auto loc = StaticData::GetLocation(locKey);
         // If this is an ice trap, store the disguise model in iceTrapModels
         const auto itemLoc = GetItemLocation(locKey);
         if (itemLoc->GetPlacedRandomizerGet() == RG_ICE_TRAP) {
-            RandomizerGet trickModel = RandomElementFromSet(possibleIceTrapModels);
-            if (trickModel == RG_EMPTY_BOTTLE) {
-                trickModel = RandomElement(StaticData::normalBottles);
-            }
-            if (trickModel == RG_GUARD_HOUSE_KEY) {
-                trickModel = RandomElement(StaticData::overworldKeys);
-            }
-            if (trickModel == RG_DEATH_MOUNTAIN_CRATER_BEAN_SOUL) {
-                trickModel = RandomElement(StaticData::beanSouls);
-            }
-            ItemOverride val(locKey, trickModel);
+            ItemOverride val(locKey, Traps::GetTrapTrickModel());
             iceTrapModels[locKey] = val.LooksLike();
-            val.SetTrickName(GetIceTrapName(val.LooksLike()));
+            val.SetTrickName(Traps::GetTrapName(val.LooksLike()));
             // If this is ice trap is in a shop, change the name based on what the model will look like
             overrides[locKey] = val;
         }
-        SPDLOG_DEBUG(loc->GetName());
-        SPDLOG_DEBUG(": ");
-        SPDLOG_DEBUG(itemLoc->GetPlacedItemName().GetEnglish());
-        SPDLOG_DEBUG("\n");
+        SPDLOG_DEBUG("{}: {}", loc->GetName(), itemLoc->GetPlacedItemName().GetEnglish());
     }
-    SPDLOG_DEBUG("Overrides Created: ");
-    SPDLOG_DEBUG(std::to_string(overrides.size()));
+    SPDLOG_DEBUG("Overrides Created: {}", std::to_string(overrides.size()));
 }
 
 bool Context::IsSeedGenerated() const {
@@ -464,7 +450,7 @@ void Context::ParseArchipelago() {
     ParseArchipelagoOptions();
     ParseArchipelagoTricks();
     ParseArchipelagoExcludedLocations();
-    CreateStaticHints();
+    ParseArchipelagoHints();
 }
 
 void Context::ParseHashIconIndexesJson(nlohmann::json spoilerFileJson) {
@@ -716,46 +702,53 @@ void Context::ParseArchipelagoOptions() {
     mOptions[RSK_ADDITIONAL_ICE_TRAPS].Set(0);
     mOptions[RSK_ICE_TRAP_PERCENT].Set(0);
     mOptions[RSK_GOSSIP_STONE_HINTS].Set(RO_GOSSIP_STONES_NONE);
-    mOptions[RSK_TOT_ALTAR_HINT].Set(RO_GENERIC_NO);
-    mOptions[RSK_GANONDORF_HINT].Set(RO_GENERIC_NO);
-    mOptions[RSK_SHEIK_LA_HINT].Set(RO_GENERIC_NO);
-    mOptions[RSK_BOSS_KEY_HINT].Set(RO_GENERIC_NO);
-    mOptions[RSK_DAMPES_DIARY_HINT].Set(RO_GENERIC_NO);
-    mOptions[RSK_GREG_HINT].Set(RO_GENERIC_NO);
-    mOptions[RSK_LOACH_HINT].Set(RO_GENERIC_NO);
-    mOptions[RSK_SARIA_HINT].Set(RO_GENERIC_NO);
-    mOptions[RSK_MIDO_HINT].Set(RO_GENERIC_NO);
-    mOptions[RSK_FROGS_HINT].Set(RO_GENERIC_NO);
-    mOptions[RSK_OOT_HINT].Set(RO_GENERIC_NO);
-    mOptions[RSK_KAK_10_SKULLS_HINT].Set(RO_GENERIC_NO);
-    mOptions[RSK_KAK_20_SKULLS_HINT].Set(RO_GENERIC_NO);
-    mOptions[RSK_KAK_30_SKULLS_HINT].Set(RO_GENERIC_NO);
-    mOptions[RSK_KAK_40_SKULLS_HINT].Set(RO_GENERIC_NO);
-    mOptions[RSK_KAK_50_SKULLS_HINT].Set(RO_GENERIC_NO);
-    mOptions[RSK_KAK_100_SKULLS_HINT].Set(RO_GENERIC_NO);
-    mOptions[RSK_MASK_SHOP_HINT].Set(RO_GENERIC_NO);
-    mOptions[RSK_BIGGORON_HINT].Set(RO_GENERIC_NO);
-    mOptions[RSK_BIG_POES_HINT].Set(RO_GENERIC_NO);
-    mOptions[RSK_CHICKENS_HINT].Set(RO_GENERIC_NO);
-    mOptions[RSK_MALON_HINT].Set(RO_GENERIC_NO);
-    mOptions[RSK_HBA_HINT].Set(RO_GENERIC_NO);
-    mOptions[RSK_WARP_SONG_HINTS].Set(RO_GENERIC_NO);
-    mOptions[RSK_SCRUB_TEXT_HINT].Set(RO_GENERIC_NO);
-    mOptions[RSK_MERCHANT_TEXT_HINT].Set(RO_GENERIC_NO);
-    mOptions[RSK_FISHING_POLE_HINT].Set(RO_GENERIC_NO);
-    mOptions[RSK_HINT_CLARITY].Set(0);
+    mOptions[RSK_TOT_ALTAR_HINT].Set(slotData["tot_altar_hint"]);
+    mOptions[RSK_GANONDORF_HINT].Set(slotData["ganondorf_hint"]);
+    mOptions[RSK_SHEIK_LA_HINT].Set(slotData["sheik_la_hint"]);
+    mOptions[RSK_BOSS_KEY_HINT].Set(slotData["boss_key_hint"]);
+    mOptions[RSK_DAMPES_DIARY_HINT].Set(slotData["dampe_diary_hint"]);
+    mOptions[RSK_GREG_HINT].Set(slotData["greg_hint"]);
+    // Loach not currently enabled in AP
+    mOptions[RSK_LOACH_HINT].Set(RO_GENERIC_OFF); // slotData["hyrule_loach_hint"]);
+    mOptions[RSK_SARIA_HINT].Set(slotData["saria_hint"]);
+    mOptions[RSK_MIDO_HINT].Set(slotData["mido_hint"]);
+    mOptions[RSK_FROGS_HINT].Set(slotData["frog_game_hint"]);
+    mOptions[RSK_OOT_HINT].Set(slotData["ocarina_of_time_hint"]);
+    mOptions[RSK_KAK_10_SKULLS_HINT].Set(slotData["gs_10_hint"]);
+    mOptions[RSK_KAK_20_SKULLS_HINT].Set(slotData["gs_20_hint"]);
+    mOptions[RSK_KAK_30_SKULLS_HINT].Set(slotData["gs_30_hint"]);
+    mOptions[RSK_KAK_40_SKULLS_HINT].Set(slotData["gs_40_hint"]);
+    mOptions[RSK_KAK_50_SKULLS_HINT].Set(slotData["gs_50_hint"]);
+    mOptions[RSK_KAK_100_SKULLS_HINT].Set(slotData["gs_100_hint"]);
+    mOptions[RSK_MASK_SHOP_HINT].Set(slotData["mask_shop_hint"]);
+    mOptions[RSK_BIGGORON_HINT].Set(slotData["big_goron_hint"]);
+    mOptions[RSK_BIG_POES_HINT].Set(slotData["big_poe_hint"]);
+    mOptions[RSK_CHICKENS_HINT].Set(slotData["chicken_hint"]);
+    mOptions[RSK_MALON_HINT].Set(slotData["malon_hint"]);
+    mOptions[RSK_HBA_HINT].Set(slotData["horseback_archery_hint"]);
+    mOptions[RSK_WARP_SONG_HINTS].Set(slotData["warp_song_hint"]);
+    mOptions[RSK_SCRUB_TEXT_HINT].Set(slotData["scrub_hints"]);
+    mOptions[RSK_MERCHANT_TEXT_HINT].Set(slotData["merchant_hints"]);
+    mOptions[RSK_FISHING_POLE_HINT].Set(slotData["fishing_pole_hint"]);
+    if (slotData["hint_clarity"] == 0) {
+        mOptions[RSK_HINT_CLARITY].Set(RO_HINT_CLARITY_OBSCURE);
+    } else if (slotData["hint_clarity"] == 1) {
+        mOptions[RSK_HINT_CLARITY].Set(RO_HINT_CLARITY_AMBIGUOUS);
+    } else if (slotData["hint_clarity"] == 2) {
+        mOptions[RSK_HINT_CLARITY].Set(RO_HINT_CLARITY_CLEAR);
+    }
     mOptions[RSK_HINT_DISTRIBUTION].Set(0);
     if (slotData["maps_and_compasses"] == 0) {
         mOptions[RSK_SHUFFLE_MAPANDCOMPASS].Set(RO_DUNGEON_ITEM_LOC_STARTWITH);
     } else if (slotData["maps_and_compasses"] == 1) {
         mOptions[RSK_SHUFFLE_MAPANDCOMPASS].Set(RO_DUNGEON_ITEM_LOC_VANILLA);
-    }else if (slotData["maps_and_compasses"] == 2) {
+    } else if (slotData["maps_and_compasses"] == 2) {
         mOptions[RSK_SHUFFLE_MAPANDCOMPASS].Set(RO_DUNGEON_ITEM_LOC_OWN_DUNGEON);
-    }else if (slotData["maps_and_compasses"] == 3) {
+    } else if (slotData["maps_and_compasses"] == 3) {
         mOptions[RSK_SHUFFLE_MAPANDCOMPASS].Set(RO_DUNGEON_ITEM_LOC_ANY_DUNGEON);
-    }else if (slotData["maps_and_compasses"] == 4) {
+    } else if (slotData["maps_and_compasses"] == 4) {
         mOptions[RSK_SHUFFLE_MAPANDCOMPASS].Set(RO_DUNGEON_ITEM_LOC_OVERWORLD);
-    }else if (slotData["maps_and_compasses"] == 5) {
+    } else if (slotData["maps_and_compasses"] == 5) {
         mOptions[RSK_SHUFFLE_MAPANDCOMPASS].Set(RO_DUNGEON_ITEM_LOC_ANYWHERE);
     }
     if (slotData["small_key_shuffle"] == 0) {
@@ -819,7 +812,7 @@ void Context::ParseArchipelagoOptions() {
     mOptions[RSK_SHUFFLE_CHEST_MINIGAME].Set(RO_GENERIC_NO);
     mOptions[RSK_BIG_POE_COUNT].Set(slotData["big_poe_target_count"]);
     mOptions[RSK_SKIP_EPONA_RACE].Set(slotData["skip_epona_race"]);
-    mOptions[RSK_COMPLETE_MASK_QUEST].Set(slotData["complete_mask_quest"]);
+    mOptions[RSK_MASK_QUEST].Set(slotData["complete_mask_quest"]);
     mOptions[RSK_SKIP_SCARECROWS_SONG].Set(slotData["skip_scarecrows_song"]);
     mOptions[RSK_SKIP_PLANTING_BEANS].Set(RO_GENERIC_NO);
     mOptions[RSK_SKULLS_SUNS_SONG].Set(slotData["skulls_sun_song"]);
@@ -840,7 +833,7 @@ void Context::ParseArchipelagoOptions() {
     mOptions[RSK_SLINGBOW_BREAK_BEEHIVES].Set(slotData["slingbow_break_beehives"]);
     mOptions[RSK_ENABLE_BOMBCHU_DROPS].Set(slotData["bombchu_drops"]);
     mOptions[RSK_BOMBCHU_BAG].Set(slotData["bombchu_bag"]);
-    if(slotData["start_with_links_pocket"] == 0) {
+    if (slotData["start_with_links_pocket"] == 0) {
         mOptions[RSK_LINKS_POCKET].Set(RO_LINKS_POCKET_DUNGEON_REWARD);
     } else if (slotData["start_with_links_pocket"] == 1) {
         mOptions[RSK_LINKS_POCKET].Set(RO_LINKS_POCKET_ADVANCEMENT);
@@ -952,6 +945,7 @@ void Context::ParseArchipelagoOptions() {
     mOptions[RSK_LOCK_OVERWORLD_DOORS].Set(slotData["lock_overworld_doors"]);
     mOptions[RSK_SHUFFLE_GRASS].Set(slotData["shuffle_grass"]);
     mOptions[RSK_ROCS_FEATHER].Set(slotData["rocs_feather"]);
+    SetSeed(slotData["archipelago_seed"]);
 }
 
 void Context::ParseArchipelagoTricks() {
@@ -1010,7 +1004,7 @@ void Context::ParseArchipelagoItemsLocations(const std::vector<ArchipelagoClient
             if (item == RG_ICE_TRAP) {
                 RandomizerGet iceTrapItem = ArchipelagoClient::GetInstance().GetIceTrapItem();
                 overrides[rc] = ItemOverride(rc, iceTrapItem);
-                overrides[rc].SetTrickName(Text(GetIceTrapName(iceTrapItem)));
+                overrides[rc].SetTrickName(Text(Traps::GetTrapName(iceTrapItem)));
             }
         } else {
             // Other player item
@@ -1037,7 +1031,7 @@ void Context::ParseArchipelagoItemsLocations(const std::vector<ArchipelagoClient
         itemLocationTable[rc].SetPlacedItem(item);
     }
 
-    // Set all shop item prices
+    // Set all shop, scrub and merchant prices
     nlohmann::json shopPrices = slotData["shop_prices"];
     for (auto it = shopPrices.begin(); it != shopPrices.end(); it++) {
         std::string location = it.key();
@@ -1045,21 +1039,48 @@ void Context::ParseArchipelagoItemsLocations(const std::vector<ArchipelagoClient
         const RandomizerCheck rc = StaticData::locationNameToEnum[location];
         itemLocationTable[rc].SetCustomPrice(price);
     }
-
-    // Set all scrub prices
-    nlohmann::json scrubPrices = slotData["scrub_prices"];
-    for (auto it = scrubPrices.begin(); it != scrubPrices.end(); it++) {
-        std::string location = it.key();
-        uint16_t price = it.value();
-        const RandomizerCheck rc = StaticData::locationNameToEnum[location];
-        itemLocationTable[rc].SetCustomPrice(price);
+}
+void Context::ParseArchipelagoHints() {
+    const auto& ApHintData = ArchipelagoClient::GetInstance().foreignHints;
+    const auto ctx = Rando::Context::GetInstance();
+    for (const auto& ApHint : ApHintData) {
+        const RandomizerHint hintKey = ApHint.first;
+        const StaticHintInfo hintInfo = StaticData::staticHintInfoMap[ApHint.first];
+        std::vector<RandomizerArea> areas;
+        for (const ArchipelagoClient::ApForeignHint& hintData : ApHint.second) {
+            areas.emplace_back(RA_ARCHIPELAGO_FOREIGN);
+        }
+        if (areas.empty()) {
+            areas.emplace_back(RA_NONE);
+        }
+        HintType hintType;
+        std::vector<RandomizerHintTextKey> textKeys;
+        switch (hintKey) {
+            case RH_ALTAR_CHILD:
+                hintType = HINT_TYPE_ALTAR_CHILD;
+                break;
+            case RH_ALTAR_ADULT:
+                hintType = HINT_TYPE_ALTAR_ADULT;
+                break;
+            case RH_GANONDORF_HINT:
+                hintType = HINT_TYPE_AREA;
+                if (ctx->GetOption(RSK_SHUFFLE_MASTER_SWORD) &&
+                    ctx->GetOption(RSK_STARTING_MASTER_SWORD).Is(RO_GENERIC_OFF)) {
+                    textKeys = { RHT_GANONDORF_HINT_LA_ONLY, RHT_GANONDORF_HINT_MS_ONLY, RHT_GANONDORF_HINT_LA_AND_MS };
+                } else {
+                    textKeys = { RHT_GANONDORF_HINT_LA_ONLY };
+                }
+                break;
+            case RH_GANONDORF_JOKE:
+                continue; // just create a random joke
+            default:
+                hintType = hintInfo.type;
+                break;
+        }
+        Hint hint = Hint(hintKey, hintType, textKeys, {}, areas);
+        AddHint(hintKey, hint);
     }
-
-    // Set merchant prices
-    itemLocationTable[RC_ZR_MAGIC_BEAN_SALESMAN].SetCustomPrice(60);
-    itemLocationTable[RC_KAK_GRANNYS_SHOP].SetCustomPrice(100);
-    itemLocationTable[RC_WASTELAND_BOMBCHU_SALESMAN].SetCustomPrice(200);
-    itemLocationTable[RC_GC_MEDIGORON].SetCustomPrice(200);
+    CreateStaticHints();
 }
 
 void Context::WriteHintJson(nlohmann::ordered_json& spoilerFileJson) {

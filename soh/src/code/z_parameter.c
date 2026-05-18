@@ -4,9 +4,7 @@
 #include "textures/do_action_static/do_action_static.h"
 #include "textures/icon_item_static/icon_item_static.h"
 #include "soh_assets.h"
-#include "soh/Enhancements/randomizer/randomizer_entrance.h"
 
-#include "libultraship/bridge.h"
 #include "soh/Enhancements/gameplaystats.h"
 #include "soh/Enhancements/custom-message/CustomMessageInterfaceAddon.h"
 #include "soh/Enhancements/cosmetics/cosmeticsTypes.h"
@@ -2121,7 +2119,7 @@ u8 Item_Give(PlayState* play, u8 item) {
                 }
             }
         }
-        // update the adult/child equips when rando'd (accounting for equp swapped hookshot as child)
+        // update the adult/child equips when rando'd (accounting for equip swapped hookshot as child)
         if (IS_RANDO && LINK_IS_CHILD) {
             for (i = 1; i < ARRAY_COUNT(gSaveContext.adultEquips.buttonItems); i++) {
                 if (gSaveContext.adultEquips.buttonItems[i] == ITEM_HOOKSHOT) {
@@ -3433,6 +3431,12 @@ void Interface_DrawLineupTick(PlayState* play) {
     CLOSE_DISPS(play->state.gfxCtx);
 }
 
+void Interface_ArchipelagoResetStatusFade() {
+    if (CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatusFadeCount"), 0) != 255) {
+        CVarSetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatusFadeCount"), 255);
+    }
+}
+
 void Interface_DrawArchipelagoStatusString(PlayState* play) {
     InterfaceContext* interfaceCtx = &play->interfaceCtx;
     OPEN_DISPS(play->state.gfxCtx);
@@ -3447,7 +3451,12 @@ void Interface_DrawArchipelagoStatusString(PlayState* play) {
     int32_t sTexScale = 1024.0f / (scale / 100.0f);
 
     gDPSetEnvColor(OVERLAY_DISP++, 255, 255, 255, 255);
-    gDPSetPrimColor(OVERLAY_DISP++, 0, 0, 255, 255, 255, 255);
+
+    int16_t alpha = 255;
+    if (CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatusFadeCount"), 255) < 0x3f) {
+        alpha = CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatusFadeCount"), 0x3f) << 2;
+    }
+    gDPSetPrimColor(OVERLAY_DISP++, 0, 0, 255, 255, 255, alpha);
 
     gDPLoadTextureBlock(OVERLAY_DISP++, gArchipelagoItemTex, G_IM_FMT_RGBA, G_IM_SIZ_32b, 64, 64, 0,
                         G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMIRROR | G_TX_WRAP, 0, 0, G_TX_NOLOD, G_TX_NOLOD);
@@ -3462,18 +3471,34 @@ void Interface_DrawArchipelagoStatusString(PlayState* play) {
     switch (CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatus"), 0)) {
         case 0: // Not Connected
             statusText = SohFileSelect_GetArchipelagoSettingText(ASM_NOT_CONNECTED, language);
+            CVarSetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatusFadeStarted"), 0);
+            Interface_ArchipelagoResetStatusFade();
             break;
         case 1: // Connecting
         case 2: // Connection error, retrying
         case 3: // Connected
             statusText = SohFileSelect_GetArchipelagoSettingText(ASM_CONNECTING, language);
+            CVarSetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatusFadeStarted"), 0);
+            Interface_ArchipelagoResetStatusFade();
             break;
         case 4: // Connected + Locations Scouted
             statusText = SohFileSelect_GetArchipelagoSettingText(ASM_CONNECTED, language);
+
+            // start fadeout
+            if (CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatusFadeStarted"), 0)) {
+                CVarSetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatusFadeStarted"), 1);
+                CVarSetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatusFadeCount"), 255);
+            }
+
+            if (CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatusFadeCount"), 0) > 0) {
+                CVarSetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatusFadeCount"),
+                               CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatusFadeCount"), 255) - 1);
+            }
+
             break;
     }
 
-    Interface_DrawTextLineOverlay(play->state.gfxCtx, statusText, posX, posY, 255, 255, 255, 255, 0.8f, true);
+    Interface_DrawTextLineOverlay(play->state.gfxCtx, statusText, posX, posY, 255, 255, 255, alpha, 0.8f, true);
 
     gDPPipeSync(OVERLAY_DISP++);
     CLOSE_DISPS(play->state.gfxCtx);
@@ -5386,15 +5411,17 @@ void Interface_Draw(PlayState* play) {
                                 interfaceCtx->counterDigits[3] -= 10;
                             }
 
+                            svar3 = 16;
                             if (interfaceCtx->counterDigits[2] != 0) {
                                 OVERLAY_DISP = Gfx_TextureI8(
                                     OVERLAY_DISP, ((u8*)((u8*)digitTextures[interfaceCtx->counterDigits[2]])), 8, 16,
-                                    PosX_SKC + 8, PosY_SKC, 8, 16, 1 << 10, 1 << 10);
+                                    PosX_SKC + 16, PosY_SKC, 8, 16, 1 << 10, 1 << 10);
+                                svar3 = 24;
                             }
 
                             OVERLAY_DISP =
                                 Gfx_TextureI8(OVERLAY_DISP, ((u8*)digitTextures[interfaceCtx->counterDigits[3]]), 8, 16,
-                                              PosX_SKC + 16, PosY_SKC, 8, 16, 1 << 10, 1 << 10);
+                                              PosX_SKC + svar3, PosY_SKC, 8, 16, 1 << 10, 1 << 10);
                         }
                         break;
                     default:

@@ -16,7 +16,7 @@
 #include <set>
 #include <nlohmann/json.hpp>
 
-#define RAND_GET_OPTION(option) Rando::Context::GetInstance()->GetOption(option).Get()
+#define RAND_GET_OPTION(option) Rando::Context::GetInstance()->GetOption(option)
 
 /**
  * @brief Singleton for storing and accessing dynamic Randomizer-related data
@@ -143,6 +143,7 @@ class Context {
     void ParseArchipelagoTricks();
     void ParseArchipelagoExcludedLocations();
     void ParseArchipelagoItemsLocations(const std::vector<ArchipelagoClient::ApItem>& slot_data);
+    void ParseArchipelagoHints();
 
     /**
      * @brief Get the hash for the current seed.

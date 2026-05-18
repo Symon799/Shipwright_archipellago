@@ -1,7 +1,6 @@
 #include "location.h"
 #include "randomizer_check_ids.h"
 #include "static_data.h"
-#include <algorithm>
 #include <assert.h>
 #include "option.h"
 
@@ -75,10 +74,6 @@ bool Rando::Location::IsShop() const {
 
 bool Rando::Location::IsVanillaCompletion() const {
     return isVanillaCompletion;
-}
-
-uint32_t Rando::Location::Getuint32_t() const {
-    return hintKey;
 }
 
 const HintText& Rando::Location::GetHint() const {

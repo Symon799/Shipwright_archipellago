@@ -9,7 +9,7 @@ namespace {
 
 // Runtime source of truth for map tracker soh_id values.
 // Keep this array in exact RandomizerCheck enum order and aligned with RC_MAX.
-constexpr std::array<std::string_view, 2520> kRandomizerCheckTrackerIds = {
+constexpr std::array<std::string_view, 2521> kRandomizerCheckTrackerIds = {
     "",
     "links_pocket",
     "queen_gohma",
@@ -1755,6 +1755,7 @@ constexpr std::array<std::string_view, 2520> kRandomizerCheckTrackerIds = {
     "altar_hint_child",
     "altar_hint_adult",
     "fishing_pole_hint",
+    "biggoron_hint",
     "tot_sheik_hint",
     "mask_shop_hint",
     "dmc_upper_grotto_fish",

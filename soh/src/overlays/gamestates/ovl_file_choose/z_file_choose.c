@@ -15,11 +15,8 @@
 #include "objects/object_mag/object_mag.h"
 #include "objects/gameplay_keep/gameplay_keep.h"
 #include "soh_assets.h"
-#include "soh/Enhancements/game-interactor/GameInteractor.h"
 #include "soh/Enhancements/boss-rush/BossRush.h"
 #include "soh/Enhancements/FileSelectEnhancements.h"
-#include "soh/Enhancements/custom-message/CustomMessageTypes.h"
-#include "soh/Enhancements/enhancementTypes.h"
 #include "soh/Enhancements/game-interactor/GameInteractor_Hooks.h"
 #include <assert.h>
 #include "z64save.h"
@@ -27,6 +24,7 @@
 #include "soh/OTRGlobals.h"
 #include "soh/ResourceManagerHelpers.h"
 #include "soh/ShipUtils.h"
+#include "soh/Network/Archipelago/Archipelago.h"
 
 #define MIN_QUEST (ResourceMgr_GameHasOriginal() ? QUEST_NORMAL : QUEST_MASTER)
 #define MAX_QUEST QUEST_ARCHIPELAGO
@@ -632,7 +630,7 @@ void FileChoose_UpdateQuestMenu(GameState* thisx) {
     static u8 emptyName[] = { 0x3E, 0x3E, 0x3E, 0x3E, 0x3E, 0x3E, 0x3E, 0x3E };
     static u8 emptyNameNES[] = { 0xDF, 0xDF, 0xDF, 0xDF, 0xDF, 0xDF, 0xDF, 0xDF };
     static u8 linkName[] = { 0x15, 0x2C, 0x31, 0x2E, 0x3E, 0x3E, 0x3E, 0x3E };
-    static u8 linkNameNES[] = { 0xB6, 0xB3, 0xB8, 0xB5, 0xDF, 0xDF, 0xDF, 0xDF };
+    static u8 linkNameNES[] = { 0xB6, 0xCD, 0xD2, 0xCF, 0xDF, 0xDF, 0xDF, 0xDF };
     static u8 linkNameJP[] = { 0x81, 0x87, 0x61, 0xDF, 0xDF, 0xDF, 0xDF, 0xDF };
     FileChoose_UpdateStickDirectionPromptAnim(thisx);
     FileChooseContext* this = (FileChooseContext*)thisx;
@@ -790,7 +788,7 @@ void FileChoose_UpdateRandomizerMenu(GameState* thisx) {
                 static u8 emptyName[] = { 0x3E, 0x3E, 0x3E, 0x3E, 0x3E, 0x3E, 0x3E, 0x3E };
                 static u8 emptyNameNES[] = { 0xDF, 0xDF, 0xDF, 0xDF, 0xDF, 0xDF, 0xDF, 0xDF };
                 static u8 linkName[] = { 0x15, 0x2C, 0x31, 0x2E, 0x3E, 0x3E, 0x3E, 0x3E };
-                static u8 linkNameNES[] = { 0xB6, 0xB3, 0xB8, 0xB5, 0xDF, 0xDF, 0xDF, 0xDF };
+                static u8 linkNameNES[] = { 0xB6, 0xCD, 0xD2, 0xCF, 0xDF, 0xDF, 0xDF, 0xDF };
                 static u8 linkNameJP[] = { 0x81, 0x87, 0x61, 0xDF, 0xDF, 0xDF, 0xDF, 0xDF };
                 u8* defaultName;
 
@@ -1029,14 +1027,32 @@ void FileChoose_UpdateArchipelagoMenu(GameState* thisx) {
         return;
     }
 
-    if (CHECK_BTN_ALL(input->press.button, BTN_A)) {
-        if (this->archipelagoIndex == ASM_START_ARCHIPELAGO) {
-            // Only continue when connected to a slot and locations are scouted.
-            if (CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatus"), 0) != 4) {
-                Audio_PlaySoundGeneral(NA_SE_SY_FSEL_ERROR, &gSfxDefaultPos, 4, &gSfxDefaultFreqAndVolScale,
-                                       &gSfxDefaultFreqAndVolScale, &gSfxDefaultReverb);
+    if (CHECK_BTN_ALL(input->press.button, BTN_A) ||
+        CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatusInGame"), 0) == 1) {
+        if (this->archipelagoIndex == ASM_START_ARCHIPELAGO ||
+            CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatusInGame"), 0) == 1) {
+            if (CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatus"), 0) != 4 &&
+                CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatusInGame"), 0) == 1) {
                 return;
             }
+            // If not connected, try to connect.
+            if (CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatus"), 0) != 4) {
+                if (strnlen(CVarGetString(CVAR_REMOTE_ARCHIPELAGO("ServerAddress"), ""), 10) > 0 &&
+                    strnlen(CVarGetString(CVAR_REMOTE_ARCHIPELAGO("SlotName"), ""), 2) > 0) {
+                    Archipelago_InitConnection();
+                    CVarSetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatusInGame"), 1);
+                } else {
+                    Audio_PlaySoundGeneral(NA_SE_SY_FSEL_ERROR, &gSfxDefaultPos, 4, &gSfxDefaultFreqAndVolScale,
+                                           &gSfxDefaultFreqAndVolScale, &gSfxDefaultReverb);
+                }
+                return;
+            }
+
+            CVarSetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatusInGame"), 0);
+            // Reset Fade Status before getting in game
+            CVarSetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatusFadeStarted"), 0);
+            CVarSetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatusFadeCount"), 255);
+
             SohFileSelect_ShowPresetModal();
             Audio_PlaySoundGeneral(NA_SE_SY_FSEL_DECIDE_L, &gSfxDefaultPos, 4, &gSfxDefaultFreqAndVolScale,
                                    &gSfxDefaultFreqAndVolScale, &gSfxDefaultReverb);
@@ -1086,6 +1102,7 @@ void FileChoose_UpdateArchipelagoMenu(GameState* thisx) {
 
 void FileChoose_StartArchipelagoMenu(GameState* thisx) {
     FileChooseContext* this = (FileChooseContext*)thisx;
+    CVarSetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatusInGame"), 0);
 
     this->logoAlpha -= 25;
     this->archipelagoUIAlpha = 0;
@@ -1816,10 +1833,6 @@ void FileChoose_DrawFileInfo(GameState* thisx, s16 fileIndex, s16 isActive) {
                                        SohFileSelect_GetArchipelagoSettingText(ASM_CHAR_START_TO_CONNECT, language), 58,
                                        144, 200, 200, 200, textAlpha, 0.8f, true);
             }
-
-            // Interface_DrawTextLine(this->state.gfxCtx,
-            //     SohFileSelect_GetArchipelagoSettingText(ASM_CHAR_SELECT_CHANGE_CONNECTION_INFO, language), 95, 220,
-            //     100, 250, 255, textAlpha, 1.0f, true);
         }
     }
 
@@ -2128,22 +2141,36 @@ void FileChoose_DrawWindowContents(GameState* thisx) {
 
         uint8_t textIndex = 0;
 
-        for (uint8_t index = 0; index <= ASM_CHANGE_CONNECTION_INFO; index++) {
+        for (uint8_t index = ASM_START_ARCHIPELAGO; index <= ASM_CHANGE_CONNECTION_INFO; index++) {
             uint8_t textColorR = 255;
             uint8_t textColorG = 255;
             uint8_t textColorB = 255;
+            uint8_t textLine = index;
 
             // If current index is the selected one, make the text yellow.
             if (this->archipelagoIndex == index) {
                 textColorB = 80;
             }
 
-            // If not connected, make Start Archipelago text gray.
-            if (index == ASM_START_ARCHIPELAGO && CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatus"), 0) != 4) {
-                textColorR = textColorG = textColorB = 100;
+            // show "connect and start AP" message when not connected yet
+            if (index == ASM_START_ARCHIPELAGO && CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatus"), 0) < 3 &&
+                CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatusInGame"), 0) == 0) {
+                if (strnlen(CVarGetString(CVAR_REMOTE_ARCHIPELAGO("ServerAddress"), ""), 10) == 0 ||
+                    strnlen(CVarGetString(CVAR_REMOTE_ARCHIPELAGO("SlotName"), ""), 2) == 0) {
+                    // if no text is entered into the connection fields, make the text gray
+                    textColorR = textColorG = textColorB = 100;
+                }
+                textLine = ASM_CONNECT_AND_START_ARCHIPELAGO;
             }
 
-            Interface_DrawTextLine(this->state.gfxCtx, SohFileSelect_GetArchipelagoSettingText(index, language), 70,
+            // If mid connection attempt, make Start Archipelago text gray.
+            if (index == ASM_START_ARCHIPELAGO && CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatus"), 0) != 4 &&
+                CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatusInGame"), 0) == 1) {
+                textColorR = textColorG = textColorB = 100;
+                textLine = ASM_CONNECT_AND_START_ARCHIPELAGO;
+            }
+
+            Interface_DrawTextLine(this->state.gfxCtx, SohFileSelect_GetArchipelagoSettingText(textLine, language), 70,
                                    (80 + index * 16), textColorR, textColorG, textColorB, textAlpha, 0.8f, true);
         }
 
@@ -2888,9 +2915,6 @@ void FileChoose_LoadGame(GameState* thisx) {
     }
 
     this->state.running = false;
-
-    Randomizer_LoadHintMessages();
-    Randomizer_LoadMerchantMessages();
 
     gSaveContext.respawn[0].entranceIndex = ENTR_LOAD_OPENING;
     gSaveContext.respawnFlag = 0;

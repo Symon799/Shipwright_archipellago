@@ -2328,12 +2328,12 @@ void StaticData::HintTable_Init() {
                                                                         {QM_RED, QM_BLUE, QM_GREEN}));
 
     hintTextTable[RHT_MALON_HINT_OBSTICLE_COURSE] = HintText(CustomMessage("How about trying the #Obstacle Course?# If you beat my time I'll let you keep my favourite #cow# Elsie and her toy #[[1]]#!^"
-                                                                           "Challenge the #Obstacle Course?#&\x1B&#Let's go&No thanks#",
+                                                                           "Challenge the #Obstacle Course?#\x1B#Let's go&No thanks#",
                                                                 /*german*/ "Warum versuchst Du Dich nicht mit Epona an dem #Hindernisparcours#?^"
                                                                            "Gelingt es Dir den Rekord zu brechen, bekommst Du meine #Lieblingskuh# Elsie^und ihr Lieblingsspielzeug, #[[1]]#!^"
-                                                                           "Wie sieht's aus?&Möchtest Du es versuchen?\x1B&#Ja!&Nein!#",
+                                                                           "Wie sieht's aus?&Möchtest Du es versuchen?\x1B#Ja!&Nein!#",
                                                                 /*french*/ "Que dirais-tu d'essayer le #Parcours d'Obstacles#? Si tu bats mon temps, je te donnerai ma vache préférée, Elsie, et son jouet #[[1]]#!^"
-                                                                           "Tenter le #Parcours d'Obstacles#?&\x1B&#Allons-y&Non merci#",
+                                                                           "Tenter le #Parcours d'Obstacles#?\x1B#Allons-y&Non merci#",
                                                                            {QM_RED, QM_BLUE, QM_GREEN, QM_RED, QM_GREEN}));
 
     hintTextTable[RHT_MALON_HINT_TURNING_EVIL] = HintText(CustomMessage("@? Is that you? ^If I ran the ranch, I'd build an #Obstacle Course#, and whoever gets the best time would win a #cow#!^"
@@ -2378,11 +2378,6 @@ void StaticData::HintTable_Init() {
                                                          "Prinzessin Zelda erhältst und #[[2]]# lernst, um Hyrule vor dem Untergang zu bewahren!",
                                               /*french*/ "Amène les #Pierres Spirituelles# dans le passé et Zelda te donnera #[[1]]# et t'apprendra #[[2]]# !",
                                                          {QM_BLUE, QM_GREEN, QM_GREEN}));
-
-    hintTextTable[RHT_SKULLS_HINT] = HintText(CustomMessage("Yeaaarrgh! I'm cursed!!^Please save me by destroying #[[d]] Spiders of the Curse# and I will give you my #[[1]]#!",
-                                                 /*german*/ "Aarrrgh! Ich bin verflucht!^Bitte rette mich, indem Du&#[[d]] Skulltulas# zerstörst und ich&werde Dir dafür #[[1]]# geben!",
-                                                 /*french*/ "Yeaaarrgh! Je suis maudit!^Détruit encore #[[d]] Araignées de la Malédiction# et j'aurai quelque chose à te donner! #([[1]])#",
-                                                            {QM_YELLOW, QM_GREEN}));
 
     hintTextTable[RHT_MASK_SHOP_HINT] = HintText(CustomMessage("Some young scrubs in the #Deku Theatre# love seeing Masks!^"
                                                                "They'll give you #[[1]]# if you show them the #Skull Mask#, and #[[2]]# if you show them the #Mask of Truth#!",
@@ -2482,6 +2477,9 @@ void StaticData::HintTable_Init() {
                                                        /*german*/ "&Man kann darauf die Worte&%rMaster Quest%w entziffern...",
                                                        /*french*/ "&Étrange... les mots %r\"Master_Quest\"%w sont gravés dessus."));
 
+    hintTextTable[RHT_ARCHIPELAGO_FOREIGN] = HintText(CustomMessage("Foreign Archipelago Location",
+                                                         /*german*/ "(German todo)Foreign Archipelago Location",
+                                                         /*french*/ "(French todo)Foreign Archipelago Location"));
     // clang-format on
 }
 } // namespace Rando

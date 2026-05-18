@@ -41,7 +41,6 @@
 #include "item_location.h"
 #include "soh/Enhancements/game-interactor/GameInteractor.h"
 #include "z64item.h"
-#include "randomizerTypes.h"
 #include "fishsanity.h"
 
 extern "C" {
@@ -56,10 +55,6 @@ extern std::vector<ItemTrackerItem> dungeonRewardStones;
 extern std::vector<ItemTrackerItem> dungeonRewardMedallions;
 extern std::vector<ItemTrackerItem> songItems;
 extern std::vector<ItemTrackerItem> equipmentItems;
-
-namespace SohGui {
-extern std::shared_ptr<SohMenu> mSohMenu;
-}
 
 using json = nlohmann::json;
 using namespace UIWidgets;
@@ -140,6 +135,15 @@ std::map<uint32_t, RandomizerCheck> startingShopItem = {
     { SCENE_ZORA_SHOP, RC_ZD_SHOP_ITEM_1 },
     { SCENE_GORON_SHOP, RC_GC_SHOP_ITEM_1 },
 };
+
+int GetStartingShopItem(uint32_t sceneId) {
+    if (GetCheckArea() == RCAREA_KAKARIKO_VILLAGE && sceneId == SCENE_BAZAAR) {
+        return RC_KAK_BAZAAR_ITEM_1;
+    }
+
+    auto startingItem = startingShopItem.find(sceneId);
+    return startingItem != startingShopItem.end() ? startingItem->second : RC_UNKNOWN_CHECK;
+}
 
 std::map<SceneID, RandomizerCheckArea> DungeonRCAreasBySceneID = {
     { SCENE_DEKU_TREE, RCAREA_DEKU_TREE },
@@ -302,6 +306,7 @@ std::vector<uint32_t> buttons = { BTN_A, BTN_B, BTN_CUP,   BTN_CDOWN, BTN_CLEFT,
 static ImGuiTextFilter checkSearch;
 static bool recalculateAvailable = false;
 static RandomizerRegion availableChecksStartingRegion = RR_ROOT;
+static RandoAgeTime availableChecksStartingAgeTime = RAT_NONE;
 static int16_t previousEntrance = 0;
 std::array<bool, RCAREA_INVALID> filterAreasHidden = { 0 };
 std::array<bool, RC_MAX> filterChecksHidden = { 0 };
@@ -488,8 +493,8 @@ RandomizerCheckArea AreaFromEntranceGroup[] = {
 RandomizerCheckArea GetCheckArea() {
     auto scene = static_cast<SceneID>(gPlayState->sceneNum);
     bool grottoScene = (scene == SCENE_GROTTOS || scene == SCENE_FAIRYS_FOUNTAIN);
-    const EntranceData* ent =
-        GetEntranceData(grottoScene ? ENTRANCE_GROTTO_EXIT_START + GetCurrentGrottoId() : gSaveContext.entranceIndex);
+    const EntranceData* ent = EntranceTracker::GetEntranceData(
+        grottoScene ? ENTRANCE_GROTTO_EXIT_START + EntranceTracker::GetCurrentGrottoId() : gSaveContext.entranceIndex);
     RandomizerCheckArea area = RCAREA_INVALID;
     if (ent != nullptr && !IsAreaScene(scene) && ent->type != ENTRANCE_TYPE_DUNGEON) {
         if (ent->source == "Desert Colossus" || ent->destination == "Desert Colossus") {
@@ -499,7 +504,7 @@ RandomizerCheckArea GetCheckArea() {
         }
     }
     if (area == RCAREA_INVALID) {
-        if (grottoScene && (GetCurrentGrottoId() == -1) &&
+        if (grottoScene && (EntranceTracker::GetCurrentGrottoId() == -1) &&
             (OTRGlobals::Instance->gRandomizer->GetRandoSettingValue(RSK_SHUFFLE_GROTTO_ENTRANCES) == RO_GENERIC_OFF)) {
             area = previousArea;
         } else {
@@ -995,7 +1000,7 @@ void SetAreaSpoiled(RandomizerCheckArea rcArea) {
     SaveManager::Instance->SaveSection(gSaveContext.fileNum, sectionId, true);
 }
 
-void InternalRecalculateAvailableChecks(RandomizerRegion startingRegion);
+void InternalRecalculateAvailableChecks(RandomizerRegion startingRegion, RandoAgeTime startingAgeTime);
 
 void CheckTrackerWindow::DrawElement() {
     Color_Background = CVarGetColor(CVAR_TRACKER_CHECK("BgColor.Value"), Color_Bg_Default);
@@ -1075,8 +1080,9 @@ void CheckTrackerWindow::DrawElement() {
 
         if (recalculateAvailable) {
             recalculateAvailable = false;
-            InternalRecalculateAvailableChecks(availableChecksStartingRegion);
+            InternalRecalculateAvailableChecks(availableChecksStartingRegion, availableChecksStartingAgeTime);
             availableChecksStartingRegion = RR_ROOT;
+            availableChecksStartingAgeTime = RAT_NONE;
         }
 
         // Quick Options
@@ -2249,7 +2255,7 @@ void ImGuiDrawTwoColorPickerSection(const char* text, const char* cvarMainName, 
     UIWidgets::PopStyleCombobox();
 }
 
-void InternalRecalculateAvailableChecks(RandomizerRegion startingRegion) {
+void InternalRecalculateAvailableChecks(RandomizerRegion startingRegion, RandoAgeTime startingAgeTime) {
     if (!enableAvailableChecks || !GameInteractor::IsSaveLoaded()) {
         return;
     }
@@ -2259,6 +2265,30 @@ void InternalRecalculateAvailableChecks(RandomizerRegion startingRegion) {
 
     const auto& ctx = Rando::Context::GetInstance();
     logic = ctx->GetLogic();
+
+    int16_t entranceIndex = gPlayState->nextEntranceIndex;
+    if (startingRegion == RR_ROOT && entranceIndex >= 0 && entranceIndex < ENTR_MAX) {
+        const int8_t scene = gEntranceTable[entranceIndex].scene;
+        for (; entranceIndex >= 0 && gEntranceTable[entranceIndex].scene == scene; entranceIndex--) {
+            const auto entrance = Rando::EntranceShuffler::GetEntranceByIndex(entranceIndex);
+            if (entrance != nullptr) {
+                startingRegion = entrance->GetOriginalConnectedRegionKey();
+                break;
+            }
+        }
+    }
+
+    if (startingAgeTime == RAT_NONE) {
+        if (LINK_IS_CHILD && IS_DAY) {
+            startingAgeTime = RAT_CHILD_DAY;
+        } else if (LINK_IS_CHILD && IS_NIGHT) {
+            startingAgeTime = RAT_CHILD_NIGHT;
+        } else if (LINK_IS_ADULT && IS_DAY) {
+            startingAgeTime = RAT_ADULT_DAY;
+        } else if (LINK_IS_ADULT && IS_NIGHT) {
+            startingAgeTime = RAT_ADULT_NIGHT;
+        }
+    }
 
     std::vector<RandomizerCheck> targetLocations;
     targetLocations.reserve(RC_MAX);
@@ -2271,7 +2301,8 @@ void InternalRecalculateAvailableChecks(RandomizerRegion startingRegion) {
         }
     }
 
-    std::vector<RandomizerCheck> availableChecks = ReachabilitySearch(targetLocations, RG_NONE, true, startingRegion);
+    std::vector<RandomizerCheck> availableChecks =
+        ReachabilitySearch(targetLocations, RG_NONE, true, startingRegion, startingAgeTime);
     for (auto& rc : availableChecks) {
         const auto& itemLocation = ctx->GetItemLocation(rc);
         itemLocation->SetAvailable(true);
@@ -2295,12 +2326,14 @@ void InternalRecalculateAvailableChecks(RandomizerRegion startingRegion) {
                 GetPerformanceTimer(PT_RECALCULATE_AVAILABLE_CHECKS).count());
 }
 
-void RecalculateAvailableChecks(RandomizerRegion startingRegion /* = RR_ROOT */) {
+void RecalculateAvailableChecks(RandomizerRegion startingRegion /* = RR_ROOT */,
+                                RandoAgeTime startingAgeTime /* = RAT_NONE */) {
     recalculateAvailable = true;
     availableChecksStartingRegion = startingRegion;
+    availableChecksStartingAgeTime = startingAgeTime;
 }
 
-void CheckTracker_LoadFromPreset(nlohmann::json info) {
+void LoadFromPreset(nlohmann::json info) {
     presetLoaded = true;
     presetPos = { info["pos"]["x"], info["pos"]["y"] };
     presetSize = { info["size"]["width"], info["size"]["height"] };
@@ -2337,9 +2370,9 @@ void CheckTrackerSettingsWindow::DrawElement() {
         ImGui::TableHeadersRow();
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
-        SohGui::mSohMenu->MenuDrawItem(backgroundColorWidget, ImGui::GetContentRegionAvail().x, THEME_COLOR);
+        SohGui::GetSohMenu()->MenuDrawItem(backgroundColorWidget, ImGui::GetContentRegionAvail().x, THEME_COLOR);
 
-        SohGui::mSohMenu->MenuDrawItem(windowTypeWidget, ImGui::GetContentRegionAvail().x, THEME_COLOR);
+        SohGui::GetSohMenu()->MenuDrawItem(windowTypeWidget, ImGui::GetContentRegionAvail().x, THEME_COLOR);
 
         UIWidgets::CVarSliderFloat("Font Size", CVAR_TRACKER_CHECK("FontSize"),
                                    UIWidgets::FloatSliderOptions()
@@ -2379,17 +2412,17 @@ void CheckTrackerSettingsWindow::DrawElement() {
             }
         }
         ImGui::BeginDisabled(CVarGetInteger(CVAR_SETTING("DisableChanges"), 0));
-        SohGui::mSohMenu->MenuDrawItem(dungeonSpoilerWidget, ImGui::GetContentRegionAvail().x, THEME_COLOR);
+        SohGui::GetSohMenu()->MenuDrawItem(dungeonSpoilerWidget, ImGui::GetContentRegionAvail().x, THEME_COLOR);
         ImGui::EndDisabled();
 
-        SohGui::mSohMenu->MenuDrawItem(hideUnshuffledShopWidget, ImGui::GetContentRegionAvail().x, THEME_COLOR);
+        SohGui::GetSohMenu()->MenuDrawItem(hideUnshuffledShopWidget, ImGui::GetContentRegionAvail().x, THEME_COLOR);
 
-        SohGui::mSohMenu->MenuDrawItem(showGSWidget, ImGui::GetContentRegionAvail().x, THEME_COLOR);
+        SohGui::GetSohMenu()->MenuDrawItem(showGSWidget, ImGui::GetContentRegionAvail().x, THEME_COLOR);
 
-        SohGui::mSohMenu->MenuDrawItem(showLogicWidget, ImGui::GetContentRegionAvail().x, THEME_COLOR);
+        SohGui::GetSohMenu()->MenuDrawItem(showLogicWidget, ImGui::GetContentRegionAvail().x, THEME_COLOR);
 
         ImGui::BeginDisabled(CVarGetInteger(CVAR_SETTING("DisableChanges"), 0));
-        SohGui::mSohMenu->MenuDrawItem(checkAvailabilityWidget, ImGui::GetContentRegionAvail().x, THEME_COLOR);
+        SohGui::GetSohMenu()->MenuDrawItem(checkAvailabilityWidget, ImGui::GetContentRegionAvail().x, THEME_COLOR);
         ImGui::EndDisabled();
 
         // Filtering settings
@@ -2483,7 +2516,7 @@ void RegisterCheckTrackerWidgets() {
     backgroundColorWidget.CVar(CVAR_TRACKER_CHECK("BgColor"))
         .Options(
             ColorPickerOptions().Color(THEME_COLOR).DefaultValue(Color_Bg_Default).UseAlpha().ShowReset().ShowRandom());
-    SohGui::mSohMenu->AddSearchWidget({ backgroundColorWidget, "Randomizer", "Check Tracker", "General Settings" });
+    SohGui::GetSohMenu()->AddSearchWidget({ backgroundColorWidget, "Randomizer", "Check Tracker", "General Settings" });
 
     windowTypeWidget = { .name = "Window Type##CheckTracker", .type = WidgetType::WIDGET_CVAR_COMBOBOX };
     windowTypeWidget.CVar(CVAR_TRACKER_CHECK("WindowType"))
@@ -2493,7 +2526,7 @@ void RegisterCheckTrackerWidgets() {
                      .LabelPosition(LabelPositions::Far)
                      .Color(THEME_COLOR)
                      .ComboMap(windowType));
-    SohGui::mSohMenu->AddSearchWidget({ windowTypeWidget, "Randomizer", "Check Tracker", "General Settings" });
+    SohGui::GetSohMenu()->AddSearchWidget({ windowTypeWidget, "Randomizer", "Check Tracker", "General Settings" });
 
     dungeonSpoilerWidget = { .name = "Vanilla/MQ Dungeon Spoilers", .type = WidgetType::WIDGET_CVAR_CHECKBOX };
     dungeonSpoilerWidget.CVar(CVAR_TRACKER_CHECK("MQSpoilers"))
@@ -2501,7 +2534,7 @@ void RegisterCheckTrackerWidgets() {
                      .Color(THEME_COLOR)
                      .Tooltip("If enabled, Vanilla/MQ dungeons will show on the tracker immediately. "
                               "Otherwise, Vanilla/MQ dungeon locations must be unlocked."));
-    SohGui::mSohMenu->AddSearchWidget({ dungeonSpoilerWidget, "Randomizer", "Check Tracker", "General Settings" });
+    SohGui::GetSohMenu()->AddSearchWidget({ dungeonSpoilerWidget, "Randomizer", "Check Tracker", "General Settings" });
 
     hideUnshuffledShopWidget = { .name = "Hide Unshuffled Shop Item Checks", .type = WidgetType::WIDGET_CVAR_CHECKBOX };
     hideUnshuffledShopWidget.CVar(CVAR_TRACKER_CHECK("HideUnshuffledShopChecks"))
@@ -2513,7 +2546,7 @@ void RegisterCheckTrackerWidgets() {
             hideShopUnshuffledChecks = CVarGetInteger(CVAR_TRACKER_CHECK("HideUnshuffledShopChecks"), 0);
             UpdateFilters();
         });
-    SohGui::mSohMenu->AddSearchWidget(
+    SohGui::GetSohMenu()->AddSearchWidget(
         { hideUnshuffledShopWidget, "Randomizer", "Check Tracker", "General Settings" });
 
     showGSWidget = { .name = "Always Show Gold Skulltulas", .type = WidgetType::WIDGET_CVAR_CHECKBOX };
@@ -2525,14 +2558,14 @@ void RegisterCheckTrackerWidgets() {
             alwaysShowGS = !alwaysShowGS;
             UpdateFilters();
         });
-    SohGui::mSohMenu->AddSearchWidget({ showGSWidget, "Randomizer", "Check Tracker", "General Settings" });
+    SohGui::GetSohMenu()->AddSearchWidget({ showGSWidget, "Randomizer", "Check Tracker", "General Settings" });
 
     showLogicWidget = { .name = "Show Logic", .type = WidgetType::WIDGET_CVAR_CHECKBOX };
     showLogicWidget.CVar(CVAR_TRACKER_CHECK("ShowLogic"))
         .Options(CheckboxOptions()
                      .Color(THEME_COLOR)
                      .Tooltip("If enabled, will show a check's logic when hovering over it."));
-    SohGui::mSohMenu->AddSearchWidget({ showLogicWidget, "Randomizer", "Check Tracker", "General Settings" });
+    SohGui::GetSohMenu()->AddSearchWidget({ showLogicWidget, "Randomizer", "Check Tracker", "General Settings" });
 
     checkAvailabilityWidget = { .name = "Enable Available Checks", .type = WidgetType::WIDGET_CVAR_CHECKBOX };
     checkAvailabilityWidget.CVar(CVAR_TRACKER_CHECK("EnableAvailableChecks"))
@@ -2548,7 +2581,3 @@ void RegisterCheckTrackerWidgets() {
 
 static RegisterMenuInitFunc menuInitFunc(RegisterCheckTrackerWidgets);
 } // namespace CheckTracker
-
-
-
-

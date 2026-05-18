@@ -19,7 +19,6 @@
 #ifdef __SWITCH__
 #include <port/switch/SwitchImpl.h>
 #endif
-#include "SohMenu.h"
 #include "include/global.h"
 #include "include/z64audio.h"
 #include "soh/SaveManager.h"
@@ -34,6 +33,7 @@
 #include "soh/Enhancements/TimeDisplay/TimeDisplay.h"
 #include "soh/Network/Archipelago/ArchipelagoSettingsWindow.h"
 #include "soh/Network/Archipelago/ArchipelagoConsoleWindow.h"
+#include "soh/Network/Archipelago/ArchipelagoHintWindow.h"
 #include "soh/Enhancements/mod_menu.h"
 #include "soh/Network/Anchor/Anchor.h"
 
@@ -48,6 +48,9 @@ static const inline std::vector<std::pair<const char*, const char*>> audioBacken
 #endif
 #if defined(__linux)
     { "pulse", "PulseAudio" },
+#endif
+#ifdef __APPLE__
+    { "coreaudio", "Core Audio" },
 #endif
     { "sdl", "SDL Audio" }
 };
@@ -67,8 +70,6 @@ std::string GetWindowButtonText(const char* text, bool menuOpen) {
 }
 
 // MARK: - Delegates
-
-std::shared_ptr<SohMenuBar> mSohMenuBar;
 
 std::shared_ptr<Ship::GuiWindow> mConsoleWindow;
 std::shared_ptr<SohStatsWindow> mStatsWindow;
@@ -90,14 +91,15 @@ std::shared_ptr<MessageViewer> mMessageViewerWindow;
 std::shared_ptr<GameplayStatsWindow> mGameplayStatsWindow;
 std::shared_ptr<CheckTracker::CheckTrackerSettingsWindow> mCheckTrackerSettingsWindow;
 std::shared_ptr<CheckTracker::CheckTrackerWindow> mCheckTrackerWindow;
-std::shared_ptr<EntranceTrackerSettingsWindow> mEntranceTrackerSettingsWindow;
-std::shared_ptr<EntranceTrackerWindow> mEntranceTrackerWindow;
+std::shared_ptr<EntranceTracker::EntranceTrackerSettingsWindow> mEntranceTrackerSettingsWindow;
+std::shared_ptr<EntranceTracker::EntranceTrackerWindow> mEntranceTrackerWindow;
 std::shared_ptr<ItemTrackerSettingsWindow> mItemTrackerSettingsWindow;
 std::shared_ptr<ItemTrackerWindow> mItemTrackerWindow;
 std::shared_ptr<TimeSplitWindow> mTimeSplitWindow;
 std::shared_ptr<PlandomizerWindow> mPlandomizerWindow;
 std::shared_ptr<ArchipelagoSettingsWindow> mArchipelagoSettingsWindow;
 std::shared_ptr<ArchipelagoConsoleWindow> mArchipelagoConsoleWindow;
+std::shared_ptr<ArchipelagoHintWindow> mArchipelagoHintWindow;
 std::shared_ptr<SohModalWindow> mModalWindow;
 std::shared_ptr<Notification::Window> mNotificationWindow;
 std::shared_ptr<TimeDisplayWindow> mTimeDisplayWindow;
@@ -107,23 +109,26 @@ UIWidgets::Colors GetMenuThemeColor() {
     return mSohMenu->GetMenuThemeColor();
 }
 
-void SetupGuiElements() {
+std::shared_ptr<SohMenu> GetSohMenu() {
+    return mSohMenu;
+}
+
+void SetupMenu() {
     auto gui = Ship::Context::GetInstance()->GetWindow()->GetGui();
-
-    /*mSohMenuBar = std::make_shared<SohMenuBar>(CVAR_MENU_BAR_OPEN, CVarGetInteger(CVAR_MENU_BAR_OPEN, 0));
-    gui->SetMenuBar(std::reinterpret_pointer_cast<Ship::GuiMenuBar>(mSohMenuBar));
-
-    if (!gui->GetMenuBar() && !CVarGetInteger("gSettings.DisableMenuShortcutNotify", 0)) {
-#if defined(__SWITCH__) || defined(__WIIU__)
-        gui->GetGameOverlay()->TextDrawNotification(30.0f, true, "Press - to access enhancements menu");
-#else
-        gui->GetGameOverlay()->TextDrawNotification(30.0f, true, "Press F1 to access enhancements menu");
-        gui->GetGameOverlay()->TextDrawNotification(30.0f, true, "Press F2 to enable the mouse cursor");
-#endif
-    }*/
-
     mSohMenu = std::make_shared<SohMenu>(CVAR_WINDOW("Menu"), "Port Menu");
     gui->SetMenu(mSohMenu);
+
+    mModalWindow = std::make_shared<SohModalWindow>(CVAR_WINDOW("ModalWindow"), "Modal Window");
+    gui->AddGuiWindow(mModalWindow);
+    mModalWindow->Show();
+}
+
+void SetupMenuElements() {
+    mSohMenu->AddMenuElements();
+}
+
+void SetupGuiElements() {
+    auto gui = Ship::Context::GetInstance()->GetWindow()->GetGui();
 
     mConsoleWindow = std::make_shared<SohConsoleWindow>(CVAR_WINDOW("SohConsole"), "Console##SoH", ImVec2(820, 630));
     gui->AddGuiWindow(mConsoleWindow);
@@ -181,10 +186,10 @@ void SetupGuiElements() {
     mCheckTrackerSettingsWindow = std::make_shared<CheckTracker::CheckTrackerSettingsWindow>(
         CVAR_WINDOW("CheckTrackerSettings"), "Check Tracker Settings", ImVec2(600, 375));
     gui->AddGuiWindow(mCheckTrackerSettingsWindow);
-    mEntranceTrackerWindow =
-        std::make_shared<EntranceTrackerWindow>(CVAR_WINDOW("EntranceTracker"), "Entrance Tracker", ImVec2(500, 750));
+    mEntranceTrackerWindow = std::make_shared<EntranceTracker::EntranceTrackerWindow>(
+        CVAR_WINDOW("EntranceTracker"), "Entrance Tracker", ImVec2(500, 750));
     gui->AddGuiWindow(mEntranceTrackerWindow);
-    mEntranceTrackerSettingsWindow = std::make_shared<EntranceTrackerSettingsWindow>(
+    mEntranceTrackerSettingsWindow = std::make_shared<EntranceTracker::EntranceTrackerSettingsWindow>(
         CVAR_WINDOW("EntranceTrackerSettings"), "Entrance Tracker Settings", ImVec2(600, 375));
     gui->AddGuiWindow(mEntranceTrackerSettingsWindow);
     mItemTrackerWindow =
@@ -204,9 +209,9 @@ void SetupGuiElements() {
     mArchipelagoConsoleWindow = std::make_shared<ArchipelagoConsoleWindow>(CVAR_WINDOW("ArchipelagoConsoleWindow"),
                                                                            "Archipelago Console", ImVec2(600, 550));
     gui->AddGuiWindow(mArchipelagoConsoleWindow);
-    mModalWindow = std::make_shared<SohModalWindow>(CVAR_WINDOW("ModalWindow"), "Modal Window");
-    gui->AddGuiWindow(mModalWindow);
-    mModalWindow->Show();
+    mArchipelagoHintWindow = std::make_shared<ArchipelagoHintWindow>(CVAR_WINDOW("ArchipelagoHintWindow"),
+                                                                     "Archipelago Hints", ImVec2(300, 200));
+    gui->AddGuiWindow(mArchipelagoHintWindow);
     mNotificationWindow = std::make_shared<Notification::Window>(CVAR_WINDOW("Notifications"), "Notifications Window");
     gui->AddGuiWindow(mNotificationWindow);
     mNotificationWindow->Show();
@@ -242,13 +247,13 @@ void Destroy() {
     mStatsWindow = nullptr;
     mConsoleWindow = nullptr;
     mGfxDebuggerWindow = nullptr;
-    mSohMenuBar = nullptr;
     mInputViewer = nullptr;
     mInputViewerSettings = nullptr;
     mTimeSplitWindow = nullptr;
     mPlandomizerWindow = nullptr;
     mArchipelagoSettingsWindow = nullptr;
     mArchipelagoConsoleWindow = nullptr;
+    mArchipelagoHintWindow = nullptr;
     mTimeDisplayWindow = nullptr;
     mAnchorRoomWindow = nullptr;
 }
@@ -256,6 +261,18 @@ void Destroy() {
 void RegisterPopup(std::string title, std::string message, std::string button1, std::string button2,
                    std::function<void()> button1callback, std::function<void()> button2callback) {
     mModalWindow->RegisterPopup(title, message, button1, button2, button1callback, button2callback);
+}
+
+size_t PopupsQueued() {
+    return mModalWindow->PopupsQueued();
+}
+
+bool DismissPopup(std::string title) {
+    if (mModalWindow->IsPopupOpen(title)) {
+        mModalWindow->DismissPopup();
+        return true;
+    }
+    return false;
 }
 
 void ShowRandomizerSettingsMenu() {
