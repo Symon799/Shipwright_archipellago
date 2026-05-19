@@ -1,6 +1,7 @@
 #include "randomizer_check_tracker.h"
 #include "randomizer_entrance_tracker.h"
 #include "randomizer_item_tracker.h"
+#include "check_tracker_visibility_debug.h"
 #include "map_tracker_internal.h"
 #include "randomizerTypes.h"
 #include "soh/OTRGlobals.h"
@@ -1162,7 +1163,8 @@ void CheckTrackerWindow::DrawElement() {
             UIWidgets::CVarCheckbox(
                 "Debug", CHECK_TRACKER_MAP_DEBUG_CVAR,
                 UIWidgets::CheckboxOptions(
-                    { { .tooltip = "Show map hover debug details and the unassigned in-game tag list." } })
+                    { { .tooltip =
+                            "Map debug tab, pack issues, and check list export (logs/check_tracker_visibility_debug.txt)." } })
                     .Color(THEME_COLOR));
             showMapDebugDetails = CVarGetInteger(CHECK_TRACKER_MAP_DEBUG_CVAR, 0);
 
@@ -1171,6 +1173,7 @@ void CheckTrackerWindow::DrawElement() {
                     mapTrackerState.assetsRoot.empty() ? GetMapTrackerAssetsRootAbsoluteString() : mapTrackerState.assetsRoot.string();
                 std::string assetsText = "Assets: " + activeAssetsPath;
                 ImGui::TextWrapped("%s", assetsText.c_str());
+                DrawCheckTrackerVisibilityDebugControls();
             }
         }
         bool hasInlineHeaderToggle = false;
@@ -1787,8 +1790,12 @@ bool IsCheckShuffled(RandomizerCheck rc) {
                (loc->GetRCType() != RCTYPE_STONE_FAIRY || showStoneFairies) &&
                (loc->GetRCType() != RCTYPE_BEAN_FAIRY || showBeanFairies) &&
                (loc->GetRCType() != RCTYPE_SONG_FAIRY || showSongFairies) &&
-               (loc->GetRCType() != RCTYPE_SMALL_KEY || showKeysanity) &&
-               (loc->GetRCType() != RCTYPE_BOSS_KEY || showBossKeysanity) &&
+               (loc->GetRCType() != RCTYPE_SMALL_KEY || showKeysanity ||
+                OTRGlobals::Instance->gRandoContext->GetItemLocation(rc)->GetPlacedRandomizerGet() !=
+                    loc->GetVanillaItem()) &&
+               (loc->GetRCType() != RCTYPE_BOSS_KEY || showBossKeysanity ||
+                OTRGlobals::Instance->gRandoContext->GetItemLocation(rc)->GetPlacedRandomizerGet() !=
+                    loc->GetVanillaItem()) &&
                (loc->GetRCType() != RCTYPE_GANON_BOSS_KEY || showGanonBossKey) &&
                (rc != RC_KAK_100_GOLD_SKULLTULA_REWARD || show100SkullReward) &&
                (loc->GetRCType() != RCTYPE_GF_KEY && rc != RC_TH_FREED_CARPENTERS ||

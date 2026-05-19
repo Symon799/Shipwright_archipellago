@@ -14,6 +14,7 @@
                 "Ninja"
             ],
             "windows": {
+                "command": "${env:ProgramFiles}\\CMake\\bin\\cmake.exe",
                 "args": [
                     "-S",
                     ".",
@@ -24,8 +25,18 @@
                     "-T",
                     "v143",
                     "-A",
-                    "x64"
-                ]
+                    "x64",
+                    "-DBUILD_REMOTE_CONTROL=ON"
+                ],
+                "options": {
+                    "shell": {
+                        "executable": "C:\\Windows\\System32\\cmd.exe",
+                        "args": ["/d", "/c"]
+                    }
+                }
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
             },
             "group": "build",
             "problemMatcher": []
@@ -42,15 +53,116 @@
                 "--parallel"
             ],
             "windows": {
+                "command": "${env:ProgramFiles}\\CMake\\bin\\cmake.exe",
                 "args": [
                     "--build",
-                    "./build/x64",
+                    "build/x64",
                     "--target",
-                    "GenerateSohOtr"
-                ]
+                    "GenerateSohOtr",
+                    "--config",
+                    "Debug"
+                ],
+                "options": {
+                    "shell": {
+                        "executable": "C:\\Windows\\System32\\cmd.exe",
+                        "args": ["/d", "/c"]
+                    }
+                }
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
             },
             "group": "build",
             "problemMatcher": []
+        },
+        {
+            "label": "Build soh",
+            "type": "shell",
+            "command": "cmake",
+            "args": [
+                "--build",
+                "build-cmake",
+                "--target",
+                "soh",
+                "--parallel"
+            ],
+            "windows": {
+                "command": "${env:ProgramFiles}\\CMake\\bin\\cmake.exe",
+                "args": [
+                    "--build",
+                    "build/x64",
+                    "--config",
+                    "Debug",
+                    "--target",
+                    "soh"
+                ],
+                "options": {
+                    "shell": {
+                        "executable": "C:\\Windows\\System32\\cmd.exe",
+                        "args": ["/d", "/c"]
+                    }
+                }
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "dependsOn": [
+                "Generate SOH OTR"
+            ],
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "showReuseMessage": false
+            },
+            "problemMatcher": [
+                "$msCompile"
+            ]
+        },
+        {
+            "label": "Build soh (Release)",
+            "type": "shell",
+            "command": "cmake",
+            "args": [
+                "--build",
+                "build-cmake",
+                "--config",
+                "Release",
+                "--target",
+                "soh",
+                "--parallel"
+            ],
+            "windows": {
+                "command": "${env:ProgramFiles}\\CMake\\bin\\cmake.exe",
+                "args": [
+                    "--build",
+                    "build/x64",
+                    "--config",
+                    "Release",
+                    "--target",
+                    "soh"
+                ],
+                "options": {
+                    "shell": {
+                        "executable": "C:\\Windows\\System32\\cmd.exe",
+                        "args": ["/d", "/c"]
+                    }
+                }
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "dependsOn": [
+                "Generate SOH OTR"
+            ],
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": [
+                "$msCompile"
+            ]
         },
         {
             "label": "Build Project",
@@ -58,19 +170,103 @@
             "command": "cmake",
             "args": [
                 "--build",
-                "build-cmake"
+                "build-cmake",
+                "--parallel"
             ],
             "windows": {
+                "command": "${env:ProgramFiles}\\CMake\\bin\\cmake.exe",
                 "args": [
                     "--build",
-                    "./build/x64"
-                ]
+                    "build/x64",
+                    "--config",
+                    "Debug"
+                ],
+                "options": {
+                    "shell": {
+                        "executable": "C:\\Windows\\System32\\cmd.exe",
+                        "args": ["/d", "/c"]
+                    }
+                }
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
             },
             "group": {
                 "kind": "build",
                 "isDefault": true
             },
-            "dependsOn": ["Generate SOH OTR"],
+            "dependsOn": [
+                "Generate SOH OTR"
+            ],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": [
+                "$msCompile"
+            ]
+        },
+        {
+            "label": "Build Project (Release)",
+            "type": "shell",
+            "command": "cmake",
+            "args": [
+                "--build",
+                "build-cmake",
+                "--config",
+                "Release",
+                "--parallel"
+            ],
+            "windows": {
+                "command": "${env:ProgramFiles}\\CMake\\bin\\cmake.exe",
+                "args": [
+                    "--build",
+                    "build/x64",
+                    "--config",
+                    "Release"
+                ],
+                "options": {
+                    "shell": {
+                        "executable": "C:\\Windows\\System32\\cmd.exe",
+                        "args": ["/d", "/c"]
+                    }
+                }
+            },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "group": "build",
+            "dependsOn": [
+                "Generate SOH OTR"
+            ],
+            "problemMatcher": [
+                "$msCompile"
+            ]
+        },
+        {
+            "label": "Run soh (Release)",
+            "type": "shell",
+            "command": "${workspaceFolder}/x64/Release/soh.exe",
+            "windows": {
+                "command": "${workspaceFolder}\\x64\\Release\\soh.exe",
+                "options": {
+                    "shell": {
+                        "executable": "C:\\Windows\\System32\\cmd.exe",
+                        "args": ["/d", "/c"]
+                    },
+                    "cwd": "${workspaceFolder}/x64/Release"
+                }
+            },
+            "options": {
+                "cwd": "${workspaceFolder}/x64/Release"
+            },
+            "dependsOn": [
+                "Build soh (Release)"
+            ],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated"
+            },
             "problemMatcher": []
         },
         {
@@ -80,7 +276,9 @@
                 "Setup CMake Project",
                 "Generate SOH OTR",
                 "Build Project"
-            ]
+            ],
+            "group": "build",
+            "problemMatcher": []
         }
     ]
 }

@@ -1,0 +1,21 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Release",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/x64/Release/soh.exe",
+            "cwd": "${workspaceFolder}/x64/Release",
+            "preLaunchTask": "Build soh (Release)"
+        },
+        {
+            "name": "Debug",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/x64/Debug/soh.exe",
+            "cwd": "${workspaceFolder}/x64/Debug",
+            "preLaunchTask": "Build soh"
+        }
+    ]
+}

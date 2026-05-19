@@ -1,0 +1,27 @@
+{
+    "terminal.integrated.automationProfile.windows": {
+        "path": "C:\\WINDOWS\\System32\\cmd.exe"
+    },
+    "cmake.sourceDirectory": "${workspaceFolder}",
+    "cmake.buildDirectory": "${workspaceFolder}/build/x64",
+    "cmake.generator": "Visual Studio 17 2022",
+    "cmake.toolset": "v143",
+    "cmake.platform": "x64",
+    "cmake.preferredGenerators": [
+        "Visual Studio 17 2022"
+    ],
+    "cmake.buildTarget": "soh",
+    "cmake.defaultBuildType": "Release",
+    "cmake.configureOnOpen": false,
+    "cmake.configureSettings": {
+        "CMAKE_VS_PLATFORM_NAME": "x64",
+        "BUILD_REMOTE_CONTROL": "ON"
+    },
+    "cmake.cmakePath": "C:\\Program Files\\CMake\\bin\\cmake.exe",
+    "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+    "debug.onTaskErrors": "showErrors",
+    "files.associations": {
+        "*.inc": "c",
+        "*.h": "c"
+    }
+}

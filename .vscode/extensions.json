@@ -1,0 +1,10 @@
+{
+    "recommendations": [
+        "ms-vscode.cmake-tools",
+        "anysphere.cpptools",
+        "vadimcn.vscode-lldb"
+    ],
+    "unwantedRecommendations": [
+        "ms-vscode.cpptools"
+    ]
+}

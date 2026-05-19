@@ -1,3 +1,4 @@
+#include "check_tracker_visibility_debug.h"
 #include "map_tracker_internal.h"
 #include "soh/OTRGlobals.h"
 #include "soh/SohGui/UIWidgets.hpp"
@@ -107,6 +108,9 @@ ImVec4 ScaleMapTabColor(const ImVec4& color, float scale) {
 }
 
 void DrawMapTrackerIssuesTab() {
+    DrawCheckTrackerVisibilityDebugControls();
+    ImGui::Separator();
+
     auto drawIssueCategory = [](const char* categoryName, const std::vector<MapIssueEntry>& issues, const char* emptyText,
                                 const ImVec4& color) {
         std::string headerLabel = fmt::format("{} ({})", categoryName, issues.size());

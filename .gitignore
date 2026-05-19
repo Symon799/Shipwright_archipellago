@@ -7,6 +7,10 @@ __pycache__/
 # Text editor remnants
 .vscode/*
 !.vscode/tasks.json
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/extensions.json
+!.vscode/keybindings.json
 
 .vs/
 .idea/

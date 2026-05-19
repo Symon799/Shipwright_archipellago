@@ -52,14 +52,28 @@ ArchipelagoClient& ArchipelagoClient::GetInstance() {
 }
 
 bool ArchipelagoClient::StartClient() {
+    const std::string newUri = CVarGetString(CVAR_REMOTE_ARCHIPELAGO("ServerAddress"), "localhost:38281");
+    const std::string newPassword = CVarGetString(CVAR_REMOTE_ARCHIPELAGO("Password"), "");
+    const std::string newSlot = CVarGetString(CVAR_REMOTE_ARCHIPELAGO("SlotName"), "");
+
+    // Already connected (e.g. via ImGui): do not reset the client or scouts never complete.
+    if (apClient != nullptr && apClient->get_state() == APClient::State::SLOT_CONNECTED && !disconnecting) {
+        if (uri == newUri && password == newPassword && GetSlotName() == newSlot) {
+            if (CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatus"), 0) != 4) {
+                StartLocationScouts();
+            }
+            return true;
+        }
+    }
+
     if (apClient != nullptr) {
         apClient.reset();
     }
 
     disconnecting = false;
     retries = 0;
-    uri = CVarGetString(CVAR_REMOTE_ARCHIPELAGO("ServerAddress"), "localhost:38281");
-    password = CVarGetString(CVAR_REMOTE_ARCHIPELAGO("Password"), "");
+    uri = newUri;
+    password = newPassword;
 
     uuid = ap_get_uuid(Ship::Context::GetPathRelativeToAppDirectory("ap-client-uuid"));
     const std::string cert = Ship::Context::LocateFileAcrossAppDirs("networking/cacert.pem");
@@ -173,6 +187,9 @@ bool ArchipelagoClient::StartClient() {
             requests.emplace_back("_read_location_name_groups_" + game);
         }
         apClient->Get(requests);
+
+        ArchipelagoClient::StartLocationScouts();
+        ArchipelagoClient::InitForeignHints();
     });
 
     apClient->set_slot_refused_handler([&](const std::list<std::string>& msgs) {
@@ -382,10 +399,8 @@ bool ArchipelagoClient::StartClient() {
             }
         }
 
-        // after getting grouping data, fetch location scouts
         if (groups_received) {
-            ArchipelagoClient::StartLocationScouts();
-            ArchipelagoClient::InitForeignHints();
+            InitForeignHints();
         }
     });
 
@@ -446,6 +461,10 @@ void ArchipelagoClient::GameLoaded() {
 }
 
 void ArchipelagoClient::StartLocationScouts() {
+    if (apClient == nullptr || apClient->get_state() != APClient::State::SLOT_CONNECTED) {
+        return;
+    }
+
     std::set<int64_t> missing_loc_set = apClient->get_missing_locations();
     std::set<int64_t> found_loc_set = apClient->get_checked_locations();
     std::list<int64_t> location_list;
@@ -455,6 +474,12 @@ void ArchipelagoClient::StartLocationScouts() {
     for (const int64_t loc_id : found_loc_set) {
         location_list.emplace_back(loc_id);
     }
+
+    if (location_list.empty()) {
+        CVarSetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatus"), 4);
+        return;
+    }
+
     apClient->LocationScouts(location_list);
 }
 
