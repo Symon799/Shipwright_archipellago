@@ -6,6 +6,7 @@
 #include "soh/SohGui/UIWidgets.hpp"
 
 #include <libultraship/libultraship.h>
+#include <unordered_set>
 
 namespace CheckTracker {
 
@@ -61,6 +62,12 @@ void UpdateAreas(RandomizerCheckArea area);
 void UpdateAllOrdering();
 void UpdateAllAreas();
 void RecalculateAllAreaTotals();
+
+// Archipelago: cache of scouted location checks (synced from AP client / slot data).
+void RefreshArchipelagoScoutedChecks();
+bool IsArchipelagoScoutedCheck(RandomizerCheck rc);
+const std::unordered_set<RandomizerCheck>& GetArchipelagoScoutedChecks();
+const std::vector<std::string>& GetArchipelagoScoutedUnresolvedLocationNames();
 void SpoilAreaFromCheck(RandomizerCheck rc);
 void RecalculateAvailableChecks(RandomizerRegion startingRegion = RR_ROOT, RandoAgeTime startingAgeTime = RAT_NONE);
 void LoadFromPreset(nlohmann::json info);

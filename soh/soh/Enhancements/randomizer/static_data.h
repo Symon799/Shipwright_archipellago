@@ -2,6 +2,8 @@
 
 #include <array>
 #include <map>
+#include <optional>
+#include <string>
 #include <unordered_map>
 #include "randomizerTypes.h"
 #include "item.h"
@@ -68,6 +70,10 @@ class StaticData {
     static std::vector<RandomizerHint> oldVerHintOrder;
     static uint16_t oldVerGossipStoneStart;
     static std::unordered_map<std::string, RandomizerCheck> locationNameToEnum;
+    static std::optional<RandomizerCheck> TryResolveLocationName(const std::string& locationName);
+    // Extra AP website / apworld names that differ from Location::GetName() (spoiler name).
+    static void RegisterArchipelagoLocationAlias(const std::string& apLocationName, RandomizerCheck rc);
+    static void InitArchipelagoLocationAliases();
     static std::unordered_map<std::string, RandomizerGet> itemNameToEnum;
     static std::unordered_map<uint32_t, CustomMessage> hintNames;
     static std::unordered_map<std::string, uint32_t> hintNameToEnum;

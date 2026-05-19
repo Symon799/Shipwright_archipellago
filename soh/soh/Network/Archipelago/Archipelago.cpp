@@ -238,6 +238,11 @@ bool ArchipelagoClient::StartClient() {
         }
 
         CVarSetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatus"), 4); // locations scouted
+
+        CheckTracker::RefreshArchipelagoScoutedChecks();
+        if (IS_RANDO) {
+            CheckTracker::RecalculateAllAreaTotals();
+        }
     }); // todo maybe move these functions to a lambda, since they don't have to be static anymore
 
     apClient->set_location_checked_handler([&](const std::list<int64_t> locations) {
@@ -476,7 +481,7 @@ void ArchipelagoClient::StartLocationScouts() {
     }
 
     if (location_list.empty()) {
-        CVarSetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatus"), 4);
+        SPDLOG_WARN("[Archipelago] StartLocationScouts: no locations to scout (missing + checked lists empty)");
         return;
     }
 
@@ -1375,7 +1380,12 @@ extern "C" void Archipelago_InitSaveFile() {
                                     ARRAY_COUNT(gSaveContext.ship.quest.data.archipelago.roomPass));
 
     for (uint32_t i = 0; i < scoutedItems.size(); i++) {
-        RandomizerCheck rc = Rando::StaticData::locationNameToEnum[scoutedItems[i].locationName];
+        const std::optional<RandomizerCheck> rcOpt =
+            Rando::StaticData::TryResolveLocationName(scoutedItems[i].locationName);
+        if (!rcOpt.has_value()) {
+            continue;
+        }
+        const RandomizerCheck rc = *rcOpt;
 
         SohUtils::CopyStringToCharArray(gSaveContext.ship.quest.data.archipelago.locations[rc].itemName,
                                         scoutedItems[i].itemName,

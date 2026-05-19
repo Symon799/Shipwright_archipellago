@@ -451,6 +451,9 @@ void Context::ParseArchipelago() {
     ParseArchipelagoTricks();
     ParseArchipelagoExcludedLocations();
     ParseArchipelagoHints();
+
+    CheckTracker::RefreshArchipelagoScoutedChecks();
+    CheckTracker::RecalculateAllAreaTotals();
 }
 
 void Context::ParseHashIconIndexesJson(nlohmann::json spoilerFileJson) {
@@ -491,6 +494,7 @@ void Context::ParseArchipelagoOptions() {
     // load those in instead.
 
     nlohmann::json slotData = ArchipelagoClient::GetInstance().GetSlotData();
+    try {
     const auto parseNumericSlotOption = [&slotData](const char* key, uint8_t defaultValue) -> uint8_t {
         const auto valueIt = slotData.find(key);
         if (valueIt == slotData.end() || valueIt->is_null()) {
@@ -524,6 +528,33 @@ void Context::ParseArchipelagoOptions() {
                 }
                 return value > std::numeric_limits<uint8_t>::max() ? std::numeric_limits<uint8_t>::max()
                                                                    : static_cast<uint8_t>(value);
+            } catch (...) {
+                return defaultValue;
+            }
+        }
+
+        return defaultValue;
+    };
+
+    const auto parseUint32SlotOption = [&slotData](const char* key, uint32_t defaultValue) -> uint32_t {
+        const auto valueIt = slotData.find(key);
+        if (valueIt == slotData.end() || valueIt->is_null()) {
+            return defaultValue;
+        }
+
+        if (valueIt->is_number_unsigned()) {
+            return valueIt->get<uint32_t>();
+        }
+
+        if (valueIt->is_number_integer()) {
+            const int64_t value = valueIt->get<int64_t>();
+            return value < 0 ? defaultValue : static_cast<uint32_t>(value);
+        }
+
+        if (valueIt->is_string()) {
+            try {
+                const uint64_t value = std::stoull(valueIt->get_ref<const std::string&>());
+                return static_cast<uint32_t>(value);
             } catch (...) {
                 return defaultValue;
             }
@@ -945,7 +976,12 @@ void Context::ParseArchipelagoOptions() {
     mOptions[RSK_LOCK_OVERWORLD_DOORS].Set(slotData["lock_overworld_doors"]);
     mOptions[RSK_SHUFFLE_GRASS].Set(slotData["shuffle_grass"]);
     mOptions[RSK_ROCS_FEATHER].Set(slotData["rocs_feather"]);
-    SetSeed(slotData["archipelago_seed"]);
+    SetSeed(parseUint32SlotOption("archipelago_seed", 0));
+    } catch (const std::exception& e) {
+        LUSLOG_ERROR("Failed to parse Archipelago slot data: %s", e.what());
+    } catch (...) {
+        LUSLOG_ERROR("%s", "Failed to parse Archipelago slot data");
+    }
 }
 
 void Context::ParseArchipelagoTricks() {
@@ -993,7 +1029,11 @@ void Context::ParseArchipelagoItemsLocations(const std::vector<ArchipelagoClient
     }
 
     for (const ArchipelagoClient::ApItem& ap_item : scouted_items) {
-        const RandomizerCheck rc = StaticData::locationNameToEnum[ap_item.locationName];
+        const std::optional<RandomizerCheck> rcOpt = StaticData::TryResolveLocationName(ap_item.locationName);
+        if (!rcOpt.has_value()) {
+            continue;
+        }
+        const RandomizerCheck rc = *rcOpt;
 
         if (Slot == ap_item.playerNumber) {
             // Our item
@@ -1026,9 +1066,12 @@ void Context::ParseArchipelagoItemsLocations(const std::vector<ArchipelagoClient
     for (auto it = vanillaShopItems.begin(); it != vanillaShopItems.end(); it++) {
         std::string location = it.key();
         std::string itemName = it.value();
-        const RandomizerCheck rc = StaticData::locationNameToEnum[location];
+        const std::optional<RandomizerCheck> rcOpt = StaticData::TryResolveLocationName(location);
+        if (!rcOpt.has_value()) {
+            continue;
+        }
         const RandomizerGet item = StaticData::itemNameToEnum[itemName];
-        itemLocationTable[rc].SetPlacedItem(item);
+        itemLocationTable[*rcOpt].SetPlacedItem(item);
     }
 
     // Set all shop, scrub and merchant prices
@@ -1036,8 +1079,11 @@ void Context::ParseArchipelagoItemsLocations(const std::vector<ArchipelagoClient
     for (auto it = shopPrices.begin(); it != shopPrices.end(); it++) {
         std::string location = it.key();
         uint16_t price = it.value();
-        const RandomizerCheck rc = StaticData::locationNameToEnum[location];
-        itemLocationTable[rc].SetCustomPrice(price);
+        const std::optional<RandomizerCheck> rcOpt = StaticData::TryResolveLocationName(location);
+        if (!rcOpt.has_value()) {
+            continue;
+        }
+        itemLocationTable[*rcOpt].SetCustomPrice(price);
     }
 }
 void Context::ParseArchipelagoHints() {

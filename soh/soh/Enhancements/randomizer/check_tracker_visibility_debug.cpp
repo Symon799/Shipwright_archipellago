@@ -9,6 +9,7 @@ extern "C" {
 #include "map_tracker_internal.h"
 #include "randomizer_check_ids.h"
 #include "randomizer_check_tracker.h"
+#include "static_data.h"
 #include "soh/OTRGlobals.h"
 #include "soh/cvar_prefixes.h"
 
@@ -199,6 +200,12 @@ std::string WriteCheckTrackerVisibilityDebugLog() {
     std::error_code ec;
     std::filesystem::create_directories(logDir, ec);
 
+#ifdef IS_ARCHIPELAGO
+    if (IS_ARCHIPELAGO) {
+        CheckTracker::RefreshArchipelagoScoutedChecks();
+    }
+#endif
+
     std::ofstream out(logPath, std::ios::trunc);
     if (!out.is_open()) {
         SPDLOG_ERROR("[CheckTrackerVisibility] Failed to open {}", logPath.string());
@@ -256,8 +263,26 @@ std::string WriteCheckTrackerVisibilityDebugLog() {
     out << "RSK_KEYSANITY=" << KeysanitySettingLabel() << '\n';
 #ifdef IS_ARCHIPELAGO
     if (IS_ARCHIPELAGO) {
-        const std::vector<ArchipelagoClient::ApItem>& scoutedItems = ArchipelagoClient::GetInstance().GetScoutedItems();
+        ArchipelagoClient& apClient = ArchipelagoClient::GetInstance();
+        const std::vector<ArchipelagoClient::ApItem>& scoutedItems = apClient.GetScoutedItems();
+        const std::unordered_set<RandomizerCheck>& scoutedCache = CheckTracker::GetArchipelagoScoutedChecks();
+        const std::vector<std::string>& unresolvedNames = CheckTracker::GetArchipelagoScoutedUnresolvedLocationNames();
+        const int connectionStatus = CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatus"), 0);
+
+        out << "archipelago_connected=" << (apClient.IsConnected() ? "yes" : "no") << '\n';
+        out << "archipelago_connection_status=" << connectionStatus << '\n';
         out << "archipelago_scouted_count=" << scoutedItems.size() << '\n';
+        out << "archipelago_scouted_mapped_cache_count=" << scoutedCache.size() << '\n';
+        out << "archipelago_scouted_unresolved_name_count=" << unresolvedNames.size() << '\n';
+
+        if (scoutedItems.empty() && scoutedCache.empty() && connectionStatus == 4) {
+            out << "archipelago_export_warning=ConnectionStatus is 4 (scouted) but scout lists are empty; "
+                   "tracker may be using non-AP visibility fallback\n";
+        } else if (scoutedItems.empty() && !scoutedCache.empty()) {
+            out << "archipelago_export_warning=AP client scout vector empty but tracker cache has entries\n";
+        } else if (!scoutedItems.empty() && scoutedCache.empty()) {
+            out << "archipelago_export_warning=AP scout vector populated but tracker cache empty (refresh failed?)\n";
+        }
     }
 #endif
     out << '\n';
@@ -297,14 +322,14 @@ std::string WriteCheckTrackerVisibilityDebugLog() {
         for (const ArchipelagoClient::ApItem& apItem : scoutedItems) {
             scoutedApNames.push_back(apItem.locationName);
 
-            auto rcIt = Rando::StaticData::locationNameToEnum.find(apItem.locationName);
-            if (rcIt == Rando::StaticData::locationNameToEnum.end()) {
-                scoutedNotVisibleLines.push_back(fmt::format("\tunknown_rc\t{}\t(not in locationNameToEnum)",
+            const std::optional<RandomizerCheck> rcOpt = Rando::StaticData::TryResolveLocationName(apItem.locationName);
+            if (!rcOpt.has_value()) {
+                scoutedNotVisibleLines.push_back(fmt::format("\tunknown_rc\t{}\t(not in locationNameToEnum or AP alias)",
                                                              apItem.locationName));
                 continue;
             }
 
-            const RandomizerCheck rc = rcIt->second;
+            const RandomizerCheck rc = *rcOpt;
             const std::string_view sohId = Rando::GetRandomizerCheckTrackerId(rc);
             const bool visible = IsVisibleInCheckTracker(rc);
             if (visible) {

@@ -41,6 +41,7 @@
 #include "location.h"
 #include "item_location.h"
 #include "soh/Enhancements/game-interactor/GameInteractor.h"
+#include "soh/Network/Archipelago/Archipelago.h"
 #include "z64item.h"
 #include "fishsanity.h"
 
@@ -115,6 +116,9 @@ bool fortressNormal;
 u8 fishsanityMode;
 u8 fishsanityPondCount;
 bool fishsanityAgeSplit;
+
+static std::unordered_set<RandomizerCheck> archipelagoScoutedChecks;
+static std::vector<std::string> archipelagoScoutedUnresolvedLocationNames;
 
 // persistent during gameplay
 bool initialized;
@@ -233,7 +237,7 @@ bool hideCollected = false;
 bool showHidden = true;
 bool mystery = false;
 bool showLogicTooltip = false;
-bool enableAvailableChecks = true;
+bool enableAvailableChecks = false;
 bool onlyShowAvailable = false;
 bool showMapDebugDetails = false;
 
@@ -565,11 +569,11 @@ void CheckTrackerLoadGame(int32_t fileNum) {
     }
     ResetMapTrackerState(true);
     LoadSettings();
+    RefreshArchipelagoScoutedChecks();
     TrySetAreas();
     for (auto& entry : Rando::StaticData::GetLocationTable()) {
         RandomizerCheck rc = entry.GetRandomizerCheck();
-        if (rc == RC_UNKNOWN_CHECK || rc == RC_MAX || rc == RC_LINKS_POCKET ||
-            !Rando::StaticData::GetLocation(rc) != RC_UNKNOWN_CHECK) {
+        if (rc == RC_UNKNOWN_CHECK || rc == RC_MAX || rc == RC_LINKS_POCKET) {
             continue;
         }
 
@@ -1036,7 +1040,7 @@ void CheckTrackerWindow::DrawElement() {
     showHidden = CVarGetInteger(CVAR_TRACKER_CHECK("ShowHidden"), 0);
     mystery = CVarGetInteger(CVAR_RANDOMIZER_ENHANCEMENT("MysteriousShuffle"), 0);
     showLogicTooltip = CVarGetInteger(CVAR_TRACKER_CHECK("ShowLogic"), 0);
-    enableAvailableChecks = CVarGetInteger(CVAR_TRACKER_CHECK("EnableAvailableChecks"), 1);
+    enableAvailableChecks = CVarGetInteger(CVAR_TRACKER_CHECK("EnableAvailableChecks"), 0);
     onlyShowAvailable = CVarGetInteger(CVAR_TRACKER_CHECK("OnlyShowAvailable"), 0);
     showMapDebugDetails = CVarGetInteger(CHECK_TRACKER_MAP_DEBUG_CVAR, 0);
 
@@ -1722,6 +1726,181 @@ void LoadSettings() {
     }
 }
 
+struct ApTrackerShuffleToggleGuard {
+    bool alwaysShowGS;
+    bool showShops;
+    bool showOverworldTokens;
+    bool showDungeonTokens;
+    bool showBeans;
+    bool showScrubs;
+    bool showMajorScrubs;
+    bool showMerchants;
+    bool showSongs;
+    bool showBeehives;
+    bool showCows;
+    bool showOverworldFreestanding;
+    bool showDungeonFreestanding;
+    bool showAdultTrade;
+    bool showKokiriSword;
+    bool showMasterSword;
+    bool showHyruleLoach;
+    bool showWeirdEgg;
+    bool showGerudoCard;
+    bool showOverworldPots;
+    bool showDungeonPots;
+    bool showOverworldGrass;
+    bool showDungeonGrass;
+    bool showOverworldCrates;
+    bool showDungeonCrates;
+    bool showTrees;
+    bool showBushes;
+    bool showFrogSongRupees;
+    bool showFountainFairies;
+    bool showStoneFairies;
+    bool showBeanFairies;
+    bool showSongFairies;
+    bool showStartingMapsCompasses;
+    bool showKeysanity;
+    bool showGerudoFortressKeys;
+    bool showBossKeysanity;
+    bool showGanonBossKey;
+    bool showOcarinas;
+    bool show100SkullReward;
+    bool showLinksPocket;
+
+    ApTrackerShuffleToggleGuard() {
+        alwaysShowGS = ::CheckTracker::alwaysShowGS;
+        showShops = ::CheckTracker::showShops;
+        showOverworldTokens = ::CheckTracker::showOverworldTokens;
+        showDungeonTokens = ::CheckTracker::showDungeonTokens;
+        showBeans = ::CheckTracker::showBeans;
+        showScrubs = ::CheckTracker::showScrubs;
+        showMajorScrubs = ::CheckTracker::showMajorScrubs;
+        showMerchants = ::CheckTracker::showMerchants;
+        showSongs = ::CheckTracker::showSongs;
+        showBeehives = ::CheckTracker::showBeehives;
+        showCows = ::CheckTracker::showCows;
+        showOverworldFreestanding = ::CheckTracker::showOverworldFreestanding;
+        showDungeonFreestanding = ::CheckTracker::showDungeonFreestanding;
+        showAdultTrade = ::CheckTracker::showAdultTrade;
+        showKokiriSword = ::CheckTracker::showKokiriSword;
+        showMasterSword = ::CheckTracker::showMasterSword;
+        showHyruleLoach = ::CheckTracker::showHyruleLoach;
+        showWeirdEgg = ::CheckTracker::showWeirdEgg;
+        showGerudoCard = ::CheckTracker::showGerudoCard;
+        showOverworldPots = ::CheckTracker::showOverworldPots;
+        showDungeonPots = ::CheckTracker::showDungeonPots;
+        showOverworldGrass = ::CheckTracker::showOverworldGrass;
+        showDungeonGrass = ::CheckTracker::showDungeonGrass;
+        showOverworldCrates = ::CheckTracker::showOverworldCrates;
+        showDungeonCrates = ::CheckTracker::showDungeonCrates;
+        showTrees = ::CheckTracker::showTrees;
+        showBushes = ::CheckTracker::showBushes;
+        showFrogSongRupees = ::CheckTracker::showFrogSongRupees;
+        showFountainFairies = ::CheckTracker::showFountainFairies;
+        showStoneFairies = ::CheckTracker::showStoneFairies;
+        showBeanFairies = ::CheckTracker::showBeanFairies;
+        showSongFairies = ::CheckTracker::showSongFairies;
+        showStartingMapsCompasses = ::CheckTracker::showStartingMapsCompasses;
+        showKeysanity = ::CheckTracker::showKeysanity;
+        showGerudoFortressKeys = ::CheckTracker::showGerudoFortressKeys;
+        showBossKeysanity = ::CheckTracker::showBossKeysanity;
+        showGanonBossKey = ::CheckTracker::showGanonBossKey;
+        showOcarinas = ::CheckTracker::showOcarinas;
+        show100SkullReward = ::CheckTracker::show100SkullReward;
+        showLinksPocket = ::CheckTracker::showLinksPocket;
+
+        ::CheckTracker::showShops = true;
+        ::CheckTracker::showOverworldTokens = true;
+        ::CheckTracker::showDungeonTokens = true;
+        ::CheckTracker::showBeans = true;
+        ::CheckTracker::showScrubs = true;
+        ::CheckTracker::showMajorScrubs = true;
+        ::CheckTracker::showMerchants = true;
+        ::CheckTracker::showSongs = true;
+        ::CheckTracker::showBeehives = true;
+        ::CheckTracker::showCows = true;
+        ::CheckTracker::showOverworldFreestanding = true;
+        ::CheckTracker::showDungeonFreestanding = true;
+        ::CheckTracker::showAdultTrade = true;
+        ::CheckTracker::showKokiriSword = true;
+        ::CheckTracker::showMasterSword = true;
+        ::CheckTracker::showHyruleLoach = true;
+        ::CheckTracker::showWeirdEgg = true;
+        ::CheckTracker::showGerudoCard = true;
+        ::CheckTracker::showOverworldPots = true;
+        ::CheckTracker::showDungeonPots = true;
+        ::CheckTracker::showOverworldGrass = true;
+        ::CheckTracker::showDungeonGrass = true;
+        ::CheckTracker::showOverworldCrates = true;
+        ::CheckTracker::showDungeonCrates = true;
+        ::CheckTracker::showTrees = true;
+        ::CheckTracker::showBushes = true;
+        ::CheckTracker::showFrogSongRupees = true;
+        ::CheckTracker::showFountainFairies = true;
+        ::CheckTracker::showStoneFairies = true;
+        ::CheckTracker::showBeanFairies = true;
+        ::CheckTracker::showSongFairies = true;
+        ::CheckTracker::showStartingMapsCompasses = true;
+        ::CheckTracker::showKeysanity = true;
+        ::CheckTracker::showGerudoFortressKeys = true;
+        ::CheckTracker::showBossKeysanity = true;
+        ::CheckTracker::showGanonBossKey = true;
+        ::CheckTracker::showOcarinas = true;
+        ::CheckTracker::show100SkullReward = true;
+        ::CheckTracker::showLinksPocket = true;
+        ::CheckTracker::alwaysShowGS = true;
+    }
+
+    ~ApTrackerShuffleToggleGuard() {
+        ::CheckTracker::showShops = showShops;
+        ::CheckTracker::showOverworldTokens = showOverworldTokens;
+        ::CheckTracker::showDungeonTokens = showDungeonTokens;
+        ::CheckTracker::showBeans = showBeans;
+        ::CheckTracker::showScrubs = showScrubs;
+        ::CheckTracker::showMajorScrubs = showMajorScrubs;
+        ::CheckTracker::showMerchants = showMerchants;
+        ::CheckTracker::showSongs = showSongs;
+        ::CheckTracker::showBeehives = showBeehives;
+        ::CheckTracker::showCows = showCows;
+        ::CheckTracker::showOverworldFreestanding = showOverworldFreestanding;
+        ::CheckTracker::showDungeonFreestanding = showDungeonFreestanding;
+        ::CheckTracker::showAdultTrade = showAdultTrade;
+        ::CheckTracker::showKokiriSword = showKokiriSword;
+        ::CheckTracker::showMasterSword = showMasterSword;
+        ::CheckTracker::showHyruleLoach = showHyruleLoach;
+        ::CheckTracker::showWeirdEgg = showWeirdEgg;
+        ::CheckTracker::showGerudoCard = showGerudoCard;
+        ::CheckTracker::showOverworldPots = showOverworldPots;
+        ::CheckTracker::showDungeonPots = showDungeonPots;
+        ::CheckTracker::showOverworldGrass = showOverworldGrass;
+        ::CheckTracker::showDungeonGrass = showDungeonGrass;
+        ::CheckTracker::showOverworldCrates = showOverworldCrates;
+        ::CheckTracker::showDungeonCrates = showDungeonCrates;
+        ::CheckTracker::showTrees = showTrees;
+        ::CheckTracker::showBushes = showBushes;
+        ::CheckTracker::showFrogSongRupees = showFrogSongRupees;
+        ::CheckTracker::showFountainFairies = showFountainFairies;
+        ::CheckTracker::showStoneFairies = showStoneFairies;
+        ::CheckTracker::showBeanFairies = showBeanFairies;
+        ::CheckTracker::showSongFairies = showSongFairies;
+        ::CheckTracker::showStartingMapsCompasses = showStartingMapsCompasses;
+        ::CheckTracker::showKeysanity = showKeysanity;
+        ::CheckTracker::showGerudoFortressKeys = showGerudoFortressKeys;
+        ::CheckTracker::showBossKeysanity = showBossKeysanity;
+        ::CheckTracker::showGanonBossKey = showGanonBossKey;
+        ::CheckTracker::showOcarinas = showOcarinas;
+        ::CheckTracker::show100SkullReward = show100SkullReward;
+        ::CheckTracker::showLinksPocket = showLinksPocket;
+        ::CheckTracker::alwaysShowGS = alwaysShowGS;
+    }
+};
+
+static bool IsCheckShuffledWithApShuffleTypesEnabled(RandomizerCheck rc) {
+    ApTrackerShuffleToggleGuard guard;
+    return IsCheckShuffled(rc);
+}
+
 bool IsCheckShuffled(RandomizerCheck rc) {
     Rando::Location* loc = Rando::StaticData::GetLocation(rc);
     if (loc->GetRCType() == RCTYPE_SHOP) {
@@ -1790,12 +1969,8 @@ bool IsCheckShuffled(RandomizerCheck rc) {
                (loc->GetRCType() != RCTYPE_STONE_FAIRY || showStoneFairies) &&
                (loc->GetRCType() != RCTYPE_BEAN_FAIRY || showBeanFairies) &&
                (loc->GetRCType() != RCTYPE_SONG_FAIRY || showSongFairies) &&
-               (loc->GetRCType() != RCTYPE_SMALL_KEY || showKeysanity ||
-                OTRGlobals::Instance->gRandoContext->GetItemLocation(rc)->GetPlacedRandomizerGet() !=
-                    loc->GetVanillaItem()) &&
-               (loc->GetRCType() != RCTYPE_BOSS_KEY || showBossKeysanity ||
-                OTRGlobals::Instance->gRandoContext->GetItemLocation(rc)->GetPlacedRandomizerGet() !=
-                    loc->GetVanillaItem()) &&
+               (loc->GetRCType() != RCTYPE_SMALL_KEY || showKeysanity) &&
+               (loc->GetRCType() != RCTYPE_BOSS_KEY || showBossKeysanity) &&
                (loc->GetRCType() != RCTYPE_GANON_BOSS_KEY || showGanonBossKey) &&
                (rc != RC_KAK_100_GOLD_SKULLTULA_REWARD || show100SkullReward) &&
                (loc->GetRCType() != RCTYPE_GF_KEY && rc != RC_TH_FREED_CARPENTERS ||
@@ -1809,9 +1984,72 @@ bool IsCheckShuffled(RandomizerCheck rc) {
     return false;
 }
 
+void RefreshArchipelagoScoutedChecks() {
+    if (!IS_ARCHIPELAGO && !ArchipelagoClient::GetInstance().IsConnected()) {
+        return;
+    }
+
+    archipelagoScoutedChecks.clear();
+    archipelagoScoutedUnresolvedLocationNames.clear();
+
+    const std::vector<ArchipelagoClient::ApItem>& scoutedItems = ArchipelagoClient::GetInstance().GetScoutedItems();
+    archipelagoScoutedChecks.reserve(scoutedItems.size());
+    archipelagoScoutedUnresolvedLocationNames.reserve(8);
+
+    for (const ArchipelagoClient::ApItem& apItem : scoutedItems) {
+        const std::optional<RandomizerCheck> rc = Rando::StaticData::TryResolveLocationName(apItem.locationName);
+        if (!rc.has_value()) {
+            archipelagoScoutedUnresolvedLocationNames.push_back(apItem.locationName);
+            continue;
+        }
+
+        archipelagoScoutedChecks.insert(*rc);
+    }
+}
+
+static void MaybeRefreshArchipelagoScoutedChecksFromClient() {
+    if (!IS_ARCHIPELAGO || !archipelagoScoutedChecks.empty()) {
+        return;
+    }
+
+    const std::vector<ArchipelagoClient::ApItem>& scoutedItems = ArchipelagoClient::GetInstance().GetScoutedItems();
+    if (!scoutedItems.empty()) {
+        RefreshArchipelagoScoutedChecks();
+    }
+}
+
+bool IsArchipelagoScoutedCheck(RandomizerCheck rc) {
+    return archipelagoScoutedChecks.find(rc) != archipelagoScoutedChecks.end();
+}
+
+const std::unordered_set<RandomizerCheck>& GetArchipelagoScoutedChecks() {
+    return archipelagoScoutedChecks;
+}
+
+const std::vector<std::string>& GetArchipelagoScoutedUnresolvedLocationNames() {
+    return archipelagoScoutedUnresolvedLocationNames;
+}
+
 bool IsVisibleInCheckTracker(RandomizerCheck rc) {
     auto loc = Rando::StaticData::GetLocation(rc);
     if (IS_RANDO) {
+        if (IS_ARCHIPELAGO) {
+            MaybeRefreshArchipelagoScoutedChecksFromClient();
+            const bool excluded = Rando::Context::GetInstance()->GetItemLocation(rc)->IsExcluded();
+            if (excluded) {
+                return false;
+            }
+            // AP scout list: always show these checks (ignores tracker showGrass/showShops/etc.).
+            if (IsArchipelagoScoutedCheck(rc)) {
+                return true;
+            }
+            if (!archipelagoScoutedChecks.empty()) {
+                return false;
+            }
+            // Scouts not received yet — use seed logic with shuffle-type toggles enabled.
+            return IsCheckShuffledWithApShuffleTypesEnabled(rc);
+        }
+
         return !Rando::Context::GetInstance()->GetItemLocation(rc)->IsExcluded() &&
                (IsCheckShuffled(rc) ||
                 (alwaysShowGS && loc->GetRCType() == RCTYPE_SKULL_TOKEN &&
@@ -2581,7 +2819,7 @@ void RegisterCheckTrackerWidgets() {
                      .Tooltip("If enabled, will show the checks that are available to be collected "
                               "with your current progress."))
         .Callback([&](WidgetInfo& info) {
-            enableAvailableChecks = CVarGetInteger(CVAR_TRACKER_CHECK("EnableAvailableChecks"), 1);
+            enableAvailableChecks = CVarGetInteger(CVAR_TRACKER_CHECK("EnableAvailableChecks"), 0);
             RecalculateAvailableChecks();
         });
 }

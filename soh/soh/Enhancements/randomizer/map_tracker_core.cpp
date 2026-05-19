@@ -16,6 +16,10 @@
 #include "3drando/fill.hpp"
 #include "soh/Enhancements/debugger/performanceTimer.h"
 
+extern "C" {
+#include "variables.h"
+}
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -429,8 +433,8 @@ void SetMapModeEnabled(bool enabled) {
     CVarSetInteger(CHECK_TRACKER_MAP_MODE_CVAR, enabled ? 1 : 0);
 }
 
-static void AddSchemaWarning(MapTrackerState& state, std::string summary, std::string details) {
-    state.warnings.push_back({ std::move(summary), std::move(details) });
+static void AddSchemaWarning(MapTrackerState& state, std::string context, std::string message) {
+    state.warnings.push_back({ context + ": " + message, "" });
 }
 
 std::vector<MapPlacement> ExtractPlacementsFromNode(MapTrackerState& state, const json& node, const std::string& sourceFile,
@@ -884,11 +888,9 @@ std::unordered_map<std::string, RandomizerCheck> BuildGameCheckLookupByMapTracke
         std::string mapTrackerIdKey(mapTrackerId);
         auto existing = checksByMapTrackerId.find(mapTrackerIdKey);
         if (existing != checksByMapTrackerId.end() && existing->second != check) {
-            warnings.push_back(
-                { "Duplicate in-game map tracker id",
-                  fmt::format("Map tracker id '{}' maps to both '{}' and '{}'. Keeping '{}'.", mapTrackerIdKey,
-                              GetCheckDisplayName(existing->second), GetCheckDisplayName(check),
-                              GetCheckDisplayName(existing->second)) });
+            warnings.push_back({ fmt::format("soh_id '{}' duplicate | kept: {} | dropped: {}", mapTrackerIdKey,
+                                             GetCheckDisplayName(existing->second), GetCheckDisplayName(check)),
+                                 "" });
             continue;
         }
 
@@ -904,7 +906,7 @@ std::vector<MapPackAreaFileRef> CollectMapPackAreaFiles(const std::string& resou
     auto context = Ship::Context::GetInstance();
     if (context == nullptr || context->GetResourceManager() == nullptr ||
         context->GetResourceManager()->GetArchiveManager() == nullptr) {
-        warnings.push_back({ "Archive manager unavailable", "Could not list map pack area files from archive." });
+        warnings.push_back({ "Archive manager unavailable — cannot list map pack area files", "" });
         return areaFiles;
     }
 
@@ -951,8 +953,7 @@ std::vector<MapMarker> ParseMapMarkersFromPackAreas(
         json areaJson;
         if (!LoadJsonFromArchiveResource(areaFile.resourcePath, areaJson, parseError)) {
             state.warnings.push_back(
-                { "Failed to parse area file " + areaFile.displayName,
-                  "Parse error: " + parseError + " | Resource: " + areaFile.resourcePath });
+                { fmt::format("{} — parse error: {}", areaFile.displayName, parseError), "" });
             continue;
         }
 
@@ -1003,9 +1004,7 @@ std::vector<MapMarker> ParseMapMarkersFromPackAreas(
             auto checkMatch = checksByMapTrackerId.find(sohId);
             if (checkMatch == checksByMapTrackerId.end()) {
                 unresolvedLinks.push_back(
-                    { "Unmapped soh_id: " + sohId,
-                      "Check \"" + checkName + "\" in " + areaFile.displayName +
-                          " has a soh_id that was not found in in-game checks." });
+                    { fmt::format("soh_id: {} | pack: \"{}\" | {}", sohId, checkName, areaFile.displayName), "" });
                 continue;
             }
 
@@ -1035,8 +1034,7 @@ std::vector<MapMarker> ParseMapMarkersFromPackAreas(
                                           hadSchemaError);
             if (placements.empty()) {
                 state.warnings.push_back(
-                    { "Missing map_locations in " + areaFile.displayName,
-                      "Check \"" + checkName + "\" has no valid map_locations entries." });
+                    { fmt::format("{} | \"{}\" — no valid map_locations", areaFile.displayName, checkName), "" });
                 continue;
             }
 
@@ -1046,8 +1044,7 @@ std::vector<MapMarker> ParseMapMarkersFromPackAreas(
                 marker.mapId = placement.mapId;
                 if (marker.mapId.empty()) {
                     state.warnings.push_back(
-                        { "Invalid marker map id in " + areaFile.displayName,
-                          "Check \"" + checkName + "\" has an empty map_id." });
+                        { fmt::format("{} | \"{}\" — empty map_id", areaFile.displayName, checkName), "" });
                     continue;
                 }
                 marker.packCheckName = checkName.empty() ? sohId : checkName;
@@ -1313,9 +1310,30 @@ static bool BuildMapMarkersAndCheckLinks(MapTrackerState& state, std::vector<Map
         if (!state.linkedChecks.contains(descriptor.check)) {
             state.unassignedCheckIds.push_back(descriptor.check);
             state.unresolvedLinks.push_back(
-                { "Unassigned in-game check: " + descriptor.checkDisplayName,
-                  "No map marker with matching soh_id was found in the pack. Area: " +
-                      RandomizerCheckObjects::GetRCAreaName(descriptor.area) });
+                { fmt::format("{} | {} | no pack marker", descriptor.checkDisplayName,
+                              RandomizerCheckObjects::GetRCAreaName(descriptor.area)),
+                  "" });
+        }
+    }
+
+    if (IS_ARCHIPELAGO) {
+        for (const std::string& apLocationName : CheckTracker::GetArchipelagoScoutedUnresolvedLocationNames()) {
+            state.archipelagoScoutedWithoutMapId.push_back({ fmt::format("AP (unmapped): {}", apLocationName), "" });
+        }
+
+        for (RandomizerCheck rc : CheckTracker::GetArchipelagoScoutedChecks()) {
+            if (!IsVisibleInCheckTracker(rc)) {
+                continue;
+            }
+            if (!GetGameCheckMapTrackerId(rc).empty()) {
+                continue;
+            }
+
+            Rando::Location* location = Rando::StaticData::GetLocation(rc);
+            state.archipelagoScoutedWithoutMapId.push_back(
+                { fmt::format("{} | {} | AP: {}", GetCheckDisplayName(rc),
+                              RandomizerCheckObjects::GetRCAreaName(location->GetArea()), location->GetName()),
+                  "" });
         }
     }
     std::sort(state.unassignedCheckIds.begin(), state.unassignedCheckIds.end(),
@@ -1357,9 +1375,7 @@ static void BuildMapTabsFromMetadata(MapTrackerState& state, const MapsMetadataP
         for (const auto& link : tab.links) {
             if (!state.tabIndexById.contains(link.targetMapId)) {
                 state.warnings.push_back(
-                    { "Missing target map for link",
-                      "Map \"" + tab.mapName + "\" links to map_id \"" + link.targetMapId +
-                          "\", but no tab with that id exists in maps.json." });
+                    { fmt::format("{} → map_id '{}' (tab missing)", tab.mapName, link.targetMapId), "" });
             }
         }
     }
@@ -1408,9 +1424,7 @@ static void LinkMapMarkersToTabs(MapTrackerState& state, const std::vector<MapMa
     for (const auto& marker : mappedMarkers) {
         if (!state.tabIndexById.contains(marker.mapId)) {
             state.unresolvedLinks.push_back(
-                { "Missing map tab for linked marker",
-                  "Could not find a tab for map_id \"" + marker.mapId + "\" while linking " +
-                      GetCheckDisplayName(marker.check) + "." });
+                { fmt::format("{} | map_id: {} (tab missing)", GetCheckDisplayName(marker.check), marker.mapId), "" });
             continue;
         }
         int markerTabIndex = static_cast<int>(state.tabIndexById[marker.mapId]);

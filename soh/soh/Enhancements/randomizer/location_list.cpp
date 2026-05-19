@@ -1009,6 +1009,8 @@ void Rando::StaticData::InitHashMaps() {
             std::make_tuple((int16_t)location.GetActorID(), (int16_t)location.GetScene(), location.GetActorParams()),
             location.GetRandomizerCheck());
     }
+
+    InitArchipelagoLocationAliases();
 }
 
 Location* Rando::StaticData::GetLocation(RandomizerCheck locKey) {

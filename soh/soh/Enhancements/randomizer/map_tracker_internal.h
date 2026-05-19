@@ -90,6 +90,16 @@ struct MapIssueEntry {
     std::string details;
 };
 
+inline std::string FormatMapIssueLine(const MapIssueEntry& issue) {
+    if (issue.details.empty()) {
+        return issue.summary;
+    }
+    if (issue.summary.empty()) {
+        return issue.details;
+    }
+    return issue.summary + " | " + issue.details;
+}
+
 struct MapPackAreaFileRef {
     std::string resourcePath;
     std::string displayName;
@@ -106,6 +116,7 @@ struct MapTrackerState {
     std::vector<MapIssueEntry> warnings;
     std::vector<MapIssueEntry> unresolvedLinks;
     std::vector<RandomizerCheck> unassignedCheckIds;
+    std::vector<MapIssueEntry> archipelagoScoutedWithoutMapId;
     std::vector<MapTabData> tabs;
     std::unordered_map<std::string, size_t> tabIndexById;
     std::vector<std::string> mapGroups;

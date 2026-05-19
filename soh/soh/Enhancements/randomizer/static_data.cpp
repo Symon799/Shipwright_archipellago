@@ -262,6 +262,41 @@ std::unordered_map<std::string, RandomizerSettingKey> StaticData::optionNameToEn
 std::unordered_map<std::string, RandomizerCheck>
     StaticData::locationNameToEnum = {}; // is filled in context based on location table
 
+static std::unordered_map<std::string, RandomizerCheck> archipelagoLocationAliases;
+
+void StaticData::RegisterArchipelagoLocationAlias(const std::string& apLocationName, RandomizerCheck rc) {
+    if (rc == RC_UNKNOWN_CHECK || rc == RC_MAX) {
+        return;
+    }
+    archipelagoLocationAliases[apLocationName] = rc;
+}
+
+void StaticData::InitArchipelagoLocationAliases() {
+    archipelagoLocationAliases.clear();
+    // AP names that do not match Location::GetName() (see SpoilerNameFromShortName in location.h).
+    // Harmless if apworld later fixes the name to "Market GS Guard House" — that path uses locationNameToEnum directly.
+    RegisterArchipelagoLocationAlias("Market Market GS Guard House", RC_MARKET_GS_GUARD_HOUSE);
+}
+
+std::optional<RandomizerCheck> StaticData::TryResolveLocationName(const std::string& locationName) {
+    const auto aliasIt = archipelagoLocationAliases.find(locationName);
+    if (aliasIt != archipelagoLocationAliases.end()) {
+        return aliasIt->second;
+    }
+
+    const auto locationIt = locationNameToEnum.find(locationName);
+    if (locationIt == locationNameToEnum.end()) {
+        return std::nullopt;
+    }
+
+    const RandomizerCheck rc = locationIt->second;
+    if (rc == RC_UNKNOWN_CHECK || rc == RC_MAX) {
+        return std::nullopt;
+    }
+
+    return rc;
+}
+
 std::unordered_map<u32, RandomizerHint> StaticData::stoneParamsToHint{
     { 0x1, RH_ZF_FAIRY_GOSSIP_STONE },
     { 0x2, RH_ZF_JABU_GOSSIP_STONE },

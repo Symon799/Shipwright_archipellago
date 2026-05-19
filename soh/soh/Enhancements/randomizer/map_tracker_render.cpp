@@ -130,13 +130,7 @@ void DrawMapTrackerIssuesTab() {
         for (size_t issueIndex = 0; issueIndex < issues.size(); issueIndex++) {
             const auto& issue = issues[issueIndex];
             ImGui::PushID(static_cast<int>(issueIndex));
-            ImGui::TextUnformatted(issue.summary.c_str());
-            if (!issue.details.empty()) {
-                ImGui::TextDisabled("%s", issue.details.c_str());
-            }
-            if (issueIndex + 1 < issues.size()) {
-                ImGui::Separator();
-            }
+            ImGui::TextUnformatted(FormatMapIssueLine(issue).c_str());
             ImGui::PopID();
         }
     };
@@ -152,15 +146,22 @@ void DrawMapTrackerIssuesTab() {
             ImGui::TextDisabled("No unassigned checks.");
         } else {
             for (RandomizerCheck rc : mapTrackerState.unassignedCheckIds) {
-                ImGui::TextUnformatted(GetCheckDisplayName(rc).c_str());
-                ImGui::SameLine();
-                ImGui::TextDisabled("(%s)", GetGameCheckMapTrackerId(rc).c_str());
+                Rando::Location* location = Rando::StaticData::GetLocation(rc);
+                const std::string sohId = GetGameCheckMapTrackerId(rc);
+                const std::string line =
+                    fmt::format("{} | {} | soh_id: {}", GetCheckDisplayName(rc),
+                                RandomizerCheckObjects::GetRCAreaName(location->GetArea()),
+                                sohId.empty() ? "(missing)" : sohId);
+                ImGui::TextUnformatted(line.c_str());
             }
         }
     }
 
+    drawIssueCategory("Scouted checks without map pack id (AP)", mapTrackerState.archipelagoScoutedWithoutMapId,
+                      "No scouted checks missing an in-game soh_id.", ImVec4(0.75f, 0.55f, 1.0f, 1.0f));
+
     if (mapTrackerState.warnings.empty() && mapTrackerState.unresolvedLinks.empty() &&
-        mapTrackerState.unassignedCheckIds.empty()) {
+        mapTrackerState.unassignedCheckIds.empty() && mapTrackerState.archipelagoScoutedWithoutMapId.empty()) {
         ImGui::Separator();
         ImGui::TextUnformatted("No issues found.");
     }
