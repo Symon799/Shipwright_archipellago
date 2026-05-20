@@ -1,11 +1,5 @@
 #include "check_tracker_visibility_debug.h"
 
-extern "C" {
-#include "variables.h"
-#include "z64save.h"
-#include <functions.h>
-}
-
 #include "map_tracker_internal.h"
 #include "randomizer_check_ids.h"
 #include "randomizer_check_tracker.h"
@@ -206,10 +200,9 @@ std::string WriteCheckTrackerVisibilityDebugLog() {
     }
 #endif
 
-    const std::string logFilePath = logPath.generic_string();
-    std::ofstream out(logFilePath, std::ios::trunc);
+    std::ofstream out(logPath.c_str(), std::ios::out | std::ios::trunc);
     if (!out.is_open()) {
-        SPDLOG_ERROR("[CheckTrackerVisibility] Failed to open {}", logFilePath);
+        SPDLOG_ERROR("[CheckTrackerVisibility] Failed to open {}", logPath.generic_string());
         return "";
     }
 
