@@ -25,7 +25,7 @@ extern "C" {
 #include <unordered_set>
 #include <vector>
 
-#include <fmt/format.h>
+#include <spdlog/fmt/fmt.h>
 #include <imgui.h>
 #include <spdlog/spdlog.h>
 
@@ -206,7 +206,7 @@ std::string WriteCheckTrackerVisibilityDebugLog() {
     }
 #endif
 
-    std::ofstream out(logPath, std::ios::out | std::ios::trunc);
+    std::ofstream out(logPath, std::fstream::out | std::fstream::trunc);
     if (!out.is_open()) {
         SPDLOG_ERROR("[CheckTrackerVisibility] Failed to open {}", logPath.string());
         return "";
