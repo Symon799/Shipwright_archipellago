@@ -2,6 +2,9 @@
     "terminal.integrated.automationProfile.windows": {
         "path": "C:\\WINDOWS\\System32\\cmd.exe"
     },
+    "terminal.integrated.env.windows": {
+        "Path": "C:\\Program Files\\Git\\cmd;${env:Path}"
+    },
     "cmake.sourceDirectory": "${workspaceFolder}",
     "cmake.buildDirectory": "${workspaceFolder}/build/x64",
     "cmake.generator": "Visual Studio 17 2022",
@@ -11,17 +14,37 @@
         "Visual Studio 17 2022"
     ],
     "cmake.buildTarget": "soh",
+    "cmake.buildVariant": "Debug",
+    "cmake.preferredKits": [
+        "Visual Studio Professional 2022 Release - amd64"
+    ],
+    "cmake.options.statusBarVisibility": "visible",
     "cmake.defaultBuildType": "Release",
     "cmake.configureOnOpen": false,
+    "cmake.parallelJobs": 0,
+    "cmake.buildArgs": [
+        "--parallel"
+    ],
     "cmake.configureSettings": {
         "CMAKE_VS_PLATFORM_NAME": "x64",
-        "BUILD_REMOTE_CONTROL": "ON"
+        "BUILD_REMOTE_CONTROL": "ON",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+    },
+    "cmake.configureEnvironment": {
+        "VCPKG_ROOT": "${env:VCPKG_ROOT}",
+        "VCPKG_INSTALLATION_ROOT": "${env:VCPKG_ROOT}",
+        "Path": "C:\\Program Files\\Git\\cmd;${env:Path}"
+    },
+    "cmake.buildEnvironment": {
+        "Path": "C:\\Program Files\\Git\\cmd;${env:Path}"
     },
     "cmake.cmakePath": "C:\\Program Files\\CMake\\bin\\cmake.exe",
     "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+    "C_Cpp.default.cppStandard": "c++20",
     "debug.onTaskErrors": "showErrors",
+    "debug.confirmOnDebugAnyway": false,
     "files.associations": {
         "*.inc": "c",
-        "*.h": "c"
+        "*.h": "cpp"
     }
 }

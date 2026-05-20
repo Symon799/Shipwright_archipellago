@@ -3476,8 +3476,12 @@ void Interface_DrawArchipelagoStatusString(PlayState* play) {
             break;
         case 1: // Connecting
         case 2: // Connection error, retrying
-        case 3: // Connected
             statusText = SohFileSelect_GetArchipelagoSettingText(ASM_CONNECTING, language);
+            CVarSetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatusFadeStarted"), 0);
+            Interface_ArchipelagoResetStatusFade();
+            break;
+        case 3: // Slot connected (scouting may still be in progress)
+            statusText = SohFileSelect_GetArchipelagoSettingText(ASM_CONNECTED, language);
             CVarSetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatusFadeStarted"), 0);
             Interface_ArchipelagoResetStatusFade();
             break;

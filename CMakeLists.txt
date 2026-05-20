@@ -77,6 +77,8 @@ set(CMAKE_PROJECT_GIT_COMMIT_TAG "${GIT_COMMIT_TAG}" CACHE STRING "Git commit ta
 
 set_property(DIRECTORY ${CMAKE_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT soh)
 add_compile_options($<$<CXX_COMPILER_ID:MSVC>:/MP>)
+# /FS: allow /MP without C1041 PDB lock contention on shared .pdb files
+add_compile_options($<$<CXX_COMPILER_ID:MSVC>:/FS>)
 add_compile_options($<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
 add_compile_options($<$<CXX_COMPILER_ID:MSVC>:/Zc:preprocessor>)
 

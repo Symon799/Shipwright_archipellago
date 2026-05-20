@@ -482,6 +482,11 @@ void ArchipelagoClient::StartLocationScouts() {
 
     if (location_list.empty()) {
         SPDLOG_WARN("[Archipelago] StartLocationScouts: no locations to scout (missing + checked lists empty)");
+        CVarSetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatus"), 4);
+        CheckTracker::RefreshArchipelagoScoutedChecks();
+        if (IS_RANDO) {
+            CheckTracker::RecalculateAllAreaTotals();
+        }
         return;
     }
 

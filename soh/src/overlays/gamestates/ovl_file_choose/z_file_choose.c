@@ -1808,10 +1808,20 @@ void FileChoose_DrawFileInfo(GameState* thisx, s16 fileIndex, s16 isActive) {
                     break;
                 case 1: // Connecting
                 case 2: // Connection error, retrying
-                case 3: // Connected
                     Interface_DrawTextLine(this->state.gfxCtx,
                                            SohFileSelect_GetArchipelagoSettingText(ASM_CONNECTING, language), statusPos,
                                            133, 185, 185, 185, textAlpha, 0.8f, true);
+                    break;
+                case 3: // Slot connected
+                    if (connectedToThisSlot) {
+                        Interface_DrawTextLine(this->state.gfxCtx,
+                                               SohFileSelect_GetArchipelagoSettingText(ASM_CONNECTED, language),
+                                               statusPos, 133, 120, 255, 120, textAlpha, 0.8f, true);
+                    } else {
+                        Interface_DrawTextLine(this->state.gfxCtx,
+                                               SohFileSelect_GetArchipelagoSettingText(ASM_CONNECTING, language),
+                                               statusPos, 133, 185, 185, 185, textAlpha, 0.8f, true);
+                    }
                     break;
                 case 4: // Connected + Locations Scouted
                     if (connectedToThisSlot) {
@@ -2203,11 +2213,11 @@ void FileChoose_DrawWindowContents(GameState* thisx) {
                 break;
             case 1: // Connecting
             case 2: // Connection error, retrying
-            case 3: // Connected
                 Interface_DrawTextLine(this->state.gfxCtx,
                                        SohFileSelect_GetArchipelagoSettingText(ASM_CONNECTING, language), statusPos,
                                        175, 185, 185, 185, textAlpha, 0.8f, true);
                 break;
+            case 3: // Slot connected
             case 4: // Connected + Locations Scouted
                 Interface_DrawTextLine(this->state.gfxCtx,
                                        SohFileSelect_GetArchipelagoSettingText(ASM_CONNECTED, language), statusPos, 175,
