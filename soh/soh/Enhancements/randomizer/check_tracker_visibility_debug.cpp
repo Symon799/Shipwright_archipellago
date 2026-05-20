@@ -23,6 +23,10 @@
 #include <imgui.h>
 #include <spdlog/spdlog.h>
 
+extern "C" {
+#include "variables.h"
+}
+
 namespace CheckTracker {
 extern bool showKeysanity;
 extern bool showBossKeysanity;
