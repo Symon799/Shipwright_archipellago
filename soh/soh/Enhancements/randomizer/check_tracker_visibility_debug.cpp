@@ -206,10 +206,10 @@ std::string WriteCheckTrackerVisibilityDebugLog() {
     }
 #endif
 
-    std::ofstream out;
-    out.open(logPath, static_cast<std::ios_base::openmode>(std::ios::out | std::ios::trunc));
+    const std::string logFilePath = logPath.generic_string();
+    std::ofstream out(logFilePath, std::ios::trunc);
     if (!out.is_open()) {
-        SPDLOG_ERROR("[CheckTrackerVisibility] Failed to open {}", logPath.string());
+        SPDLOG_ERROR("[CheckTrackerVisibility] Failed to open {}", logFilePath);
         return "";
     }
 
