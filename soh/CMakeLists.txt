@@ -292,17 +292,13 @@ include(FetchContent)
 add_compile_definitions(ASIO_STANDALONE)
 
 if(BUILD_REMOTE_CONTROL)
-    if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-        FetchContent_Declare(
-            valijson
-            GIT_REPOSITORY https://github.com/tristanpenman/valijson.git
-            GIT_TAG v1.0.6
-        )
-        FetchContent_MakeAvailable(valijson)
-        target_include_directories(${PROJECT_NAME} PRIVATE ${valijson_SOURCE_DIR}/include)
-    else()
-        find_package(valijson REQUIRED)
-    endif()
+    FetchContent_Declare(
+        valijson
+        GIT_REPOSITORY https://github.com/tristanpenman/valijson.git
+        GIT_TAG v1.0.6
+    )
+    FetchContent_MakeAvailable(valijson)
+    target_include_directories(${PROJECT_NAME} PRIVATE ${valijson_SOURCE_DIR}/include)
 
     FetchContent_Declare(
             asio
@@ -314,37 +310,13 @@ if(BUILD_REMOTE_CONTROL)
 
     # websocketpp has been temporarily removed from vcpkg, see
     # https://github.com/microsoft/vcpkg/pull/42678#issuecomment-2914451436
-    # macOS CI uses FetchContent too (MacPorts websocketpp port is flaky); Linux uses apt.
-    if(CMAKE_SYSTEM_NAME STREQUAL "Windows" OR CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-        FetchContent_Declare(
-            websocketpp
-            GIT_REPOSITORY https://github.com/zaphoyd/websocketpp.git
-            GIT_TAG 0.8.2
-        )
-        FetchContent_Populate(websocketpp)
-        if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-            # C++20/clang: https://github.com/zaphoyd/websocketpp/issues/991 (same patches as Linux CI)
-            set(_ws_dir "${websocketpp_SOURCE_DIR}/websocketpp")
-            if(EXISTS "${_ws_dir}/endpoint.hpp")
-                file(READ "${_ws_dir}/endpoint.hpp" _ws_file)
-                string(REPLACE "endpoint<connection,config>(" "endpoint(" _ws_file "${_ws_file}")
-                file(WRITE "${_ws_dir}/endpoint.hpp" "${_ws_file}")
-            endif()
-            if(EXISTS "${_ws_dir}/logger/basic.hpp")
-                file(READ "${_ws_dir}/logger/basic.hpp" _ws_file)
-                string(REPLACE "basic<concurrency,names>(" "basic(" _ws_file "${_ws_file}")
-                file(WRITE "${_ws_dir}/logger/basic.hpp" "${_ws_file}")
-            endif()
-            if(EXISTS "${_ws_dir}/roles/server_endpoint.hpp")
-                file(READ "${_ws_dir}/roles/server_endpoint.hpp" _ws_file)
-                string(REPLACE "server<config>(" "server(" _ws_file "${_ws_file}")
-                file(WRITE "${_ws_dir}/roles/server_endpoint.hpp" "${_ws_file}")
-            endif()
-        endif()
-        target_include_directories(${PROJECT_NAME} PRIVATE ${websocketpp_SOURCE_DIR})
-    else()
-        find_package(websocketpp REQUIRED)
-    endif()
+    FetchContent_Declare(
+        websocketpp
+        GIT_REPOSITORY https://github.com/zaphoyd/websocketpp.git
+        GIT_TAG bce258674b2d544f981da4bf149244a76e8126c9
+    )
+    FetchContent_Populate(websocketpp)
+    target_include_directories(${PROJECT_NAME} PRIVATE ${websocketpp_SOURCE_DIR})
 
     FetchContent_Declare(
             wswrap

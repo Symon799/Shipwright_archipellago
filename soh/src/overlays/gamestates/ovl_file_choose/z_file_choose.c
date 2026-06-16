@@ -1031,12 +1031,12 @@ void FileChoose_UpdateArchipelagoMenu(GameState* thisx) {
         CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatusInGame"), 0) == 1) {
         if (this->archipelagoIndex == ASM_START_ARCHIPELAGO ||
             CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatusInGame"), 0) == 1) {
-            if (CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatus"), 0) != 4 &&
+            if (CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatus"), 0) < 3 &&
                 CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatusInGame"), 0) == 1) {
                 return;
             }
             // If not connected, try to connect.
-            if (CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatus"), 0) != 4) {
+            if (CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatus"), 0) < 3) {
                 if (strnlen(CVarGetString(CVAR_REMOTE_ARCHIPELAGO("ServerAddress"), ""), 10) > 0 &&
                     strnlen(CVarGetString(CVAR_REMOTE_ARCHIPELAGO("SlotName"), ""), 2) > 0) {
                     Archipelago_InitConnection();
@@ -1048,15 +1048,23 @@ void FileChoose_UpdateArchipelagoMenu(GameState* thisx) {
                 return;
             }
 
+            // Wait until we have all the data we need to create a save
+            if (CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatus"), 0) != 5) {
+                if (CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatus"), 0) != 4) {
+                    Archipelago_RequestInitData();
+                    CVarSetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatusInGame"), 1);
+                }
+                return;
+            }
+
             CVarSetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatusInGame"), 0);
-            // Reset Fade Status before getting in game
-            CVarSetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatusFadeStarted"), 0);
-            CVarSetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatusFadeCount"), 255);
 
             SohFileSelect_ShowPresetModal();
             Audio_PlaySoundGeneral(NA_SE_SY_FSEL_DECIDE_L, &gSfxDefaultPos, 4, &gSfxDefaultFreqAndVolScale,
                                    &gSfxDefaultFreqAndVolScale, &gSfxDefaultReverb);
+            SetArchipelagoParsing(true);
             ParseArchipelago();
+            SetArchipelagoParsing(false);
             static u8 emptyName[] = { 0x3E, 0x3E, 0x3E, 0x3E, 0x3E, 0x3E, 0x3E, 0x3E };
             static u8 emptyNameNES[] = { 0xDF, 0xDF, 0xDF, 0xDF, 0xDF, 0xDF, 0xDF, 0xDF };
             static u8 linkName[] = { 0x15, 0x2C, 0x31, 0x2E, 0x3E, 0x3E, 0x3E, 0x3E };
@@ -1808,22 +1816,13 @@ void FileChoose_DrawFileInfo(GameState* thisx, s16 fileIndex, s16 isActive) {
                     break;
                 case 1: // Connecting
                 case 2: // Connection error, retrying
+                case 4: // Loading data for new save file
                     Interface_DrawTextLine(this->state.gfxCtx,
                                            SohFileSelect_GetArchipelagoSettingText(ASM_CONNECTING, language), statusPos,
                                            133, 185, 185, 185, textAlpha, 0.8f, true);
                     break;
-                case 3: // Slot connected
-                    if (connectedToThisSlot) {
-                        Interface_DrawTextLine(this->state.gfxCtx,
-                                               SohFileSelect_GetArchipelagoSettingText(ASM_CONNECTED, language),
-                                               statusPos, 133, 120, 255, 120, textAlpha, 0.8f, true);
-                    } else {
-                        Interface_DrawTextLine(this->state.gfxCtx,
-                                               SohFileSelect_GetArchipelagoSettingText(ASM_CONNECTING, language),
-                                               statusPos, 133, 185, 185, 185, textAlpha, 0.8f, true);
-                    }
-                    break;
-                case 4: // Connected + Locations Scouted
+                case 3: // Connected
+                case 5: // Data Loaded
                     if (connectedToThisSlot) {
                         Interface_DrawTextLine(this->state.gfxCtx,
                                                SohFileSelect_GetArchipelagoSettingText(ASM_CONNECTED, language),
@@ -2217,11 +2216,20 @@ void FileChoose_DrawWindowContents(GameState* thisx) {
                                        SohFileSelect_GetArchipelagoSettingText(ASM_CONNECTING, language), statusPos,
                                        175, 185, 185, 185, textAlpha, 0.8f, true);
                 break;
-            case 3: // Slot connected
-            case 4: // Connected + Locations Scouted
+            case 3: // Connected
                 Interface_DrawTextLine(this->state.gfxCtx,
                                        SohFileSelect_GetArchipelagoSettingText(ASM_CONNECTED, language), statusPos, 175,
                                        120, 255, 120, textAlpha, 0.8f, true);
+                break;
+            case 4: // Loading Data
+                Interface_DrawTextLine(this->state.gfxCtx,
+                                       SohFileSelect_GetArchipelagoSettingText(ASM_LOADING_DATA, language), statusPos,
+                                       175, 185, 185, 185, textAlpha, 0.8f, true);
+                break;
+            case 5: // Data Loaded
+                Interface_DrawTextLine(this->state.gfxCtx,
+                                       SohFileSelect_GetArchipelagoSettingText(ASM_DATA_LOADED, language), statusPos,
+                                       175, 120, 255, 120, textAlpha, 0.8f, true);
                 break;
         }
 

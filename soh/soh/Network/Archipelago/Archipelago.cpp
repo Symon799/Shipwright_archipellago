@@ -34,14 +34,15 @@
 extern "C" {
 #include "variables.h"
 #include "macros.h"
+#include "functions.h"
 extern PlayState* gPlayState;
 }
 
+uint8_t isArchipelagoParsing = 0;
+
 ArchipelagoClient::ArchipelagoClient() {
-    gameWon = false;
     itemQueued = false;
     disconnecting = false;
-    isDeathLinkedDeath = false;
     uri = "";
     password = "";
 }
@@ -74,6 +75,8 @@ bool ArchipelagoClient::StartClient() {
     retries = 0;
     uri = newUri;
     password = newPassword;
+    locationsScouted = false;
+    hintsInitialized = false;
 
     uuid = ap_get_uuid(Ship::Context::GetPathRelativeToAppDirectory("ap-client-uuid"));
     const std::string cert = Ship::Context::LocateFileAcrossAppDirs("networking/cacert.pem");
@@ -92,7 +95,7 @@ bool ArchipelagoClient::StartClient() {
 
             disconnecting = true;
 
-            if (GameInteractor::IsSaveLoaded) {
+            if (GameInteractor::IsSaveLoaded(true)) {
                 SohGui::ShowArchipelagoSettingsMenu();
             }
             return;
@@ -104,6 +107,12 @@ bool ArchipelagoClient::StartClient() {
         std::list<std::string> tags;
         if (CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("DeathLink"), 0)) {
             tags.push_back("DeathLink");
+        }
+        if (CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("DamageLink"), 0)) {
+            tags.push_back("SharedDamage");
+        }
+        if (CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("TrapLink"), 0)) {
+            tags.push_back("TrapLink");
         }
         apClient->ConnectSlot(CVarGetString(CVAR_REMOTE_ARCHIPELAGO("SlotName"), ""), password, 0b0101, tags,
                               { 0, 6, 3 });
@@ -163,10 +172,7 @@ bool ArchipelagoClient::StartClient() {
 
             ResetQueue();
             SynchSentLocations();
-            SynchReceivedLocations();
-            if (gPlayState != nullptr) {
-                ArchipelagoClient::SetDataStorage("scene", gPlayState->sceneNum);
-            }
+            ArchipelagoClient::SetDataStorage("scene", gPlayState->sceneNum);
         }
 
         const int team_number = apClient->get_team_number();
@@ -176,16 +182,6 @@ bool ArchipelagoClient::StartClient() {
         hintNotificationKey << "_read_hints_" << team_number << "_" << player_id;
         requests.emplace_back(hintNotificationKey.str());
         apClient->SetNotify({ hintNotificationKey.str() });
-
-        std::unordered_set<std::string> games;
-        for (const APClient::NetworkPlayer& player : apClient->get_players()) {
-            games.emplace(apClient->get_player_game(player.slot));
-        }
-
-        for (const std::string& game : games) {
-            requests.emplace_back("_read_item_name_groups_" + game);
-            requests.emplace_back("_read_location_name_groups_" + game);
-        }
         apClient->Get(requests);
 
         ArchipelagoClient::StartLocationScouts();
@@ -237,7 +233,8 @@ bool ArchipelagoClient::StartClient() {
             scoutedItems.push_back(apItem);
         }
 
-        CVarSetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatus"), 4); // locations scouted
+        locationsScouted = true;
+        newInitDataReceived();
 
         CheckTracker::RefreshArchipelagoScoutedChecks();
         if (IS_RANDO) {
@@ -264,8 +261,8 @@ bool ArchipelagoClient::StartClient() {
 
         // If we are supposed to limit console output, check if this data concerns this slot.
         if (CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("LimitConsoleToPlayer"), 0)) {
-            // (If the slot the message was sent from is not the server or this slot) or (the reciever is this slot)
-            // This requires checking if the arg.slot and arg.recieving pointers are nullptr before comparing them
+            // (If the slot the message was sent from is not the server or this slot) or (the receiver is this slot)
+            // This requires checking if the arg.slot and arg.receiving pointers are nullptr before comparing them
             if ((arg.slot != nullptr && (*arg.slot <= 0 || *arg.slot != client->get_player_number())) ||
                 (arg.receiving != nullptr && *arg.receiving != client->get_player_number())) {
                 return;
@@ -341,18 +338,60 @@ bool ArchipelagoClient::StartClient() {
         if (data.contains("tags")) {
             std::list<std::string> tags = data["tags"];
             bool deathLink = (std::find(tags.begin(), tags.end(), "DeathLink") != tags.end());
+            bool damageLink = (std::find(tags.begin(), tags.end(), "SharedDamage") != tags.end());
+            bool trapLink = (std::find(tags.begin(), tags.end(), "TrapLink") != tags.end());
 
-            if (deathLink && data["data"]["source"] != apClient->get_slot()) {
-                if (GameInteractor::IsSaveLoaded()) {
-                    gSaveContext.health = 0;
-                    std::string prefixText = std::string(data["data"]["source"]) + " died.";
-                    Notification::Emit({ .prefix = prefixText, .message = "Cause:", .suffix = data["data"]["cause"] });
-                    std::string deathLinkMessage = "[LOG] Received death link from " +
-                                                   std::string(data["data"]["source"]) +
-                                                   ". Cause: " + std::string(data["data"]["cause"]);
-                    ArchipelagoConsole_SendMessage(deathLinkMessage.c_str());
+            if ((deathLink || damageLink || trapLink) && data["data"]["source"] != apClient->get_slot()) {
+                if (GameInteractor::IsSaveLoaded() && !GameInteractor::IsGameplayPaused()) {
+                    if (deathLink) {
+                        lastDeathLink = GetUnixTimestamp();
 
-                    isDeathLinkedDeath = true;
+                        gSaveContext.health = 0;
+                        std::string prefixText = std::string(data["data"]["source"]) + " died.";
+                        Notification::Emit(
+                            { .prefix = prefixText, .message = "Cause:", .suffix = data["data"]["cause"] });
+                        std::string deathLinkMessage = "[LOG] Received death link from " +
+                                                       std::string(data["data"]["source"]) +
+                                                       ". Cause: " + std::string(data["data"]["cause"]);
+                        ArchipelagoConsole_SendMessage(deathLinkMessage.c_str());
+                    } else if (damageLink) {
+                        uint16_t receivedDamage = data["data"]["damage_points"];
+
+                        // Ignore incoming damage if it's less than a quarter heart.
+                        if (receivedDamage >= 20) {
+                            Player* player = GET_PLAYER(gPlayState);
+                            // 80 received points is one full heart aka 16 health.
+                            gSaveContext.health -= floor(receivedDamage / 5);
+
+                            // Only use hit animations when the player is able to process it.
+                            if (!(GameInteractor::IsGameplayPaused() || player->stateFlags2 & PLAYER_STATE2_CRAWLING ||
+                                  gPlayState->sceneNum == SCENE_FISHING_POND)) {
+                                // If received damage is 3 hearts or more, do a knockback. Otherwise just do a small hit
+                                // animation.
+                                if (receivedDamage >= 240) {
+                                    GameInteractor::RawAction::KnockbackPlayer(1.0f);
+                                } else {
+                                    func_80837C0C(gPlayState, player, 0, 0, 0, 0, 0);
+                                    player->invincibilityTimer = 10;
+                                }
+                            }
+                        }
+
+                        std::string damageLinkMessage =
+                            "[LOG] Received damage link from " + std::string(data["data"]["source"]);
+                        ArchipelagoConsole_SendMessage(damageLinkMessage.c_str());
+                    } else if (trapLink) {
+                        ++trapLinkCount;
+
+                        gSaveContext.ship.pendingIceTrapCount++;
+
+                        Notification::Emit(
+                            { .prefix = std::string(data["data"]["source"]), .message = " sent a trap." });
+
+                        std::string trapLinkMessage =
+                            "[LOG] Received trap link from " + std::string(data["data"]["source"]);
+                        ArchipelagoConsole_SendMessage(trapLinkMessage.c_str());
+                    }
                 }
             }
         }
@@ -405,7 +444,7 @@ bool ArchipelagoClient::StartClient() {
         }
 
         if (groups_received) {
-            InitForeignHints();
+            ArchipelagoClient::InitForeignHints();
         }
     });
 
@@ -415,6 +454,39 @@ bool ArchipelagoClient::StartClient() {
 bool ArchipelagoClient::StopClient() {
     disconnecting = true;
     return true;
+}
+
+void ArchipelagoClient::RequestInitData() {
+    // To create a save file we'll need the following data:
+    // Slot Data: received on connection, we already have this
+    // Data package: received on connection, we already have this
+    // Location Scouts, Asynch request done here
+    // Location and Item groups, Asynch request done here
+
+    CVarSetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatus"), 4); // fetching foreign hint and scout data
+
+    // get location scouts
+    StartLocationScouts();
+
+    // request the item and location groups
+    std::unordered_set<std::string> games;
+    for (const APClient::NetworkPlayer& player : apClient->get_players()) {
+        games.emplace(apClient->get_player_game(player.slot));
+    }
+
+    std::list<std::string> requests;
+    for (const std::string& game : games) {
+        requests.emplace_back("_read_item_name_groups_" + game);
+        requests.emplace_back("_read_location_name_groups_" + game);
+    }
+    apClient->Get(requests);
+}
+
+// update the connection status if we have all data we need to initialize a save file
+void ArchipelagoClient::newInitDataReceived() {
+    if (locationsScouted && hintsInitialized) {
+        CVarSetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatus"), 5); // new save data fetched
+    }
 }
 
 void ArchipelagoClient::GameLoaded() {
@@ -461,8 +533,6 @@ void ArchipelagoClient::GameLoaded() {
     SynchItems();
     SynchSentLocations();
     SynchReceivedLocations();
-
-    gameWon = false;
 }
 
 void ArchipelagoClient::StartLocationScouts() {
@@ -542,6 +612,9 @@ void ArchipelagoClient::InitForeignHints() {
         }
         foreignHints[hintKey] = foreignLocations;
     }
+
+    hintsInitialized = true;
+    newInitDataReceived();
 }
 
 void ArchipelagoClient::QueueExternalCheck(const int64_t apLocation) {
@@ -629,10 +702,7 @@ void ArchipelagoClient::SendGameWon() {
         return;
     }
 
-    if (!gameWon) {
-        apClient->StatusUpdate(APClient::ClientStatus::GOAL);
-        gameWon = true;
-    }
+    apClient->StatusUpdate(APClient::ClientStatus::GOAL);
 }
 
 void ArchipelagoClient::SendMessageToConsole(const std::string message) {
@@ -796,12 +866,10 @@ void ArchipelagoClient::ResetQueue() {
     std::swap(receiveQueue, empty);
 }
 
-void ArchipelagoClient::OnSceneInit(uint16_t sceneNum) {
-    if (!ArchipelagoClient::IsConnected())
-        return;
-    if (gPlayState == nullptr)
-        return;
-    ArchipelagoClient::SetDataStorage("scene", sceneNum);
+void ArchipelagoClient::AfterSceneCommands(uint16_t sceneNum) {
+    if (ArchipelagoClient::IsConnected() && GameInteractor::IsSaveLoaded(true)) {
+        ArchipelagoClient::SetDataStorage("scene", sceneNum);
+    }
 }
 
 void ArchipelagoClient::SetDataStorage(const std::string& key, const nlohmann::json& value) const {
@@ -826,12 +894,21 @@ void ArchipelagoClient::OpenLocalHint(RandomizerCheck sohCheckId) {
     }
 
     Rando::Item item = itemLoc->GetPlacedItem();
-    if (item.GetCategory() == ITEM_CATEGORY_JUNK && !CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("FillerHints"), 0)) {
+    // Don't hint vanilla shop items, these aren't checks in archipelago
+    if (item.GetRandomizerGet() >= RG_BUY_DEKU_NUTS_5 && item.GetRandomizerGet() <= RG_BUY_RED_POTION_50) {
         return;
     }
 
-    // Don't hint vanilla shop items, these aren't checks in archipelago
-    if (item.GetRandomizerGet() >= RG_BUY_DEKU_NUTS_5 && item.GetRandomizerGet() <= RG_BUY_RED_POTION_50) {
+    // If there is no item on this check for some reason
+    if (std::string_view(gSaveContext.ship.quest.data.archipelago.locations[sohCheckId].itemName).empty()) {
+        return;
+    }
+
+    const u32 itemFlags = gSaveContext.ship.quest.data.archipelago.locations[sohCheckId].itemFlags;
+    if (itemFlags == APClient::FLAG_NONE && CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("FillerHints"), 1) < 2) {
+        return;
+    }
+    if ((itemFlags & APClient::FLAG_NEVER_EXCLUDE) && CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("FillerHints"), 1) < 1) {
         return;
     }
 
@@ -1254,7 +1331,9 @@ void ArchipelagoClient::OnItemGiven(uint32_t rc, GetItemEntry gi, uint8_t isGiSk
 }
 
 void ArchipelagoClient::SendDeathLink() {
-    if (apClient != nullptr && CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("DeathLink"), 0) && !isDeathLinkedDeath) {
+    uint64_t currentTime = GetUnixTimestamp();
+    if (apClient != nullptr && CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("DeathLink"), 0) &&
+        (currentTime - lastDeathLink) > 10000) {
         nlohmann::json data{ { "time", apClient->get_server_time() },
                              { "cause", "Shipwrecked by King Harkinian." },
                              { "source", apClient->get_slot() } };
@@ -1263,17 +1342,53 @@ void ArchipelagoClient::SendDeathLink() {
         Notification::Emit({ .message = "Sending Death Link" });
         ArchipelagoConsole_SendMessage("[LOG] Died, sending death link.");
     }
-
-    isDeathLinkedDeath = false;
 }
 
-void ArchipelagoClient::SetDeathLinkTag() {
+void ArchipelagoClient::SendDamageLink(int16_t amount) {
+    if (apClient != nullptr && CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("DamageLink"), 0)) {
+        // Every 80 points is 16 health. Don't emit anything under a quarter heart damage or if the player is getting
+        // healed.
+        if (amount <= -4) {
+            uint16_t damagePoints = amount * -5;
+            nlohmann::json data{ { "time", apClient->get_server_time() },
+                                 { "uuid", apClient->get_player_number() },
+                                 { "source", apClient->get_slot() },
+                                 { "damage_points", damagePoints } };
+            apClient->Bounce(data, {}, {}, { "SharedDamage" });
+
+            ArchipelagoConsole_SendMessage("[LOG] Took damage, sending damage link.");
+        }
+    }
+}
+
+void ArchipelagoClient::SendTrapLink() {
+    if (apClient != nullptr && CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("TrapLink"), 0)) {
+        if (trapLinkCount > 0) {
+            --trapLinkCount;
+        } else {
+            nlohmann::json data{ { "time", apClient->get_server_time() },
+                                 { "source", apClient->get_slot() },
+                                 { "trap_name", "Ice Trap" } };
+            apClient->Bounce(data, {}, {}, { "TrapLink" });
+
+            ArchipelagoConsole_SendMessage("[LOG] Received trap, sending trap link.");
+        }
+    }
+}
+
+void ArchipelagoClient::SetTags() {
     if (!ArchipelagoClient::IsConnected()) {
         return;
     }
     std::list<std::string> tags;
     if (CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("DeathLink"), 0)) {
         tags.push_back("DeathLink");
+    }
+    if (CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("DamageLink"), 0)) {
+        tags.push_back("SharedDamage");
+    }
+    if (CVarGetInteger(CVAR_REMOTE_ARCHIPELAGO("TrapLink"), 0)) {
+        tags.push_back("TrapLink");
     }
     apClient->ConnectUpdate(false, 1, true, tags);
 }
@@ -1392,6 +1507,7 @@ extern "C" void Archipelago_InitSaveFile() {
         }
         const RandomizerCheck rc = *rcOpt;
 
+        gSaveContext.ship.quest.data.archipelago.locations[rc].itemFlags = scoutedItems[i].flags;
         SohUtils::CopyStringToCharArray(gSaveContext.ship.quest.data.archipelago.locations[rc].itemName,
                                         scoutedItems[i].itemName,
                                         ARRAY_COUNT(gSaveContext.ship.quest.data.archipelago.locations[rc].itemName));
@@ -1406,6 +1522,18 @@ extern "C" void Archipelago_InitSaveFile() {
 
 extern "C" void Archipelago_InitConnection() {
     ArchipelagoClient::GetInstance().StartClient();
+}
+
+extern "C" void Archipelago_RequestInitData() {
+    ArchipelagoClient::GetInstance().RequestInitData();
+}
+
+void SetArchipelagoParsing(uint8_t state) {
+    isArchipelagoParsing = state;
+}
+
+uint8_t IsArchipelagoParsing() {
+    return isArchipelagoParsing;
 }
 
 void LoadArchipelagoData() {
@@ -1425,6 +1553,8 @@ void LoadArchipelagoData() {
     SaveManager::Instance->LoadArray(
         "locations", ARRAY_COUNT(gSaveContext.ship.quest.data.archipelago.locations), [](size_t i) {
             SaveManager::Instance->LoadStruct("", [&i]() {
+                SaveManager::Instance->LoadData("itemFlags",
+                                                gSaveContext.ship.quest.data.archipelago.locations[i].itemFlags);
                 SaveManager::Instance->LoadCharArray(
                     "itemName", gSaveContext.ship.quest.data.archipelago.locations[i].itemName,
                     ARRAY_COUNT(gSaveContext.ship.quest.data.archipelago.locations[i].itemName));
@@ -1468,6 +1598,8 @@ void SaveArchipelagoData(SaveContext* saveContext, int sectionID, bool fullSave)
     SaveManager::Instance->SaveArray(
         "locations", ARRAY_COUNT(saveContext->ship.quest.data.archipelago.locations), [&](size_t i) {
             SaveManager::Instance->SaveStruct("", [&]() {
+                SaveManager::Instance->SaveData("itemFlags",
+                                                saveContext->ship.quest.data.archipelago.locations[i].itemFlags);
                 SaveManager::Instance->SaveData("itemName",
                                                 saveContext->ship.quest.data.archipelago.locations[i].itemName);
                 SaveManager::Instance->SaveData("hintName",
@@ -1510,6 +1642,7 @@ void InitArchipelagoData(bool isDebug) {
                                     ARRAY_COUNT(gSaveContext.ship.quest.data.archipelago.roomPass));
 
     for (uint32_t i = 0; i < ARRAY_COUNT(gSaveContext.ship.quest.data.archipelago.locations); i++) {
+        gSaveContext.ship.quest.data.archipelago.locations[i].itemFlags = 0;
         SohUtils::CopyStringToCharArray(gSaveContext.ship.quest.data.archipelago.locations[i].itemName, "",
                                         ARRAY_COUNT(gSaveContext.ship.quest.data.archipelago.locations[i].itemName));
         SohUtils::CopyStringToCharArray(gSaveContext.ship.quest.data.archipelago.locations[i].hintName, "",
@@ -1536,8 +1669,18 @@ void RegisterArchipelago() {
     COND_HOOK(GameInteractor::OnPlayerDeath, IS_ARCHIPELAGO,
               []() { ArchipelagoClient::GetInstance().SendDeathLink(); });
 
-    COND_HOOK(GameInteractor::OnSceneInit, IS_ARCHIPELAGO,
-              [](int16_t sceneNum) { ArchipelagoClient::GetInstance().OnSceneInit(sceneNum); });
+    COND_HOOK(GameInteractor::OnPlayerHealthChange, IS_ARCHIPELAGO,
+              [](int16_t amount) { ArchipelagoClient::GetInstance().SendDamageLink(amount); });
+
+    COND_HOOK(GameInteractor::OnItemReceive, IS_ARCHIPELAGO, [](GetItemEntry itemEntry) {
+        // If item Received is an Ice Trap, send a Trap Link
+        if (itemEntry.itemId == RG_ICE_TRAP) {
+            ArchipelagoClient::GetInstance().SendTrapLink();
+        }
+    });
+
+    COND_HOOK(GameInteractor::AfterSceneCommands, IS_ARCHIPELAGO,
+              [](int16_t sceneNum) { ArchipelagoClient::GetInstance().AfterSceneCommands(sceneNum); });
 
     COND_HOOK(GameInteractor::OnDialogClose, IS_ARCHIPELAGO,
               []() { ArchipelagoClient::GetInstance().OnDialogCloseHook(); });

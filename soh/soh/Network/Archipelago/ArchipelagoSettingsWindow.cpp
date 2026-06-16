@@ -73,7 +73,23 @@ void ArchipelagoSettingsWindow::DrawElement() {
     if (UIWidgets::CVarCheckbox(
             "Death Link", CVAR_REMOTE_ARCHIPELAGO("DeathLink"),
             UIWidgets::CheckboxOptions().Color(THEME_COLOR).Tooltip("You die, others die. Others die, you die!"))) {
-        apClient.SetDeathLinkTag();
+        apClient.SetTags();
+    }
+
+    if (UIWidgets::CVarCheckbox("Damage Link", CVAR_REMOTE_ARCHIPELAGO("DamageLink"),
+                                UIWidgets::CheckboxOptions()
+                                    .Color(THEME_COLOR)
+                                    .Tooltip("Share damage taken with other players that have this enabled. "
+                                             "Note: This is a new setting, there probably won't be that many games "
+                                             "that support this for now."))) {
+        apClient.SetTags();
+    }
+
+    if (UIWidgets::CVarCheckbox("Trap Link", CVAR_REMOTE_ARCHIPELAGO("TrapLink"),
+                                UIWidgets::CheckboxOptions()
+                                    .Color(THEME_COLOR)
+                                    .Tooltip("Share traps with other players that have this enabled. "))) {
+        apClient.SetTags();
     }
 
     UIWidgets::CVarCheckbox(
@@ -81,10 +97,16 @@ void ArchipelagoSettingsWindow::DrawElement() {
         UIWidgets::CheckboxOptions()
             .Color(THEME_COLOR)
             .Tooltip("Will limit any output to the AP console to only what effects the slot you are connected as."));
-    UIWidgets::CVarCheckbox("Open Filler Hints", CVAR_REMOTE_ARCHIPELAGO("FillerHints"),
-                            UIWidgets::CheckboxOptions()
-                                .Color(THEME_COLOR)
-                                .Tooltip("Automatically open up all hints even if they're not that usefull."));
+    UIWidgets::CVarCombobox(
+        "Send hints to AP", CVAR_REMOTE_ARCHIPELAGO("FillerHints"), { "Progression only", "Progression/Useful", "All" },
+        UIWidgets::ComboboxOptions()
+            .DefaultIndex(1)
+            .Color(THEME_COLOR)
+            .Tooltip(
+                "Automatically send hints to the Archipelago room. This applies when hovering over shop item, "
+                "or when clear hints are turned on for this slot, it will apply to things like speaking to "
+                "business scrubs and all of the other static hint options.\n\n"
+                "This does not apply to Gossip Stones as they don't always give away the exact location of an item."));
 };
 
 void ArchipelagoSettingsWindow::InitElement() {

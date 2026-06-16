@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 #include <queue>
 #include <map>
+#include <atomic>
 #include "ArchipelagoTypes.h"
 
 // Forward declaration
@@ -47,6 +48,7 @@ class ArchipelagoClient {
     bool StartClient();
     bool StopClient();
 
+    void RequestInitData();
     void GameLoaded();
     void StartLocationScouts();
     void SynchItems();
@@ -64,7 +66,9 @@ class ArchipelagoClient {
     uint8_t GetConnectionStatus();
     void OnItemGiven(uint32_t rc, GetItemEntry gi, uint8_t isGiSkipped);
     void SendDeathLink();
-    void SetDeathLinkTag();
+    void SendDamageLink(int16_t amount);
+    void SendTrapLink();
+    void SetTags();
     RandomizerGet GetIceTrapItem();
     std::string GetApItemName(int64_t ApItemId);
     std::string GetApItemHint(RandomizerCheck rc, RandomizerGet rg);
@@ -88,7 +92,7 @@ class ArchipelagoClient {
     void Poll();
     void ResetQueue();
 
-    void OnSceneInit(uint16_t sceneNum);
+    void AfterSceneCommands(uint16_t sceneNum);
     void SetDataStorage(const std::string& key, const nlohmann::json& value) const;
 
     void OpenLocalHint(RandomizerCheck sohCheckId);
@@ -98,11 +102,14 @@ class ArchipelagoClient {
     void OnShopSlotChangeHook(uint8_t cursorIndex);
 
     bool slotMatch(const std::string& slotName, const std::string& roomHash);
+    void newInitDataReceived();
 
     std::unique_ptr<APClient> apClient;
     bool itemQueued;
     bool disconnecting;
-    bool isDeathLinkedDeath;
+    uint64_t lastDeathLink = 0;
+    uint64_t lastDamageLink = 0;
+    uint8_t trapLinkCount = 0;
     int retries;
     std::string uri;
     std::string password;
@@ -127,12 +134,13 @@ class ArchipelagoClient {
     static std::shared_ptr<ArchipelagoClient> instance;
     static bool initialized;
 
-    bool gameWon;
-
     nlohmann::json slotData;
     std::set<int64_t> locations;
     std::vector<ApItem> scoutedItems;
     std::queue<ApItem> receiveQueue;
+
+    bool locationsScouted;
+    bool hintsInitialized;
 };
 
 void LoadArchipelagoData();
@@ -142,6 +150,9 @@ extern "C" {
 #endif // END __cplusplus
 void Archipelago_InitSaveFile();
 void Archipelago_InitConnection();
+void Archipelago_RequestInitData();
+void SetArchipelagoParsing(uint8_t state);
+uint8_t IsArchipelagoParsing();
 #ifdef __cplusplus
 }
 #endif
