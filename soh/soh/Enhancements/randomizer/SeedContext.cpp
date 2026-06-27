@@ -457,6 +457,9 @@ void Context::ParseArchipelago() {
 
     Rando::Settings::GetInstance()->ResetExcludedLocations();
     ArchipelagoClient& apClient = ArchipelagoClient::GetInstance();
+    // Seed the RNG from the Archipelago seed up front so everything downstream is deterministic.
+    SetSeed(apClient.GetSlotData()["archipelago_seed"]);
+    Random_Init(GetSeed());
     ParseArchipelagoItemsLocations(apClient.GetScoutedItems());
     ParseArchipelagoOptions();
     ParseArchipelagoTricks();
@@ -1006,7 +1009,6 @@ void Context::ParseArchipelagoOptions() {
     mOptions[RSK_LOCK_OVERWORLD_DOORS].Set(slotData["lock_overworld_doors"]);
     mOptions[RSK_SHUFFLE_GRASS].Set(slotData["shuffle_grass"]);
     mOptions[RSK_ROCS_FEATHER].Set(slotData["rocs_feather"]);
-    SetSeed(parseUint32SlotOption("archipelago_seed", 0));
     } catch (const std::exception& e) {
         LUSLOG_ERROR("Failed to parse Archipelago slot data: %s", e.what());
     } catch (...) {
@@ -1087,7 +1089,7 @@ void Context::ParseArchipelagoItemsLocations(const std::vector<ArchipelagoClient
             // Other player item
             // If progressive or trap bit flag is set, make item progressive.
             if (ap_item.flags & (1 << 0) || ap_item.flags & (1 << 2)) {
-                itemLocationTable[rc].SetPlacedItem(RG_ARCHIPELAGO_ITEM_PROGRESSIVE);
+                itemLocationTable[rc].SetPlacedItem(RG_ARCHIPELAGO_ITEM_PROGRESSION);
                 // If useful bit flag is on, make item useful.
             } else if (ap_item.flags & (1 << 1)) {
                 itemLocationTable[rc].SetPlacedItem(RG_ARCHIPELAGO_ITEM_USEFUL);
@@ -1125,6 +1127,9 @@ void Context::ParseArchipelagoItemsLocations(const std::vector<ArchipelagoClient
 }
 
 void Context::ParseArchipelagoHints() {
+    // Clear the hint state left over from a previous save-file creation.
+    HintReset();
+
     const auto& ApHintData = ArchipelagoClient::GetInstance().foreignHints;
     const auto ctx = Rando::Context::GetInstance();
     for (const auto& ApHint : ApHintData) {

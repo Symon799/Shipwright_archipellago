@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <iostream>
 #include <string>
+#include <unordered_set>
 #include <utility>
 
 #include "soh/Network/Archipelago/ArchipelagoConsoleWindow.h"
@@ -39,6 +40,17 @@ extern PlayState* gPlayState;
 }
 
 uint8_t isArchipelagoParsing = 0;
+
+// Table from https://wiki.cloudmodding.com/oot/Text_Format#Non-Japanese_Text, removed #, $, %, @, ^
+static const std::unordered_set<std::string> textBoxSupportedCharacters = {
+    " ", "!", "\"", "'", "(", ")", "*", "+", ",", "-", ".", "/", "0", "1", "2", "3", "4", "5", "6", "7",
+    "8", "9", ":",  ";", "<", "=", ">", "?", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L",
+    "M", "N", "O",  "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "[", "¥", "]", "_", "`", "a",
+    "b", "c", "d",  "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u",
+    "v", "w", "x",  "y", "z", "{", "|", "}", "‾", "À", "î", "Â", "Ä", "Ç", "È", "É", "Ê", "Ë", "Ï", "Ô",
+    "Ö", "Ù", "Û",  "Ü", "ß", "à", "á", "â", "ä", "ç", "è", "é", "ê", "ë", "ï", "ô", "ö", "ù", "û", "ü"
+
+};
 
 ArchipelagoClient::ArchipelagoClient() {
     itemQueued = false;
@@ -115,7 +127,7 @@ bool ArchipelagoClient::StartClient() {
             tags.push_back("TrapLink");
         }
         apClient->ConnectSlot(CVarGetString(CVAR_REMOTE_ARCHIPELAGO("SlotName"), ""), password, 0b0101, tags,
-                              { 0, 6, 3 });
+                              { 0, 6, 7 });
     });
 
     apClient->set_slot_connected_handler([&](const nlohmann::json data) {
@@ -123,8 +135,7 @@ bool ArchipelagoClient::StartClient() {
         ArchipelagoConsole_SendMessage("[LOG] Connected.");
         slotData = data;
 
-        ArchipelagoHintWindow_ChangeHintableItems(slotData["hintable_items"]);
-
+        // check if the client is the proper version and disconnect otherwise
         std::string clientVersionMajor = AP_Client_consts::AP_WORLD_VERSION_MAJOR;
         std::string clientVersionMinor = AP_Client_consts::AP_WORLD_VERSION_MINOR;
 
@@ -150,6 +161,14 @@ bool ArchipelagoClient::StartClient() {
                 ".x instead.\nPlease use the SoH AP client matching the APWorld's version.\nAutomatically "
                 "disconnecting...";
             ArchipelagoConsole_SendMessage(errorMessage.c_str());
+            return;
+        }
+
+        try {
+            ArchipelagoHintWindow_ChangeHintableItems(slotData["hintable_items"]);
+        } catch (std::exception e) {
+            disconnecting = true;
+            ArchipelagoConsole_SendMessage("[ERROR] Unable to load hintable items, disconnecting...");
             return;
         }
 
@@ -244,6 +263,10 @@ bool ArchipelagoClient::StartClient() {
 
     apClient->set_location_checked_handler([&](const std::list<int64_t> locations) {
         if (disconnecting) {
+            return;
+        }
+
+        if (!GameInteractor::IsSaveLoaded(true)) {
             return;
         }
 
@@ -576,6 +599,9 @@ void ArchipelagoClient::SynchSentLocations() {
         const RandomizerCheck rc = loc.GetRandomizerCheck();
         if (Rando::Context::GetInstance()->GetItemLocation(rc)->HasObtained()) {
             const int64_t apLocation = apClient->get_location_id(loc.GetName());
+            if (!apClient->get_missing_locations().contains(apLocation)) {
+                continue;
+            }
             checkedLocations.emplace_back(apLocation);
         }
     }
@@ -596,7 +622,15 @@ void ArchipelagoClient::InitForeignHints() {
         foreignHints[(RandomizerHint)h] = {};
     }
 
-    std::map<std::string, std::vector<std::array<int, 2>>> hintsData = slotData["static_hints"];
+    std::map<std::string, std::vector<std::array<int64_t, 2>>> hintsData;
+    try {
+        hintsData = slotData["static_hints"];
+    } catch (std::exception e) {
+        disconnecting = true;
+        ArchipelagoConsole_SendMessage("[ERROR] Unable to parse foreign hints, disconnecting...");
+        return;
+    }
+
     for (const auto& hintData : hintsData) {
         RandomizerHint hintKey = static_cast<RandomizerHint>(Rando::StaticData::hintNameToEnum[hintData.first]);
         std::vector<ApForeignHint> foreignLocations;
@@ -662,8 +696,11 @@ void ArchipelagoClient::CheckLocation(RandomizerCheck sohCheckId) {
         return;
     }
 
-    int64_t apItemId = apClient->get_location_id(std::string(apName));
-    apClient->LocationChecks({ apItemId });
+    int64_t apLocationId = apClient->get_location_id(std::string(apName));
+    if (!apClient->get_missing_locations().contains(apLocationId)) {
+        return;
+    }
+    apClient->LocationChecks({ apLocationId });
 }
 
 void ArchipelagoClient::OnItemReceived(const ApItem apItem) {
@@ -734,7 +771,7 @@ void ArchipelagoClient::UpdateHints(const std::vector<nlohmann::json>& hints_jso
         new_hint.finding_player_name = apClient->get_player_alias(finding_player_id);
         new_hint.location_name =
             apClient->get_location_name(hint_data["location"], apClient->get_player_game(finding_player_id));
-        new_hint.item_name = apClient->get_item_name(hint_data["item"], apClient->get_player_game(finding_player_id));
+        new_hint.item_name = apClient->get_item_name(hint_data["item"], apClient->get_player_game(receiving_player_id));
         new_hint.entrance_name = hint_data["entrance"];
         new_hint.item_flags = hint_data["item_flags"];
         new_hint.found = hint_data["found"];
@@ -832,6 +869,38 @@ std::string ArchipelagoClient::get_random_group_from_location(const std::string&
     return RandomElement(containing_groups, false);
 }
 
+std::string GetUtf8char(const std::string& string, size_t position) {
+    if (position >= string.size()) {
+        return "";
+    }
+
+    char firstByte = string.at(position);
+    // count the number of high bits to determine the character width
+    int width = 0;
+    while (firstByte & 0x80) {
+        width++;
+        firstByte <<= 1;
+    }
+    if (width == 0) {
+        width = 1;
+    }
+    return string.substr(position, width);
+}
+
+std::string ArchipelagoClient::SanitizeName(const std::string& name) {
+    std::string sanitizedName;
+    for (size_t i = 0; i < name.length();) {
+        std::string s = GetUtf8char(name, i);
+        i += s.length();
+        if (textBoxSupportedCharacters.contains(s)) {
+            sanitizedName += std::string(s.begin(), s.end());
+        } else {
+            sanitizedName += "[?]";
+        }
+    }
+    return sanitizedName;
+}
+
 void ArchipelagoClient::Poll() {
     if (apClient == nullptr) {
         return;
@@ -869,6 +938,11 @@ void ArchipelagoClient::ResetQueue() {
 void ArchipelagoClient::AfterSceneCommands(uint16_t sceneNum) {
     if (ArchipelagoClient::IsConnected() && GameInteractor::IsSaveLoaded(true)) {
         ArchipelagoClient::SetDataStorage("scene", sceneNum);
+    }
+
+    // Goal when warped to the end credits cutscene.
+    if (sceneNum == SCENE_CHAMBER_OF_THE_SAGES && gSaveContext.cutsceneIndex == 0xFFF2) {
+        SendGameWon();
     }
 }
 
@@ -917,8 +991,8 @@ void ArchipelagoClient::OpenLocalHint(RandomizerCheck sohCheckId) {
         return;
     }
 
-    int64_t apItemId = apClient->get_location_id(std::string(apName));
-    apClient->CreateHints({ apItemId }, -1);
+    int64_t apLocationId = apClient->get_location_id(std::string(apName));
+    apClient->CreateHints({ apLocationId }, -1);
 }
 
 void ArchipelagoClient::OpenForeignHint(RandomizerHint randomizerHintId) {
@@ -1305,12 +1379,12 @@ void ArchipelagoClient::OnItemGiven(uint32_t rc, GetItemEntry gi, uint8_t isGiSk
         ArchipelagoClient::GetInstance().CheckLocation((RandomizerCheck)rc);
 
         if (isGiSkipped && gi.modIndex == MOD_RANDOMIZER &&
-            (gi.getItemId == RG_ARCHIPELAGO_ITEM_PROGRESSIVE || gi.getItemId == RG_ARCHIPELAGO_ITEM_USEFUL ||
+            (gi.getItemId == RG_ARCHIPELAGO_ITEM_PROGRESSION || gi.getItemId == RG_ARCHIPELAGO_ITEM_USEFUL ||
              gi.getItemId == RG_ARCHIPELAGO_ITEM_JUNK)) {
 
             const char* itemIcon = "";
             switch (gi.getItemId) {
-                case RG_ARCHIPELAGO_ITEM_PROGRESSIVE:
+                case RG_ARCHIPELAGO_ITEM_PROGRESSION:
                     itemIcon = "Archipelago Progressive Icon";
                     break;
                 case RG_ARCHIPELAGO_ITEM_USEFUL:
@@ -1447,7 +1521,7 @@ std::string ArchipelagoClient::GetApItemHint(RandomizerCheck rc, RandomizerGet r
             case RandomizerGet::RG_ARCHIPELAGO_ITEM_USEFUL:
                 item_hint = "Item";
                 break;
-            case RandomizerGet::RG_ARCHIPELAGO_ITEM_PROGRESSIVE:
+            case RandomizerGet::RG_ARCHIPELAGO_ITEM_PROGRESSION:
                 item_hint = "Progress Item";
                 break;
             default:
@@ -1509,13 +1583,13 @@ extern "C" void Archipelago_InitSaveFile() {
 
         gSaveContext.ship.quest.data.archipelago.locations[rc].itemFlags = scoutedItems[i].flags;
         SohUtils::CopyStringToCharArray(gSaveContext.ship.quest.data.archipelago.locations[rc].itemName,
-                                        scoutedItems[i].itemName,
+                                        ArchipelagoClient::SanitizeName(scoutedItems[i].itemName),
                                         ARRAY_COUNT(gSaveContext.ship.quest.data.archipelago.locations[rc].itemName));
         SohUtils::CopyStringToCharArray(gSaveContext.ship.quest.data.archipelago.locations[rc].hintName,
-                                        scoutedItems[i].hintName,
+                                        ArchipelagoClient::SanitizeName(scoutedItems[i].hintName),
                                         ARRAY_COUNT(gSaveContext.ship.quest.data.archipelago.locations[rc].hintName));
         SohUtils::CopyStringToCharArray(gSaveContext.ship.quest.data.archipelago.locations[rc].playerName,
-                                        scoutedItems[i].playerName,
+                                        ArchipelagoClient::SanitizeName(scoutedItems[i].playerName),
                                         ARRAY_COUNT(gSaveContext.ship.quest.data.archipelago.locations[rc].playerName));
     }
 }
@@ -1618,10 +1692,11 @@ void SaveArchipelagoData(SaveContext* saveContext, int sectionID, bool fullSave)
             SaveManager::Instance->SaveArray("ForeignLocation", hints.size(), [&](size_t i) {
                 SaveManager::Instance->SaveStruct("", [&]() {
                     SaveManager::Instance->SaveData("LocationId", hints[i].locationId);
-                    SaveManager::Instance->SaveData("GroupName", hints[i].groupName);
-                    SaveManager::Instance->SaveData("LocationName", hints[i].locationName);
+                    SaveManager::Instance->SaveData("GroupName", ArchipelagoClient::SanitizeName(hints[i].groupName));
+                    SaveManager::Instance->SaveData("LocationName",
+                                                    ArchipelagoClient::SanitizeName(hints[i].locationName));
                     SaveManager::Instance->SaveData("PlayerId", hints[i].playerId);
-                    SaveManager::Instance->SaveData("PlayerName", hints[i].playerName);
+                    SaveManager::Instance->SaveData("PlayerName", ArchipelagoClient::SanitizeName(hints[i].playerName));
                 });
             });
         });
