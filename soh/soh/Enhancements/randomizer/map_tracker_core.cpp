@@ -425,14 +425,6 @@ bool EnsureMapTrackerZipArchiveMounted(const std::filesystem::path& archivePath,
     return true;
 }
 
-bool IsMapModeEnabled() {
-    return CVarGetInteger(CHECK_TRACKER_MAP_MODE_CVAR, 1) != 0;
-}
-
-void SetMapModeEnabled(bool enabled) {
-    CVarSetInteger(CHECK_TRACKER_MAP_MODE_CVAR, enabled ? 1 : 0);
-}
-
 static void AddSchemaWarning(MapTrackerState& state, std::string context, std::string message) {
     state.warnings.push_back({ context + ": " + message, "" });
 }

@@ -91,6 +91,8 @@ std::shared_ptr<MessageViewer> mMessageViewerWindow;
 std::shared_ptr<GameplayStatsWindow> mGameplayStatsWindow;
 std::shared_ptr<CheckTracker::CheckTrackerSettingsWindow> mCheckTrackerSettingsWindow;
 std::shared_ptr<CheckTracker::CheckTrackerWindow> mCheckTrackerWindow;
+std::shared_ptr<MapTracker::MapTrackerWindow> mMapTrackerWindow;
+std::shared_ptr<MapTracker::MapTrackerSettingsWindow> mMapTrackerSettingsWindow;
 std::shared_ptr<EntranceTracker::EntranceTrackerSettingsWindow> mEntranceTrackerSettingsWindow;
 std::shared_ptr<EntranceTracker::EntranceTrackerWindow> mEntranceTrackerWindow;
 std::shared_ptr<ItemTrackerSettingsWindow> mItemTrackerSettingsWindow;
@@ -104,6 +106,12 @@ std::shared_ptr<SohModalWindow> mModalWindow;
 std::shared_ptr<Notification::Window> mNotificationWindow;
 std::shared_ptr<TimeDisplayWindow> mTimeDisplayWindow;
 std::shared_ptr<AnchorRoomWindow> mAnchorRoomWindow;
+
+void ToggleMapTrackerWindow() {
+    if (mMapTrackerWindow != nullptr) {
+        mMapTrackerWindow->ToggleVisibility();
+    }
+}
 
 UIWidgets::Colors GetMenuThemeColor() {
     return mSohMenu->GetMenuThemeColor();
@@ -186,6 +194,12 @@ void SetupGuiElements() {
     mCheckTrackerSettingsWindow = std::make_shared<CheckTracker::CheckTrackerSettingsWindow>(
         CVAR_WINDOW("CheckTrackerSettings"), "Check Tracker Settings", ImVec2(600, 375));
     gui->AddGuiWindow(mCheckTrackerSettingsWindow);
+    mMapTrackerWindow =
+        std::make_shared<MapTracker::MapTrackerWindow>(CVAR_WINDOW("MapTracker"), "Map Tracker", ImVec2(700, 700));
+    gui->AddGuiWindow(mMapTrackerWindow);
+    mMapTrackerSettingsWindow = std::make_shared<MapTracker::MapTrackerSettingsWindow>(
+        CVAR_WINDOW("MapTrackerSettings"), "Map Tracker Settings", ImVec2(600, 375));
+    gui->AddGuiWindow(mMapTrackerSettingsWindow);
     mEntranceTrackerWindow = std::make_shared<EntranceTracker::EntranceTrackerWindow>(
         CVAR_WINDOW("EntranceTracker"), "Entrance Tracker", ImVec2(500, 750));
     gui->AddGuiWindow(mEntranceTrackerWindow);
@@ -233,6 +247,8 @@ void Destroy() {
     mEntranceTrackerSettingsWindow = nullptr;
     mCheckTrackerWindow = nullptr;
     mCheckTrackerSettingsWindow = nullptr;
+    mMapTrackerWindow = nullptr;
+    mMapTrackerSettingsWindow = nullptr;
     mGameplayStatsWindow = nullptr;
     mDLViewerWindow = nullptr;
     mValueViewerWindow = nullptr;

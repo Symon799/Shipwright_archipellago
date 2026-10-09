@@ -10,6 +10,8 @@
 
 namespace CheckTracker {
 
+extern bool initialized;
+
 class CheckTrackerSettingsWindow final : public Ship::GuiWindow {
   public:
     using GuiWindow::GuiWindow;
@@ -32,6 +34,12 @@ class CheckTrackerWindow final : public Ship::GuiWindow {
     void DrawElement() override;
     void UpdateElement() override;
 };
+
+namespace Trackers {
+bool BeginFloatWindows(const char* uniqueName, bool& open, const Color_RGBA8& backgroundColor,
+                       TrackerWindowType windowType, bool draggable, ImGuiWindowFlags flags);
+void EndFloatWindows();
+} // namespace Trackers
 
 // Converts an index into a Little Endian bitmask, as follows:
 // 00: 0000000100000000
@@ -62,6 +70,7 @@ void UpdateAreas(RandomizerCheckArea area);
 void UpdateAllOrdering();
 void UpdateAllAreas();
 void RecalculateAllAreaTotals();
+void ProcessPendingUpdates();
 
 // Archipelago: cache of scouted location checks (synced from AP client / slot data).
 void RefreshArchipelagoScoutedChecks();

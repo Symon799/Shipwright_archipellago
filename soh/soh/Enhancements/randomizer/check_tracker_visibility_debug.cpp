@@ -1,4 +1,5 @@
 #include "check_tracker_visibility_debug.h"
+#include "randomizer_map_tracker.h"
 
 #include "map_tracker_internal.h"
 #include "randomizer_check_ids.h"
@@ -178,11 +179,11 @@ CheckVisibilityDiagnostic BuildCheckVisibilityDiagnostic(RandomizerCheck rc) {
         diag.primaryBlockReason = "IsCheckShuffled returned false (another shuffle filter — pots, scrubs, etc.)";
     } else if (!diag.visibleInTracker) {
         diag.primaryBlockReason = "IsCheckShuffled passed but IsVisibleInCheckTracker is false (unexpected)";
-    } else if (IsMapModeEnabled() && mapTrackerState.loaded && !diag.mapPackLinked && !diag.mapPackUnassigned) {
+    } else if (mapTrackerState.loaded && !diag.mapPackLinked && !diag.mapPackUnassigned) {
         diag.primaryBlockReason = "Visible in list logic but no map pack marker (pack soh_id / map_locations issue)";
-    } else if (IsMapModeEnabled() && mapTrackerState.loaded && diag.mapPackUnassigned) {
+    } else if (mapTrackerState.loaded && diag.mapPackUnassigned) {
         diag.primaryBlockReason = "Visible in game but unassigned in map pack (no matching soh_id placement)";
-    } else if (IsMapModeEnabled() && !diag.areaSpoiled && CVarGetInteger(CVAR_TRACKER_CHECK("MQSpoilers"), 0) == 0) {
+    } else if (mapTrackerState.loaded && !diag.areaSpoiled && CVarGetInteger(MapTracker::CVAR_MQ_SPOILERS, 0) == 0) {
         diag.primaryBlockReason = "Area not spoiled — need dungeon map or MQ Spoilers for map markers";
     } else {
         diag.primaryBlockReason = "Should be visible";
@@ -218,7 +219,7 @@ std::string WriteCheckTrackerVisibilityDebugLog() {
         mapPackLinkedChecks = mapTrackerState.linkedChecks;
     }
 
-    const bool mqSpoilers = CVarGetInteger(CVAR_TRACKER_CHECK("MQSpoilers"), 0) != 0;
+    const bool mqSpoilers = CVarGetInteger(MapTracker::CVAR_MQ_SPOILERS, 0) != 0;
     for (auto& areaEntry : checksByArea) {
         for (RandomizerCheck rc : areaEntry.second) {
             if (!IsVisibleInCheckTracker(rc)) {

@@ -755,6 +755,26 @@ void SohMenu::AddMenuRandomizer() {
         .WindowName("Check Tracker Settings")
         .HideInSearch(true)
         .Options(WindowButtonOptions().Tooltip("Enables the separate Check Tracker Settings Window."));
+
+    // Map Tracker
+    path.sidebarName = "Map Tracker";
+    AddSidebarEntry("Randomizer", path.sidebarName, 1);
+
+    AddWidget(path, "Map Tracker", WIDGET_SEPARATOR_TEXT);
+    AddWidget(path, "Toggle Map Tracker", WIDGET_WINDOW_BUTTON)
+        .CVar(CVAR_WINDOW("MapTracker"))
+        .RaceDisable(false)
+        .WindowName("Map Tracker")
+        .HideInSearch(true)
+        .Options(WindowButtonOptions().Tooltip("Toggles the Map Tracker.").EmbedWindow(false));
+
+    AddWidget(path, "Map Tracker Settings", WIDGET_SEPARATOR_TEXT);
+    AddWidget(path, "Popout Map Tracker Settings", WIDGET_WINDOW_BUTTON)
+        .CVar(CVAR_WINDOW("MapTrackerSettings"))
+        .RaceDisable(false)
+        .WindowName("Map Tracker Settings")
+        .HideInSearch(true)
+        .Options(WindowButtonOptions().Tooltip("Enables the separate Map Tracker Settings Window."));
 }
 
 } // namespace SohGui

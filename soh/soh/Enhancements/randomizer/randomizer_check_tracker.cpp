@@ -206,7 +206,6 @@ bool CompareChecks(RandomizerCheck, RandomizerCheck);
 bool CheckByArea(RandomizerCheckArea);
 bool IsCheckHidden(RandomizerCheck rc);
 void DrawLocation(RandomizerCheck);
-void DrawMapTrackerContent();
 void LoadSettings();
 void RainbowTick();
 void UpdateAreas(RandomizerCheckArea area);
@@ -236,10 +235,8 @@ bool hideSaved = false;
 bool hideCollected = false;
 bool showHidden = true;
 bool mystery = false;
-bool showLogicTooltip = false;
 bool enableAvailableChecks = false;
 bool onlyShowAvailable = false;
-bool showMapDebugDetails = false;
 
 SceneID DungeonSceneLookupByArea(RandomizerCheckArea area) {
     switch (area) {
@@ -345,10 +342,6 @@ uint16_t GetTotalChecksGotten() {
 }
 
 bool IsCheckHidden(RandomizerCheck rc) {
-    if (IsMapModeEnabled()) {
-        return false;
-    }
-
     Rando::ItemLocation* itemLocation = OTRGlobals::Instance->gRandoContext->GetItemLocation(rc);
     RandomizerCheckStatus status = itemLocation->GetCheckStatus();
     bool skipped = itemLocation->GetIsSkipped();
@@ -1007,6 +1000,17 @@ void SetAreaSpoiled(RandomizerCheckArea rcArea) {
 
 void InternalRecalculateAvailableChecks(RandomizerRegion startingRegion, RandoAgeTime startingAgeTime);
 
+void ProcessPendingUpdates() {
+    if (!recalculateAvailable) {
+        return;
+    }
+
+    recalculateAvailable = false;
+    InternalRecalculateAvailableChecks(availableChecksStartingRegion, availableChecksStartingAgeTime);
+    availableChecksStartingRegion = RR_ROOT;
+    availableChecksStartingAgeTime = RAT_NONE;
+}
+
 void CheckTrackerWindow::DrawElement() {
     Color_Background = CVarGetColor(CVAR_TRACKER_CHECK("BgColor.Value"), Color_Bg_Default);
     Color_Area_Incomplete_Main = CVarGetColor(CVAR_TRACKER_CHECK("AreaIncomplete.MainColor.Value"), Color_Main_Default);
@@ -1039,11 +1043,8 @@ void CheckTrackerWindow::DrawElement() {
     hideCollected = CVarGetInteger(CVAR_TRACKER_CHECK("Collected.Hide"), 0);
     showHidden = CVarGetInteger(CVAR_TRACKER_CHECK("ShowHidden"), 0);
     mystery = CVarGetInteger(CVAR_RANDOMIZER_ENHANCEMENT("MysteriousShuffle"), 0);
-    showLogicTooltip = CVarGetInteger(CVAR_TRACKER_CHECK("ShowLogic"), 0);
     enableAvailableChecks = CVarGetInteger(CVAR_TRACKER_CHECK("EnableAvailableChecks"), 0);
     onlyShowAvailable = CVarGetInteger(CVAR_TRACKER_CHECK("OnlyShowAvailable"), 0);
-    showMapDebugDetails = CVarGetInteger(CHECK_TRACKER_MAP_DEBUG_CVAR, 0);
-
     hideShopUnshuffledChecks = CVarGetInteger(CVAR_TRACKER_CHECK("HideUnshuffledShopChecks"), 0);
     alwaysShowGS = CVarGetInteger(CVAR_TRACKER_CHECK("AlwaysShowGSLocs"), 0);
     if (CVarGetInteger(CVAR_TRACKER_CHECK("WindowType"), TRACKER_WINDOW_WINDOW) == TRACKER_WINDOW_FLOATING) {
@@ -1083,12 +1084,7 @@ void CheckTrackerWindow::DrawElement() {
             return;
         }
 
-        if (recalculateAvailable) {
-            recalculateAvailable = false;
-            InternalRecalculateAvailableChecks(availableChecksStartingRegion, availableChecksStartingAgeTime);
-            availableChecksStartingRegion = RR_ROOT;
-            availableChecksStartingAgeTime = RAT_NONE;
-        }
+        ProcessPendingUpdates();
 
         // Quick Options
 #ifdef __WIIU__
@@ -1105,7 +1101,6 @@ void CheckTrackerWindow::DrawElement() {
 
         ImGui::TableNextRow(0, 0);
         ImGui::TableNextColumn();
-        bool mapMode = IsMapModeEnabled();
         bool showCheckTotals = CVarGetInteger(CVAR_TRACKER_CHECK("CheckTotalsVisible"), 1);
         std::string totalChecksText;
         if (showCheckTotals) {
@@ -1116,70 +1111,6 @@ void CheckTrackerWindow::DrawElement() {
             totalChecksSS << totalChecksGotten << " Checked / " << totalChecks << " Total";
             totalChecksText = totalChecksSS.str();
         }
-        std::string modeButtonLabel = mapMode ? "Mode: Map" : "Mode: Legacy";
-        const char* focusPlayerLabel = "Focus Player";
-        const char* reloadDataLabel = "Reload Data";
-        float mapHeaderButtonWidth = ImGui::GetContentRegionAvail().x;
-        if (mapMode) {
-            float longestHeaderButtonText =
-                std::max(std::max(ImGui::CalcTextSize(modeButtonLabel.c_str()).x, ImGui::CalcTextSize(focusPlayerLabel).x),
-                         ImGui::CalcTextSize(reloadDataLabel).x);
-            mapHeaderButtonWidth = longestHeaderButtonText + (ImGui::GetStyle().FramePadding.x * 2.0f) + 20.0f;
-        }
-
-        float modeButtonWidth = mapMode ? mapHeaderButtonWidth : ImGui::GetContentRegionAvail().x;
-        if (UIWidgets::Button(modeButtonLabel.c_str(),
-                              UIWidgets::ButtonOptions().Color(THEME_COLOR).Size({ modeButtonWidth, 0.0f }))) {
-            mapMode = !mapMode;
-            SPDLOG_INFO("[CheckTrackerMapDiag] Tracker mode toggled to {}.", mapMode ? "Map" : "Legacy");
-            SetMapModeEnabled(mapMode);
-            if (mapMode) {
-                doAreaScroll = true;
-            }
-        }
-        if (mapMode) {
-            ImGui::SameLine();
-            if (UIWidgets::Button(focusPlayerLabel,
-                                  UIWidgets::ButtonOptions().Color(THEME_COLOR).Size({ mapHeaderButtonWidth, 0.0f }))) {
-                UpdateRequestedMapTabFromCurrentArea(true);
-            }
-
-            ImGui::SameLine();
-            if (UIWidgets::Button(reloadDataLabel,
-                                  UIWidgets::ButtonOptions().Color(THEME_COLOR).Size({ mapHeaderButtonWidth, 0.0f }))) {
-                SPDLOG_INFO("[CheckTrackerMapDiag] Manual reload requested.");
-                LoadMapTrackerData();
-            }
-
-            if (showCheckTotals) {
-                ImGui::SameLine();
-                ImGui::TextUnformatted(totalChecksText.c_str());
-            }
-
-            {
-                float checkboxWidth = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x +
-                                      ImGui::CalcTextSize("Debug").x;
-                float nextLineX = ImGui::GetCursorPosX() + ImGui::GetStyle().ItemSpacing.x;
-                float rightPadding = ImGui::GetStyle().WindowPadding.x + ImGui::GetStyle().ItemSpacing.x + 6.0f;
-                float rightAlignedX = ImGui::GetWindowContentRegionMax().x - checkboxWidth - rightPadding;
-                ImGui::SameLine(std::max(nextLineX, rightAlignedX));
-            }
-            UIWidgets::CVarCheckbox(
-                "Debug", CHECK_TRACKER_MAP_DEBUG_CVAR,
-                UIWidgets::CheckboxOptions(
-                    { { .tooltip =
-                            "Map debug tab, pack issues, and check list export (logs/check_tracker_visibility_debug.txt)." } })
-                    .Color(THEME_COLOR));
-            showMapDebugDetails = CVarGetInteger(CHECK_TRACKER_MAP_DEBUG_CVAR, 0);
-
-            if (showMapDebugDetails) {
-                std::string activeAssetsPath =
-                    mapTrackerState.assetsRoot.empty() ? GetMapTrackerAssetsRootAbsoluteString() : mapTrackerState.assetsRoot.string();
-                std::string assetsText = "Assets: " + activeAssetsPath;
-                ImGui::TextWrapped("%s", assetsText.c_str());
-                DrawCheckTrackerVisibilityDebugControls();
-            }
-        }
         bool hasInlineHeaderToggle = false;
         auto beginInlineHeaderToggle = [&]() {
             if (hasInlineHeaderToggle) {
@@ -1188,7 +1119,7 @@ void CheckTrackerWindow::DrawElement() {
             hasInlineHeaderToggle = true;
         };
 
-        bool showHiddenItemsToggleVisible = !mapMode && CVarGetInteger(CVAR_TRACKER_CHECK("HiddenItemsToggleVisible"), 1);
+        bool showHiddenItemsToggleVisible = CVarGetInteger(CVAR_TRACKER_CHECK("HiddenItemsToggleVisible"), 1);
         if (showHiddenItemsToggleVisible) {
             beginInlineHeaderToggle();
             if (UIWidgets::CVarCheckbox(
@@ -1204,7 +1135,7 @@ void CheckTrackerWindow::DrawElement() {
         }
 
         bool showAvailableChecksToggleVisible =
-            !mapMode && enableAvailableChecks && CVarGetInteger(CVAR_TRACKER_CHECK("AvailableChecksToggleVisible"), 1);
+            enableAvailableChecks && CVarGetInteger(CVAR_TRACKER_CHECK("AvailableChecksToggleVisible"), 1);
         if (showAvailableChecksToggleVisible) {
             beginInlineHeaderToggle();
             if (UIWidgets::CVarCheckbox(
@@ -1217,7 +1148,7 @@ void CheckTrackerWindow::DrawElement() {
             }
         }
 
-        if (!mapMode && CVarGetInteger(CVAR_TRACKER_CHECK("ExpandCollapseButtonsVisible"), 0)) {
+        if (CVarGetInteger(CVAR_TRACKER_CHECK("ExpandCollapseButtonsVisible"), 0)) {
             if (UIWidgets::Button("Expand All", UIWidgets::ButtonOptions()
                                                     .Color(THEME_COLOR)
                                                     .Size({ ImGui::GetContentRegionAvail().x / 2 - 6, 0 }))) {
@@ -1234,7 +1165,7 @@ void CheckTrackerWindow::DrawElement() {
             }
         }
         UIWidgets::PushStyleCombobox(THEME_COLOR);
-        if (!mapMode && CVarGetInteger(CVAR_TRACKER_CHECK("SearchInputVisible"), 1)) {
+        if (CVarGetInteger(CVAR_TRACKER_CHECK("SearchInputVisible"), 1)) {
             if (checkSearch.Draw("", ImGui::GetContentRegionAvail().x - 6)) {
                 UpdateFilters();
             }
@@ -1249,15 +1180,13 @@ void CheckTrackerWindow::DrawElement() {
         }
         UIWidgets::PopStyleCombobox();
 
-        if (!mapMode && showCheckTotals) {
+        if (showCheckTotals) {
             ImGui::Text("%s", totalChecksText.c_str());
         }
 
-        bool headerPresent =
-            showHiddenItemsToggleVisible || showAvailableChecksToggleVisible || mapMode ||
-            (!mapMode && CVarGetInteger(CVAR_TRACKER_CHECK("ExpandCollapseButtonsVisible"), 0)) ||
-            (!mapMode && CVarGetInteger(CVAR_TRACKER_CHECK("SearchInputVisible"), 1)) ||
-            showCheckTotals;
+        bool headerPresent = showHiddenItemsToggleVisible || showAvailableChecksToggleVisible ||
+                             CVarGetInteger(CVAR_TRACKER_CHECK("ExpandCollapseButtonsVisible"), 0) ||
+                             CVarGetInteger(CVAR_TRACKER_CHECK("SearchInputVisible"), 1) || showCheckTotals;
         if (headerPresent) {
             ImGui::Separator();
         }
@@ -1273,9 +1202,7 @@ void CheckTrackerWindow::DrawElement() {
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
 
-        if (mapMode) {
-            DrawMapTrackerContent();
-        } else {
+        {
             // Prep for loop
             RainbowTick();
             bool doDraw = false;
@@ -2412,7 +2339,7 @@ void DrawLocation(RandomizerCheck rc) {
         ImGui::PopStyleColor();
     }
 
-    if (showLogicTooltip) {
+    if (CVarGetInteger(CVAR_TRACKER_CHECK("ShowLogic"), 0) != 0) {
         std::string logicString = GetCheckLogicString(rc);
         if (!logicString.empty()) {
             UIWidgets::Tooltip(logicString.c_str());

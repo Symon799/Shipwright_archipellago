@@ -1,5 +1,6 @@
 #include "check_tracker_visibility_debug.h"
 #include "map_tracker_internal.h"
+#include "randomizer_map_tracker.h"
 #include "soh/OTRGlobals.h"
 #include "soh/SohGui/UIWidgets.hpp"
 #include "soh/SohGui/SohGui.hpp"
@@ -327,12 +328,12 @@ struct PendingMarkerTooltip {
 
 static PendingMarkerTooltip pendingMarkerTooltip;
 
-static float GetCheckTrackerFontScale() {
-    return std::max(0.1f, CVarGetFloat(CVAR_TRACKER_CHECK("FontSize"), 1.0f));
+static float GetMapTrackerFontScale() {
+    return std::max(0.1f, CVarGetFloat(MapTracker::CVAR_FONT_SIZE, 1.0f));
 }
 
 static void ApplyCheckTrackerFontScaleToCurrentWindow() {
-    ImGui::SetWindowFontScale(GetCheckTrackerFontScale());
+    ImGui::SetWindowFontScale(GetMapTrackerFontScale());
 }
 
 static ImVec2 CalcCheckTrackerTextSize(const std::string& text, float wrapWidth = 0.0f) {
@@ -346,7 +347,7 @@ static ImVec2 CalcCheckTrackerTextSize(const std::string& text, float wrapWidth 
         return ImGui::CalcTextSize(text.c_str(), nullptr, false, resolvedWrapWidth > 0.0f ? resolvedWrapWidth : -1.0f);
     }
 
-    const float fontSize = font->FontSize * GetCheckTrackerFontScale();
+    const float fontSize = font->FontSize * GetMapTrackerFontScale();
     return font->CalcTextSizeA(fontSize, FLT_MAX, resolvedWrapWidth, text.c_str(), nullptr, nullptr);
 }
 
@@ -448,14 +449,6 @@ static bool ShouldRenderMapMarker(const MapMarker& marker, bool mqSpoilers) {
     }
 
     auto* itemLocation = OTRGlobals::Instance->gRandoContext->GetItemLocation(marker.check);
-    if (!IsMapModeEnabled() && enableAvailableChecks && onlyShowAvailable && !itemLocation->IsAvailable()) {
-        return false;
-    }
-
-    if (IsCheckHidden(marker.check)) {
-        return false;
-    }
-
     auto* location = Rando::StaticData::GetLocation(marker.check);
     return IsAreaSpoiled(location->GetArea()) || mqSpoilers;
 }
@@ -512,10 +505,10 @@ static MarkerTooltipContent BuildMarkerTooltipContent(RandomizerCheck check, con
         content.hintText.clear();
         content.showHintPrompt = true;
     }
-    if (showLogicTooltip) {
+    if (MapTracker::showLogicTooltip) {
         content.logicBranches = GetCheckLogicBranches(check);
     }
-    if (showMapDebugDetails) {
+    if (MapTracker::showMapDebugDetails) {
         content.checkMapTrackerId = GetGameCheckMapTrackerId(check);
         content.packCheckName = packCheckName;
     }
@@ -531,7 +524,7 @@ static MarkerTooltipContent BuildPopupRowTooltipContent(RandomizerCheck check) {
         content.hintText.clear();
         content.showHintPrompt = true;
     }
-    if (showLogicTooltip) {
+    if (MapTracker::showLogicTooltip) {
         content.logicBranches = GetCheckLogicBranches(check);
     }
     return content;
@@ -2022,11 +2015,11 @@ void DrawMapTrackerContent() {
     }
 
     UpdateRequestedMapTabFromCurrentArea(false);
-    bool mqSpoilers = CVarGetInteger(CVAR_TRACKER_CHECK("MQSpoilers"), 0);
+    bool mqSpoilers = CVarGetInteger(MapTracker::CVAR_MQ_SPOILERS, 0);
     constexpr const char* issuesGroupName = "Unlinked / Issues";
     constexpr const char* debugNoGroupName = "Others";
 
-    bool showIssuesTab = showMapDebugDetails;
+    bool showIssuesTab = MapTracker::showMapDebugDetails;
     bool requestGroupTabSelection = ApplyRequestedMapTabSelection();
     bool showDebugFallbackGroup = false;
     bool showGroupTabs = false;

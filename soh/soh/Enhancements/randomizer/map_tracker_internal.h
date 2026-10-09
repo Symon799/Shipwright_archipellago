@@ -14,8 +14,6 @@
 
 namespace CheckTracker {
 
-inline constexpr const char* CHECK_TRACKER_MAP_MODE_CVAR = CVAR_TRACKER_CHECK("MapMode");
-inline constexpr const char* CHECK_TRACKER_MAP_DEBUG_CVAR = CVAR_TRACKER_CHECK("MapDebugInfo");
 inline constexpr const char* CHECK_TRACKER_MAP_ASSETS_ROOT = "mods/check_tracker_map_pack";
 inline constexpr const char* CHECK_TRACKER_MAPS_JSON = "maps.json";
 inline constexpr const char* CHECK_TRACKER_LOCATIONS_DIR = "areas";
@@ -140,16 +138,12 @@ struct MapLinkBorderStyle {
 
 extern bool enableAvailableChecks;
 extern bool onlyShowAvailable;
-extern bool showLogicTooltip;
-extern bool showMapDebugDetails;
 extern RandomizerCheckArea previousArea;
 extern RandomizerCheckArea currentArea;
 extern std::map<RandomizerCheckArea, std::vector<RandomizerCheck>> checksByArea;
 
 extern MapTrackerState mapTrackerState;
 
-bool IsMapModeEnabled();
-void SetMapModeEnabled(bool enabled);
 std::string GetMapTrackerAssetsRootAbsoluteString();
 void ResetMapTrackerState(bool unloadTextures);
 void LoadMapTrackerData();
