@@ -170,12 +170,13 @@ jobs:
           --map-pack release-assets/SoH_MapRessource_v1.1.4.zip \
           --readme README.md \
           --soh-otr build-cmake/soh/soh.o2r
+        mkdir -p SoH_Arch_MapTracker_macOS
+        python3 -c "import zipfile; zipfile.ZipFile('SoH_Arch_MapTracker_macOS.zip').extractall('SoH_Arch_MapTracker_macOS')"
     - name: Upload build
       uses: actions/upload-artifact@v7
       with:
-        name: soh-mac
-        path: |
-          SoH_Arch_MapTracker_macOS.zip
+        name: SoH_Arch_MapTracker_macOS
+        path: SoH_Arch_MapTracker_macOS
     - name: Save Cache MacPorts
       if: ${{ github.ref_name == github.event.repository.default_branch }}
       uses: actions/cache/save@v5
@@ -314,15 +315,16 @@ jobs:
           --map-pack release-assets/SoH_MapRessource_v1.1.4.zip \
           --readme README.md \
           --soh-otr build-cmake/soh/soh.o2r
+        mkdir -p SoH_Arch_MapTracker_Linux
+        python3 -c "import zipfile; zipfile.ZipFile('SoH_Arch_MapTracker_Linux.zip').extractall('SoH_Arch_MapTracker_Linux')"
       env:
         CC: gcc-12
         CXX: g++-12
     - name: Upload build
       uses: actions/upload-artifact@v7
       with:
-        name: soh-linux
-        path: |
-          SoH_Arch_MapTracker_Linux.zip
+        name: SoH_Arch_MapTracker_Linux
+        path: SoH_Arch_MapTracker_Linux
     - name: Save Cache deps folder
       if: ${{ github.ref_name == github.event.repository.default_branch }}
       uses: actions/cache/save@v5
@@ -393,11 +395,12 @@ jobs:
           --map-pack release-assets/SoH_MapRessource_v1.1.4.zip `
           --readme README.md `
           --soh-otr build-windows/soh/soh.o2r
+        Expand-Archive -Path SoH_Arch_MapTracker_Windows.zip -DestinationPath SoH_Arch_MapTracker_Windows -Force
     - name: Upload build
       uses: actions/upload-artifact@v7
       with:
-        name: soh-windows
-        path: SoH_Arch_MapTracker_Windows.zip
+        name: SoH_Arch_MapTracker_Windows
+        path: SoH_Arch_MapTracker_Windows
     - name: Save Cache VCPKG folder
       if: ${{ github.ref_name == github.event.repository.default_branch }}
       uses: actions/cache/save@v5
