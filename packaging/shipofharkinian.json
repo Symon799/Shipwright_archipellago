@@ -1,0 +1,128 @@
+{
+  "CVars": {
+    "gEnhancements": {
+      "AlwaysShowDungeonMinimapIcon": 1,
+      "AssignableTunicsAndBoots": 1,
+      "BetterAmmoRendering": 1,
+      "BetterBombchuShopping": 1,
+      "BowReticle": 1,
+      "BushDropFix": 1,
+      "CustomizeBombchuBowling": 1,
+      "CustomizeFishing": 1,
+      "DampeWin": 1,
+      "DekuNutUpgradeFix": 1,
+      "DisableBlackBars": 1,
+      "DisableLOD": 1,
+      "DpadEquips": 1,
+      "EnableBombchuDrops": 1,
+      "EnemyHealthBar": 1,
+      "EquipmentCanBeRemoved": 1,
+      "FastBoomerang": 1,
+      "FastBottles": 1,
+      "FastChests": 1,
+      "FastDrops": 1,
+      "FastFarores": 1,
+      "FastOcarinaPlayback": 1,
+      "FasterBlockPush": 5,
+      "FasterHeavyBlockLift": 1,
+      "FasterPauseMenu": 1,
+      "FasterRupeeAccumulator": 1,
+      "FileSelectMoreInfo": 1,
+      "FixCameraDrift": 1,
+      "FixDungeonMinimapIcon": 1,
+      "FixFloorSwitches": 1,
+      "FixHammerHand": 1,
+      "FixMenuLR": 1,
+      "FixVineFall": 1,
+      "GuaranteeFishingBite": 1,
+      "HookshotableReticle": 1,
+      "InstantFishing": 1,
+      "InstantFrogsGameWin": 1,
+      "InstantOcarinaGameWin": 1,
+      "InstantShootingGalleryWin": 1,
+      "ItemUnequip": 1,
+      "MarketSneak": 1,
+      "MaskSelect": 1,
+      "NightGSAlwaysSpawn": 1,
+      "OpenAllHours": 1,
+      "PauseMenuAnimatedLink": 1,
+      "PersistentMasks": 1,
+      "PulsateBossIcon": 1,
+      "QuickPutaway": 1,
+      "RememberMapToggleState": 1,
+      "SkipArrowAnimation": 1,
+      "SkipKeepConfirmation": 1,
+      "SkipSaveConfirmation": 1,
+      "SkipSwimDeepEndAnim": 1,
+      "SkipText": 1,
+      "SwordToggle": 2,
+      "TimeSavers": {
+        "DisableTitleCard": 1,
+        "SkipChildStealth": 1,
+        "SkipCutscene": {
+          "BossIntro": 1,
+          "Entrances": 1,
+          "Intro": 1,
+          "LearnSong": 1,
+          "OnePoint": 0,
+          "QuickBossDeaths": 1,
+          "Story": 1
+        },
+        "SkipForcedDialog": 3,
+        "SkipMiscInteractions": 1,
+        "SkipOwlInteractions": 1,
+        "SkipTowerEscape": 1
+      },
+      "TimeTravel": 3,
+      "ToTMedallionsColors": 1,
+      "VisualAgony": 1
+    },
+    "gRandoSettings": {
+      "SkipPlantingBeans": 1
+    },
+    "gTrackers": {
+      "CheckTracker": {
+        "EnableAvailableChecks": 1,
+        "HideUnshuffledShopChecks": 1,
+        "MapDebugInfo": 0,
+        "MapMode": 1,
+        "OnlyShowAvailable": 1,
+        "ShowHidden": 0,
+        "ShowLogic": 1,
+        "Skipped": {
+          "Hide": 1
+        }
+      },
+      "MapTracker": {
+        "WindowType": 1,
+        "FontSize": 1.0,
+        "Draggable": 1,
+        "ShowOnlyPaused": 0,
+        "ShowLogic": 0,
+        "ShowTotals": 1,
+        "ShowDebugInfo": 0,
+        "MQSpoilers": 0
+      },
+      "ItemTracker": {
+        "DisplayType": {
+          "DungeonItems": 1,
+          "OcarinaButtons": 0
+        },
+        "Draggable": 1,
+        "DungeonItems": {
+          "DisplayMaps": 0
+        },
+        "HookshotIdentifier": 1,
+        "IconSize": 40,
+        "IconSpacing": 5,
+        "ItemCountAlignLeft": 1,
+        "TextSize": 12,
+        "WindowType": 0
+      }
+    }
+  },
+  "ConfigVersion": 6
+}
+
+
+

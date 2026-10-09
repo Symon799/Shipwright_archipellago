@@ -2,10 +2,32 @@ name: generate-builds
 on:
   push:
   pull_request:
+  workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+env:
+  MAP_PACK_URL: https://github.com/Symon799/SoH_Map_Ressource_Maker/releases/download/SoH_MapRessource_v1.1.4/SoH_MapRessource_v1.1.4.zip
+  MAP_PACK_SHA256: ED4BC2C15C53DE5E13178BC916F443D47746857F52904C0138AF6B306BDFE16F
 jobs:
+
+  prepare-release-assets:
+    runs-on: ubuntu-22.04
+    steps:
+    - name: Git Checkout
+      uses: actions/checkout@v6
+    - name: Prepare release assets
+      run: |
+        mkdir -p release-assets
+        curl --fail --location "$MAP_PACK_URL" --output release-assets/SoH_MapRessource_v1.1.4.zip
+        echo "$MAP_PACK_SHA256  release-assets/SoH_MapRessource_v1.1.4.zip" | sha256sum --check
+        cp packaging/shipofharkinian.json release-assets/shipofharkinian.json
+    - name: Upload release assets
+      uses: actions/upload-artifact@v7
+      with:
+        name: release-assets
+        path: release-assets
+        retention-days: 3
 
   generate-soh-otr:
     runs-on: ubuntu-22.04
@@ -75,7 +97,7 @@ jobs:
         retention-days: 3
 
   build-macos:
-    needs: generate-soh-otr
+    needs: [generate-soh-otr, prepare-release-assets]
     runs-on: macos-14
     steps:
     - name: Git Checkout
@@ -127,6 +149,11 @@ jobs:
       with:
         name: soh.o2r
         path: build-cmake/soh
+    - name: Download release assets
+      uses: actions/download-artifact@v7
+      with:
+        name: release-assets
+        path: release-assets
     - name: Build SoH
       run: |
         export PATH="/usr/lib/ccache:/opt/homebrew/opt/ccache/libexec:/usr/local/opt/ccache/libexec:$PATH"
@@ -135,14 +162,20 @@ jobs:
         (cd build-cmake && cpack)
 
         mv _packages/*.dmg SoH.dmg
-        mv README.md readme.txt
+        python3 scripts/package_map_tracker_release.py \
+          --platform macos \
+          --package SoH.dmg \
+          --output SoH_Arch_MapTracker_macOS.zip \
+          --config release-assets/shipofharkinian.json \
+          --map-pack release-assets/SoH_MapRessource_v1.1.4.zip \
+          --readme README.md \
+          --soh-otr build-cmake/soh/soh.o2r
     - name: Upload build
       uses: actions/upload-artifact@v7
       with:
         name: soh-mac
         path: |
-          SoH.dmg
-          readme.txt
+          SoH_Arch_MapTracker_macOS.zip
     - name: Save Cache MacPorts
       if: ${{ github.ref_name == github.event.repository.default_branch }}
       uses: actions/cache/save@v5
@@ -151,7 +184,7 @@ jobs:
         path: /opt/local/
 
   build-linux:
-    needs: generate-soh-otr
+    needs: [generate-soh-otr, prepare-release-assets]
     runs-on: ubuntu-22.04
     steps:
     - name: Git Checkout
@@ -260,6 +293,11 @@ jobs:
       with:
         name: soh.o2r
         path: build-cmake/soh
+    - name: Download release assets
+      uses: actions/download-artifact@v7
+      with:
+        name: release-assets
+        path: release-assets
     - name: Build SoH
       run: |
         export PATH="/usr/lib/ccache:/usr/local/opt/ccache/libexec:$PATH"
@@ -267,8 +305,15 @@ jobs:
         cmake --build build-cmake --config Release -j3
         (cd build-cmake && cpack -G External)
 
-        mv README.md readme.txt
         mv build-cmake/*.appimage soh.appimage
+        python3 scripts/package_map_tracker_release.py \
+          --platform linux \
+          --package soh.appimage \
+          --output SoH_Arch_MapTracker_Linux.zip \
+          --config release-assets/shipofharkinian.json \
+          --map-pack release-assets/SoH_MapRessource_v1.1.4.zip \
+          --readme README.md \
+          --soh-otr build-cmake/soh/soh.o2r
       env:
         CC: gcc-12
         CXX: g++-12
@@ -277,8 +322,7 @@ jobs:
       with:
         name: soh-linux
         path: |
-          soh.appimage
-          readme.txt
+          SoH_Arch_MapTracker_Linux.zip
     - name: Save Cache deps folder
       if: ${{ github.ref_name == github.event.repository.default_branch }}
       uses: actions/cache/save@v5
@@ -287,7 +331,7 @@ jobs:
         path: deps
 
   build-windows:
-    needs: generate-soh-otr
+    needs: [generate-soh-otr, prepare-release-assets]
     runs-on: windows-latest
     steps:
     - name: Install dependencies
@@ -325,6 +369,11 @@ jobs:
       with:
         name: soh.o2r
         path: build-windows/soh
+    - name: Download release assets
+      uses: actions/download-artifact@v7
+      with:
+        name: release-assets
+        path: release-assets
     - name: Build SoH
       env:
         VCPKG_ROOT: ${{github.workspace}}/vcpkg
@@ -335,14 +384,20 @@ jobs:
 
         (cd build-windows && cpack)
         cd ..
-        mv _packages/*.zip _packages/soh-windows.zip
-    - name: Unzip package
-      run: Expand-Archive -Path _packages/soh-windows.zip -DestinationPath soh-windows
+        $nativePackage = Get-ChildItem _packages -Filter *.zip | Select-Object -First 1
+        python scripts/package_map_tracker_release.py `
+          --platform windows `
+          --package $nativePackage.FullName `
+          --output SoH_Arch_MapTracker_Windows.zip `
+          --config release-assets/shipofharkinian.json `
+          --map-pack release-assets/SoH_MapRessource_v1.1.4.zip `
+          --readme README.md `
+          --soh-otr build-windows/soh/soh.o2r
     - name: Upload build
       uses: actions/upload-artifact@v7
       with:
         name: soh-windows
-        path: soh-windows
+        path: SoH_Arch_MapTracker_Windows.zip
     - name: Save Cache VCPKG folder
       if: ${{ github.ref_name == github.event.repository.default_branch }}
       uses: actions/cache/save@v5

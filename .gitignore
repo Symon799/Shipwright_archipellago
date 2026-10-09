@@ -421,6 +421,7 @@ tags
 *.sav
 shipofharkinian.ini
 shipofharkinian.json
+!/packaging/shipofharkinian.json
 imgui.ini
 timesplitdata.json
 
