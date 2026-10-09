@@ -307,6 +307,7 @@ std::vector<uint32_t> buttons = { BTN_A, BTN_B, BTN_CUP,   BTN_CDOWN, BTN_CLEFT,
                                   BTN_Z, BTN_R, BTN_START, BTN_DUP,   BTN_DDOWN, BTN_DLEFT,  BTN_DRIGHT };
 static ImGuiTextFilter checkSearch;
 static bool recalculateAvailable = false;
+static bool mapTrackerAvailabilityRequested = false;
 static RandomizerRegion availableChecksStartingRegion = RR_ROOT;
 static RandoAgeTime availableChecksStartingAgeTime = RAT_NONE;
 static int16_t previousEntrance = 0;
@@ -1009,6 +1010,13 @@ void ProcessPendingUpdates() {
     InternalRecalculateAvailableChecks(availableChecksStartingRegion, availableChecksStartingAgeTime);
     availableChecksStartingRegion = RR_ROOT;
     availableChecksStartingAgeTime = RAT_NONE;
+}
+
+void SetMapTrackerAvailabilityRequested(bool requested) {
+    if (requested && !mapTrackerAvailabilityRequested) {
+        recalculateAvailable = true;
+    }
+    mapTrackerAvailabilityRequested = requested;
 }
 
 void CheckTrackerWindow::DrawElement() {
@@ -2428,7 +2436,7 @@ void ImGuiDrawTwoColorPickerSection(const char* text, const char* cvarMainName, 
 }
 
 void InternalRecalculateAvailableChecks(RandomizerRegion startingRegion, RandoAgeTime startingAgeTime) {
-    if (!enableAvailableChecks || !GameInteractor::IsSaveLoaded()) {
+    if ((!enableAvailableChecks && !mapTrackerAvailabilityRequested) || !GameInteractor::IsSaveLoaded()) {
         return;
     }
 

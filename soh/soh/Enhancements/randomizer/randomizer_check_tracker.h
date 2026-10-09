@@ -71,6 +71,7 @@ void UpdateAllOrdering();
 void UpdateAllAreas();
 void RecalculateAllAreaTotals();
 void ProcessPendingUpdates();
+void SetMapTrackerAvailabilityRequested(bool requested);
 
 // Archipelago: cache of scouted location checks (synced from AP client / slot data).
 void RefreshArchipelagoScoutedChecks();

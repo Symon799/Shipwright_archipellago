@@ -5,6 +5,7 @@
 #include "soh/cvar_prefixes.h"
 
 #include <filesystem>
+#include <cstdint>
 #include <map>
 #include <optional>
 #include <string>
@@ -76,6 +77,7 @@ struct MapTabData {
     ImTextureID texture = 0;
     ImVec2 textureSize = { 0.0f, 0.0f };
     bool imageLoaded = false;
+    bool imageLoading = false;
     float zoomFactor = 1.0f;
     ImVec2 panOffset = { 0.0f, 0.0f };
     std::string imageError;
@@ -117,6 +119,9 @@ struct MapTrackerState {
     std::vector<MapIssueEntry> archipelagoScoutedWithoutMapId;
     std::vector<MapTabData> tabs;
     std::unordered_map<std::string, size_t> tabIndexById;
+    std::vector<size_t> pendingTextureLoads;
+    int loadingTextureTabIndex = -1;
+    uint64_t textureLoadGeneration = 0;
     std::vector<std::string> mapGroups;
     std::unordered_map<std::string, std::vector<int>> tabIndicesByGroup;
     std::string selectedGroupName;
@@ -147,6 +152,7 @@ extern MapTrackerState mapTrackerState;
 std::string GetMapTrackerAssetsRootAbsoluteString();
 void ResetMapTrackerState(bool unloadTextures);
 void LoadMapTrackerData();
+void ProcessPendingMapTextureLoads();
 void DrawMapTrackerContent();
 void UpdateRequestedMapTabFromCurrentArea(bool force);
 void InvalidateMapTrackerRenderCache(bool closePopups = true);

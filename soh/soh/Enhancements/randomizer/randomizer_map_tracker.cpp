@@ -88,8 +88,10 @@ void DrawMapHeader() {
 
 void MapTrackerWindow::Draw() {
     if (!IsVisible()) {
+        CheckTracker::SetMapTrackerAvailabilityRequested(false);
         return;
     }
+    CheckTracker::SetMapTrackerAvailabilityRequested(true);
     DrawElement();
     SyncVisibilityConsoleVariable();
 }

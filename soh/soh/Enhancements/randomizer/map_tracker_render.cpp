@@ -1304,7 +1304,14 @@ void DrawMapTabContent(int tabIndex, const MapTrackerRenderCache& renderCache) {
     const CachedMapTabRenderData& cachedTabRenderData = renderCache.tabRenderDataByIndex[static_cast<size_t>(tabIndex)];
 
     if (!tab.imageLoaded) {
-        ImGui::TextWrapped("Could not render map image for \"%s\".", tab.mapName.c_str());
+        if (tab.imageLoading || tab.imageError.empty()) {
+            constexpr const char* spinnerFrames[] = { "|", "/", "-", "\\" };
+            const size_t spinnerIndex = static_cast<size_t>(ImGui::GetTime() * 8.0) % 4;
+            ImGui::TextWrapped("%s Loading map image for \"%s\"...", spinnerFrames[spinnerIndex],
+                              tab.mapName.c_str());
+        } else {
+            ImGui::TextWrapped("Could not render map image for \"%s\".", tab.mapName.c_str());
+        }
         if (!tab.imageError.empty()) {
             ImGui::TextWrapped("%s", tab.imageError.c_str());
         }
@@ -2036,6 +2043,8 @@ void DrawMapTrackerContent() {
     bool showingIssuesTab = showGroupTabs && showIssuesTab && (mapTrackerState.selectedGroupName == issuesGroupName);
     std::vector<int> visibleTabIndices =
         BuildVisibleMapTabIndices(showingIssuesTab, showGroupTabs, showDebugFallbackGroup, debugNoGroupName);
+
+    ProcessPendingMapTextureLoads();
 
     bool showMapButtons = !showingIssuesTab && visibleTabIndices.size() > 1;
     if (showMapButtons) {

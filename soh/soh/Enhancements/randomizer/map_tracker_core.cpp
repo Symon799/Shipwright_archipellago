@@ -15,6 +15,8 @@
 #include "location_access.h"
 #include "3drando/fill.hpp"
 #include "soh/Enhancements/debugger/performanceTimer.h"
+#include "ship/resource/archive/O2rArchive.h"
+#include "ship/window/gui/resource/GuiTexture.h"
 
 extern "C" {
 #include "variables.h"
@@ -25,10 +27,16 @@ extern "C" {
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <condition_variable>
+#include <deque>
 #include <filesystem>
+#include <limits>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_set>
 #include <vector>
 
@@ -49,6 +57,132 @@ using namespace UIWidgets;
 
 MapTrackerState mapTrackerState;
 static uint64_t mapTrackerTextureLoadGeneration = 1;
+
+struct MapTextureLoadRequest {
+    uint64_t generation = 0;
+    size_t tabIndex = 0;
+    std::string archivePath;
+    std::string resourcePath;
+};
+
+struct MapTextureLoadResult {
+    uint64_t generation = 0;
+    size_t tabIndex = 0;
+    std::shared_ptr<Ship::GuiTexture> texture;
+    std::string error;
+};
+
+class AsyncMapTextureLoader {
+  public:
+    ~AsyncMapTextureLoader() {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            stopRequested = true;
+        }
+        condition.notify_one();
+        if (worker.joinable()) {
+            worker.join();
+        }
+    }
+
+    void Enqueue(MapTextureLoadRequest request) {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (!worker.joinable()) {
+                worker = std::thread(&AsyncMapTextureLoader::Run, this);
+            }
+            requests.push_back(std::move(request));
+        }
+        condition.notify_one();
+    }
+
+    void CancelQueuedRequests() {
+        std::lock_guard<std::mutex> lock(mutex);
+        requests.clear();
+    }
+
+    bool TryGetResult(MapTextureLoadResult& outResult) {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (results.empty()) {
+            return false;
+        }
+        outResult = std::move(results.front());
+        results.pop_front();
+        return true;
+    }
+
+  private:
+    void Run() {
+        std::unique_ptr<Ship::O2rArchive> archive;
+        std::string archivePath;
+
+        while (true) {
+            MapTextureLoadRequest request;
+            {
+                std::unique_lock<std::mutex> lock(mutex);
+                condition.wait(lock, [this] { return stopRequested || !requests.empty(); });
+                if (stopRequested) {
+                    return;
+                }
+                request = std::move(requests.front());
+                requests.pop_front();
+            }
+
+            MapTextureLoadResult result;
+            result.generation = request.generation;
+            result.tabIndex = request.tabIndex;
+
+            if (archive == nullptr || archivePath != request.archivePath) {
+                archive.reset();
+                archivePath = request.archivePath;
+                archive = std::make_unique<Ship::O2rArchive>(archivePath);
+                if (!archive->Open()) {
+                    result.error = "Could not open map pack archive for texture loading.";
+                }
+            }
+
+            if (result.error.empty()) {
+                auto file = archive->LoadFile(request.resourcePath);
+                if (file == nullptr || !file->IsLoaded || file->Buffer == nullptr || file->Buffer->empty()) {
+                    result.error = "Could not read map image resource: " + request.resourcePath;
+                } else if (file->Buffer->size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+                    result.error = "Map image resource is too large: " + request.resourcePath;
+                } else {
+                    auto initData = std::make_shared<Ship::ResourceInitData>();
+                    initData->Path = request.resourcePath;
+                    auto texture = std::make_shared<Ship::GuiTexture>(initData);
+                    texture->Data = nullptr;
+                    texture->DataSize = file->Buffer->size();
+                    texture->Metadata.RendererTextureId = 0;
+                    texture->Metadata.Width = 0;
+                    texture->Metadata.Height = 0;
+                    texture->Data = stbi_load_from_memory(
+                        reinterpret_cast<const stbi_uc*>(file->Buffer->data()), static_cast<int>(texture->DataSize),
+                        &texture->Metadata.Width, &texture->Metadata.Height, nullptr, 4);
+                    if (texture->Data == nullptr) {
+                        result.error = "Could not decode map image resource: " + request.resourcePath;
+                    } else {
+                        result.texture = std::move(texture);
+                    }
+                }
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                results.push_back(std::move(result));
+            }
+        }
+    }
+
+    std::mutex mutex;
+    std::condition_variable condition;
+    std::deque<MapTextureLoadRequest> requests;
+    std::deque<MapTextureLoadResult> results;
+    std::thread worker;
+    bool stopRequested = false;
+};
+
+static AsyncMapTextureLoader mapTextureLoader;
 
 std::string TrimCopy(const std::string& value) {
     size_t start = value.find_first_not_of(" \t\r\n");
@@ -511,6 +645,7 @@ std::vector<CheckDescriptor> BuildVisibleCheckDescriptors() {
 }
 
 void ResetMapTrackerState(bool unloadTextures) {
+    mapTextureLoader.CancelQueuedRequests();
     UnloadMapTrackerResources(mapTrackerState, unloadTextures);
     mapTrackerState = {};
     InvalidateMapTrackerRenderCache();
@@ -1424,23 +1559,7 @@ static void LinkMapMarkersToTabs(MapTrackerState& state, const std::vector<MapMa
     }
 }
 
-static bool LoadMapTabTextures(MapTrackerState& state, uint64_t loadGeneration) {
-    auto gui = Ship::Context::GetInstance()->GetWindow()->GetGui();
-    if (gui == nullptr) {
-        state.fatalErrors.push_back("Could not access GUI texture loader.");
-        SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: GUI texture loader was null.");
-        return false;
-    }
-
-    auto context = Ship::Context::GetInstance();
-    if (context == nullptr || context->GetResourceManager() == nullptr ||
-        context->GetResourceManager()->GetArchiveManager() == nullptr) {
-        state.fatalErrors.push_back("Could not access archive manager for map texture resources.");
-        SPDLOG_ERROR("[CheckTrackerMapDiag] Fatal: archive manager unavailable.");
-        return false;
-    }
-    auto archiveManager = context->GetResourceManager()->GetArchiveManager();
-
+static bool PrepareMapTabTextures(MapTrackerState& state) {
     for (auto& tab : state.tabs) {
         std::sort(tab.markers.begin(), tab.markers.end(), [](const MapMarker& left, const MapMarker& right) {
             if (left.check == right.check) {
@@ -1448,33 +1567,12 @@ static bool LoadMapTabTextures(MapTrackerState& state, uint64_t loadGeneration) 
             }
             return left.check < right.check;
         });
+    }
 
-        if (!tab.imageError.empty()) {
-            continue;
-        }
-
-        if (!archiveManager->HasFile(tab.imageResourcePath)) {
-            tab.imageError = "Image resource not indexed in archive: " + tab.imageResourcePath +
-                             " | Archive mount root: " + state.assetsArchiveMountRoot.string();
-            continue;
-        }
-
-        tab.textureName = BuildMapTextureName(loadGeneration, tab.mapId);
-        if (gui->HasTextureByName(tab.textureName)) {
-            gui->UnloadTexture(tab.textureName);
-        }
-
-        try {
-            gui->LoadTextureFromRawImage(tab.textureName, tab.imageResourcePath);
-            tab.texture = gui->GetTextureByName(tab.textureName);
-            tab.textureSize = gui->GetTextureSize(tab.textureName);
-            tab.imageLoaded = tab.texture != 0 && tab.textureSize.x > 0.0f && tab.textureSize.y > 0.0f;
-            if (!tab.imageLoaded) {
-                tab.imageError = "Failed to load map texture from resource path: " + tab.imageResourcePath;
-            }
-        } catch (...) {
-            tab.imageError = "Failed to load map texture from resource path: " + tab.imageResourcePath;
-        }
+    state.pendingTextureLoads.clear();
+    state.pendingTextureLoads.reserve(state.tabs.size());
+    for (size_t tabIndex = 0; tabIndex < state.tabs.size(); tabIndex++) {
+        state.pendingTextureLoads.push_back(tabIndex);
     }
     return true;
 }
@@ -1483,9 +1581,11 @@ static void FinalizeMapTrackerLoadSuccess(MapTrackerState& state) {
     state.loaded = true;
 }
 
-static void LogMapTrackerLoadSuccess(const MapTrackerState& state, const std::chrono::steady_clock::time_point& loadStartTime) {
-    SPDLOG_INFO("[CheckTrackerMapDiag] Load completed in {} ms. tabs={} warnings={} fatalErrors={}",
-                GetElapsedMilliseconds(loadStartTime), state.tabs.size(), state.warnings.size(), state.fatalErrors.size());
+static void LogMapTrackerLoadSuccess(const MapTrackerState& state,
+                                     const std::chrono::steady_clock::time_point& loadStartTime) {
+    SPDLOG_INFO("[CheckTrackerMapDiag] Metadata loaded in {} ms. tabs={} pendingTextures={} warnings={} fatalErrors={}",
+                GetElapsedMilliseconds(loadStartTime), state.tabs.size(), state.pendingTextureLoads.size(),
+                state.warnings.size(), state.fatalErrors.size());
 }
 
 void LoadMapTrackerData() {
@@ -1494,6 +1594,7 @@ void LoadMapTrackerData() {
     MapTrackerState loadedState = CreateMapTrackerLoadState();
     const std::filesystem::path packFolderPath = loadedState.assetsRoot;
     const uint64_t textureLoadGeneration = mapTrackerTextureLoadGeneration++;
+    loadedState.textureLoadGeneration = textureLoadGeneration;
 
     SPDLOG_INFO("[CheckTrackerMapDiag] Load start. assets='{}' candidates='{}'", loadedState.assetsRoot.string(),
                 BuildMapTrackerAssetsRootCandidatesSummary());
@@ -1511,7 +1612,7 @@ void LoadMapTrackerData() {
         BuildMapTabsFromMetadata(loadedState, metadata);
         BuildMapTabGroups(loadedState);
         LinkMapMarkersToTabs(loadedState, mappedMarkers);
-        loadSucceeded = LoadMapTabTextures(loadedState, textureLoadGeneration);
+        loadSucceeded = PrepareMapTabTextures(loadedState);
     }
 
     if (!loadSucceeded) {
@@ -1531,7 +1632,74 @@ void LoadMapTrackerData() {
     FinalizeMapTrackerLoadSuccess(loadedState);
     mapTrackerState = std::move(loadedState);
     InvalidateMapTrackerRenderCache();
+    mapTextureLoader.CancelQueuedRequests();
     LogMapTrackerLoadSuccess(mapTrackerState, loadStartTime);
+}
+
+void ProcessPendingMapTextureLoads() {
+    MapTextureLoadResult result;
+    while (mapTextureLoader.TryGetResult(result)) {
+        if (result.generation != mapTrackerState.textureLoadGeneration ||
+            result.tabIndex >= mapTrackerState.tabs.size()) {
+            continue;
+        }
+
+        MapTabData& tab = mapTrackerState.tabs[result.tabIndex];
+        tab.imageLoading = false;
+        if (mapTrackerState.loadingTextureTabIndex == static_cast<int>(result.tabIndex)) {
+            mapTrackerState.loadingTextureTabIndex = -1;
+        }
+
+        if (result.texture == nullptr) {
+            tab.imageError = result.error.empty() ? "Failed to load map image." : result.error;
+            continue;
+        }
+
+        auto gui = Ship::Context::GetInstance()->GetWindow()->GetGui();
+        if (gui == nullptr) {
+            tab.imageError = "Could not access GUI texture loader.";
+            continue;
+        }
+
+        tab.textureName = BuildMapTextureName(mapTrackerState.textureLoadGeneration, tab.mapId);
+        try {
+            gui->LoadTextureFromResource(tab.textureName, std::move(result.texture));
+            tab.texture = gui->GetTextureByName(tab.textureName);
+            tab.textureSize = gui->GetTextureSize(tab.textureName);
+            tab.imageLoaded = tab.texture != 0 && tab.textureSize.x > 0.0f && tab.textureSize.y > 0.0f;
+            if (!tab.imageLoaded) {
+                tab.imageError = "Failed to upload map texture: " + tab.imageResourcePath;
+            }
+        } catch (...) {
+            tab.imageError = "Failed to upload map texture: " + tab.imageResourcePath;
+        }
+    }
+
+    if (!mapTrackerState.loaded || mapTrackerState.loadingTextureTabIndex >= 0 ||
+        mapTrackerState.pendingTextureLoads.empty()) {
+        return;
+    }
+
+    size_t pendingPosition = 0;
+    if (mapTrackerState.selectedTabIndex >= 0 &&
+        mapTrackerState.selectedTabIndex < static_cast<int>(mapTrackerState.tabs.size())) {
+        const size_t selectedTabIndex = static_cast<size_t>(mapTrackerState.selectedTabIndex);
+        auto selectedPosition = std::find(mapTrackerState.pendingTextureLoads.begin(),
+                                          mapTrackerState.pendingTextureLoads.end(), selectedTabIndex);
+        if (selectedPosition != mapTrackerState.pendingTextureLoads.end()) {
+            pendingPosition = static_cast<size_t>(
+                std::distance(mapTrackerState.pendingTextureLoads.begin(), selectedPosition));
+        }
+    }
+
+    const size_t tabIndex = mapTrackerState.pendingTextureLoads[pendingPosition];
+    mapTrackerState.pendingTextureLoads.erase(mapTrackerState.pendingTextureLoads.begin() + pendingPosition);
+
+    MapTabData& tab = mapTrackerState.tabs[tabIndex];
+    tab.imageLoading = true;
+    mapTrackerState.loadingTextureTabIndex = static_cast<int>(tabIndex);
+    mapTextureLoader.Enqueue({ mapTrackerState.textureLoadGeneration, tabIndex, mapTrackerState.mountedArchivePath.string(),
+                               tab.imageResourcePath });
 }
 
 } // namespace CheckTracker
