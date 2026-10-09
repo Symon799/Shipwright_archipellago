@@ -7,6 +7,8 @@
 #include <vector>
 #include <chrono>
 #include <optional>
+#include <unordered_map>
+#include <unordered_set>
 
 #include "ResourceManagerHelpers.h"
 #include <fast/Fast3dWindow.h>
@@ -41,6 +43,7 @@
 #include <ship/window/FileDropMgr.h>
 #include <ship/window/gui/resource/Font.h>
 #include <ship/utils/StringHelper.h>
+#include <libultraship/controller/controldevice/controller/mapping/ControllerDefaultMappings.h>
 #include "Enhancements/custom-message/CustomMessageManager.h"
 #include "util.h"
 #include "soh/Enhancements/randomizer/hook_handlers.h"
@@ -268,6 +271,21 @@ static bool VerifyArchiveVersion(OTRVersion version);
 std::string portArchivePath = "";
 static bool sohArchiveVersionMatch = false;
 
+static std::shared_ptr<Ship::ControllerDefaultMappings> CreateSohControllerDefaultMappings() {
+    auto defaults = std::make_shared<LUS::ControllerDefaultMappings>();
+    auto keyboardMappings = defaults->GetDefaultKeyboardKeyToButtonMappings();
+    auto controllerMappings = defaults->GetDefaultSDLButtonToButtonMappings();
+
+    keyboardMappings[BTN_CUSTOM_MAP_TRACKER] = { Ship::LUS_KB_M };
+    controllerMappings[BTN_CUSTOM_MAP_TRACKER] = { SDL_CONTROLLER_BUTTON_RIGHTSHOULDER };
+
+    return std::make_shared<LUS::ControllerDefaultMappings>(
+        std::move(keyboardMappings), defaults->GetDefaultKeyboardKeyToAxisDirectionMappings(),
+        std::move(controllerMappings), defaults->GetDefaultSDLButtonToAxisDirectionMappings(),
+        defaults->GetDefaultSDLAxisDirectionToButtonMappings(),
+        defaults->GetDefaultSDLAxisDirectionToAxisDirectionMappings());
+}
+
 OTRGlobals::OTRGlobals() {
     context = Ship::Context::CreateUninitializedInstance("Ship of Harkinian", appShortName, "shipofharkinian.json");
 
@@ -280,18 +298,38 @@ OTRGlobals::OTRGlobals() {
     context->InitConfiguration();
     context->InitConsoleVariables();
 
-    auto controlDeck = std::make_shared<LUS::ControlDeck>(std::vector<CONTROLLERBUTTONS_T>({
-        BTN_CUSTOM_MODIFIER1,
-        BTN_CUSTOM_MODIFIER2,
-        BTN_CUSTOM_OCARINA_NOTE_D4,
-        BTN_CUSTOM_OCARINA_NOTE_F4,
-        BTN_CUSTOM_OCARINA_NOTE_A4,
-        BTN_CUSTOM_OCARINA_NOTE_B4,
-        BTN_CUSTOM_OCARINA_NOTE_D5,
-        BTN_CUSTOM_OCARINA_DISABLE_SONGS,
-        BTN_CUSTOM_OCARINA_PITCH_UP,
-        BTN_CUSTOM_OCARINA_PITCH_DOWN,
-    }));
+    auto controlDeck = std::make_shared<LUS::ControlDeck>(
+        std::vector<CONTROLLERBUTTONS_T>({
+            BTN_CUSTOM_MODIFIER1,
+            BTN_CUSTOM_MODIFIER2,
+            BTN_CUSTOM_MAP_TRACKER,
+            BTN_CUSTOM_OCARINA_NOTE_D4,
+            BTN_CUSTOM_OCARINA_NOTE_F4,
+            BTN_CUSTOM_OCARINA_NOTE_A4,
+            BTN_CUSTOM_OCARINA_NOTE_B4,
+            BTN_CUSTOM_OCARINA_NOTE_D5,
+            BTN_CUSTOM_OCARINA_DISABLE_SONGS,
+            BTN_CUSTOM_OCARINA_PITCH_UP,
+            BTN_CUSTOM_OCARINA_PITCH_DOWN,
+        }),
+        CreateSohControllerDefaultMappings(),
+        std::unordered_map<CONTROLLERBUTTONS_T, std::string>({
+            { BTN_A, "A" },
+            { BTN_B, "B" },
+            { BTN_L, "L" },
+            { BTN_R, "R" },
+            { BTN_Z, "Z" },
+            { BTN_START, "Start" },
+            { BTN_CLEFT, "CLeft" },
+            { BTN_CRIGHT, "CRight" },
+            { BTN_CUP, "CUp" },
+            { BTN_CDOWN, "CDown" },
+            { BTN_DLEFT, "DLeft" },
+            { BTN_DRIGHT, "DRight" },
+            { BTN_DUP, "DUp" },
+            { BTN_DDOWN, "DDown" },
+            { BTN_CUSTOM_MAP_TRACKER, "Map Tracker" },
+        }));
     context->InitControlDeck(controlDeck);
     context->InitResourceManager({ portArchivePath }, {}, 3, true);
     context->InitConsole();

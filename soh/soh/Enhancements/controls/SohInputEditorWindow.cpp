@@ -1571,6 +1571,10 @@ void SohInputEditorWindow::DrawLinkTab() {
                            CHIP_COLOR_N64_YELLOW);
         }
 
+        if (ImGui::CollapsingHeader("Map Tracker", NULL, ImGuiTreeNodeFlags_DefaultOpen)) {
+            DrawButtonLine("Toggle", portIndex, BTN_CUSTOM_MAP_TRACKER);
+        }
+
         if (ImGui::CollapsingHeader("D-Pad", NULL, ImGuiTreeNodeFlags_DefaultOpen)) {
             DrawButtonLine(StringHelper::Sprintf("D %s", ICON_FA_ARROW_UP).c_str(), portIndex, BTN_DUP);
             DrawButtonLine(StringHelper::Sprintf("D %s", ICON_FA_ARROW_DOWN).c_str(), portIndex, BTN_DDOWN);

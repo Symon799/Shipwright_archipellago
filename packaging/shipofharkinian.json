@@ -7,6 +7,8 @@
       "BetterBombchuShopping": 1,
       "BowReticle": 1,
       "BushDropFix": 1,
+      "ClimbSpeed": 5,
+      "CrawlSpeed": 5,
       "CustomizeBombchuBowling": 1,
       "CustomizeFishing": 1,
       "DampeWin": 1,
@@ -55,7 +57,9 @@
       "SkipSaveConfirmation": 1,
       "SkipSwimDeepEndAnim": 1,
       "SkipText": 1,
+      "SlowTextSpeed": 5,
       "SwordToggle": 2,
+      "TextSpeed": 5,
       "TimeSavers": {
         "DisableTitleCard": 1,
         "SkipChildStealth": 1,
@@ -119,6 +123,9 @@
         "TextSize": 12,
         "WindowType": 0
       }
+    },
+    "gSettings": {
+      "InterpolationFPS": 60
     }
   },
   "ConfigVersion": 6

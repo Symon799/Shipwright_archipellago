@@ -11,9 +11,11 @@
 #include "soh/Enhancements/game-interactor/GameInteractor.h"
 
 #include <algorithm>
+#include <charconv>
 #include <map>
-#include <SDL2/SDL.h>
+#include <string_view>
 #include <libultraship/controller/controldeck/ControlDeck.h>
+#include <ship/window/Window.h>
 
 extern "C" {
 #include "variables.h"
@@ -34,30 +36,55 @@ const std::map<int32_t, const char*> windowTypes = {
     { TRACKER_WINDOW_WINDOW, "Window" },
 };
 
+bool IsKeyboardMappingPressed(const std::string& mappingId, int32_t pressedScancode) {
+    constexpr std::string_view keyboardMappingMarker = "-KB";
+    const size_t markerPosition = mappingId.rfind(keyboardMappingMarker);
+    if (markerPosition == std::string::npos || pressedScancode < 0) {
+        return false;
+    }
+
+    const char* scancodeStart = mappingId.data() + markerPosition + keyboardMappingMarker.size();
+    int32_t mappedScancode = -1;
+    const auto [parseEnd, error] = std::from_chars(scancodeStart, mappingId.data() + mappingId.size(), mappedScancode);
+    return error == std::errc{} && parseEnd == mappingId.data() + mappingId.size() &&
+           mappedScancode == pressedScancode;
+}
+
 void LoadSettings() {
     showLogicTooltip = CVarGetInteger(CVAR_SHOW_LOGIC, 0) != 0;
     showMapDebugDetails = CVarGetInteger(CVAR_SHOW_DEBUG_INFO, 0) != 0;
 }
 
-void ToggleMapTrackerFromController() {
-    static bool rightShoulderWasPressed = false;
-    bool rightShoulderIsPressed = false;
-
+void ToggleMapTrackerFromInput() {
     auto controlDeck = std::dynamic_pointer_cast<LUS::ControlDeck>(Ship::Context::GetInstance()->GetControlDeck());
-    if (controlDeck != nullptr) {
-        for (const auto& [instanceId, gamepad] :
-             controlDeck->GetConnectedPhysicalDeviceManager()->GetConnectedSDLGamepadsForPort(0)) {
-            if (SDL_GameControllerGetButton(gamepad, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) != 0) {
-                rightShoulderIsPressed = true;
-                break;
-            }
-        }
+    if (controlDeck == nullptr || controlDeck->GetPads() == nullptr) {
+        return;
     }
 
-    if (rightShoulderIsPressed && !rightShoulderWasPressed) {
+    static bool toggleWasPressed = false;
+    static bool defaultMappingsInitialized = false;
+    const auto trackerButton = controlDeck->GetControllerByPort(0)->GetButton(BTN_CUSTOM_MAP_TRACKER);
+    if (!defaultMappingsInitialized) {
+        if (!trackerButton->HasMappingsForPhysicalDeviceType(Ship::PhysicalDeviceType::Keyboard)) {
+            trackerButton->AddDefaultMappings(Ship::PhysicalDeviceType::Keyboard);
+        }
+        if (!trackerButton->HasMappingsForPhysicalDeviceType(Ship::PhysicalDeviceType::SDLGamepad)) {
+            trackerButton->AddDefaultMappings(Ship::PhysicalDeviceType::SDLGamepad);
+        }
+        defaultMappingsInitialized = true;
+    }
+
+    const auto trackerMappings = trackerButton->GetAllButtonMappings();
+    const int32_t pressedScancode = Ship::Context::GetInstance()->GetWindow()->GetLastScancode();
+    const bool keyboardPressed = std::any_of(trackerMappings.begin(), trackerMappings.end(), [pressedScancode](const auto& mappingEntry) {
+        return IsKeyboardMappingPressed(mappingEntry.first, pressedScancode);
+    });
+    const bool toggleIsPressed = keyboardPressed || (controlDeck->GetPads()[0].button & BTN_CUSTOM_MAP_TRACKER) != 0;
+
+    if (toggleIsPressed && !toggleWasPressed) {
         SohGui::ToggleMapTrackerWindow();
     }
-    rightShoulderWasPressed = rightShoulderIsPressed;
+    toggleWasPressed = toggleIsPressed;
 }
 
 void DrawMapHeader() {
@@ -190,7 +217,7 @@ void RegisterMapTrackerWidgets() {
 
 static RegisterMenuInitFunc menuInitFunc(RegisterMapTrackerWidgets);
 static RegisterShipInitFunc inputHookInitFunc([] {
-    GameInteractor::Instance->RegisterGameHook<GameInteractor::OnGameFrameUpdate>(ToggleMapTrackerFromController);
+    GameInteractor::Instance->RegisterGameHook<GameInteractor::OnGameFrameUpdate>(ToggleMapTrackerFromInput);
 });
 
 } // namespace MapTracker

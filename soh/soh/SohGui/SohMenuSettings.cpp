@@ -451,7 +451,6 @@ void SohMenu::AddMenuSettings() {
         .WindowName("Configure Controller")
         .HideInSearch(true)
         .Options(WindowButtonOptions().Tooltip("Enables the separate Bindings Window."));
-
     // Input Viewer
     path.sidebarName = "Input Viewer";
     AddSidebarEntry("Settings", path.sidebarName, 3);
