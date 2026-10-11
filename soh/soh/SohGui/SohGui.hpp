@@ -46,6 +46,7 @@ bool DismissPopup(std::string title);
 void ShowRandomizerSettingsMenu();
 void ShowArchipelagoSettingsMenu();
 void ToggleMapTrackerWindow();
+void ToggleMapTrackerScreenWindow();
 void ShowEscMenu();
 UIWidgets::Colors GetMenuThemeColor();
 std::shared_ptr<SohMenu> GetSohMenu();

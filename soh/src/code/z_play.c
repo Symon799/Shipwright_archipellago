@@ -13,6 +13,7 @@
 #include "soh/ResourceManagerHelpers.h"
 #include "soh/SaveManager.h"
 #include "soh/framebuffer_effects.h"
+#include "soh/Enhancements/randomizer/map_tracker_gameplay.h"
 
 #include <libultraship/libultraship.h>
 
@@ -733,6 +734,16 @@ void Play_Update(PlayState* play) {
     gSegments[4] = VIRTUAL_TO_PHYSICAL(play->objectCtx.status[play->objectCtx.mainKeepIndex].segment);
     gSegments[5] = VIRTUAL_TO_PHYSICAL(play->objectCtx.status[play->objectCtx.subKeepIndex].segment);
     gSegments[2] = VIRTUAL_TO_PHYSICAL(play->sceneSegment);
+
+    // The integrated map freezes gameplay without entering the Kaleido pause menu.
+    if (MapTracker_UpdateGameplay(play)) {
+        func_800AA178(false);
+        if (!gSaveContext.ship.stats.gameComplete &&
+            (!IS_BOSS_RUSH || !gSaveContext.ship.quest.data.bossRush.isPaused)) {
+            gSaveContext.ship.stats.pauseTimer++;
+        }
+        return;
+    }
 
     if (FrameAdvance_Update(&play->frameAdvCtx, &input[1])) {
         if ((play->transitionMode == TRANS_MODE_OFF) && (play->transitionTrigger != TRANS_TRIGGER_OFF)) {
@@ -1738,7 +1749,7 @@ void Play_Main(GameState* thisx) {
 
     PLAY_LOG(4587);
 
-    if (CVarGetInteger(CVAR_CHEAT("TimeSync"), 0)) {
+    if (CVarGetInteger(CVAR_CHEAT("TimeSync"), 0) && !MapTracker_IsGameplayPaused()) {
         const int maxRealDaySeconds = 86400;
         const int maxInGameDayTicks = 65536;
 

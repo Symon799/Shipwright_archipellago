@@ -1,6 +1,7 @@
 #include "randomizer_check_tracker.h"
 #include "randomizer_entrance_tracker.h"
 #include "randomizer_item_tracker.h"
+#include "randomizer_map_tracker.h"
 #include "check_tracker_visibility_debug.h"
 #include "map_tracker_internal.h"
 #include "randomizerTypes.h"
@@ -1940,6 +1941,13 @@ void RefreshArchipelagoScoutedChecks() {
 
         archipelagoScoutedChecks.insert(*rc);
     }
+
+    // Scouts replace the provisional seed-based visibility used while connecting.
+    // Updating totals alone leaves the map's cached markers from that provisional list.
+    InvalidateMapTrackerRenderCache(false);
+    if (initialized) {
+        recalculateAvailable = true;
+    }
 }
 
 static void MaybeRefreshArchipelagoScoutedChecksFromClient() {
@@ -2501,7 +2509,8 @@ void InternalRecalculateAvailableChecks(RandomizerRegion startingRegion, RandoAg
     }
 
     StopPerformanceTimer(PT_RECALCULATE_AVAILABLE_CHECKS);
-    InvalidateMapTrackerRenderCache();
+    // Availability changes refresh the rows, not the active fullscreen hover session.
+    InvalidateMapTrackerRenderCache(CVarGetInteger(MapTracker::CVAR_SCREEN, 0) == 0);
     SPDLOG_INFO("Recalculate Available Checks Time: {}ms",
                 GetPerformanceTimer(PT_RECALCULATE_AVAILABLE_CHECKS).count());
 }

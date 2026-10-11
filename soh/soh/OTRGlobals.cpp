@@ -275,14 +275,32 @@ static std::shared_ptr<Ship::ControllerDefaultMappings> CreateSohControllerDefau
     auto defaults = std::make_shared<LUS::ControllerDefaultMappings>();
     auto keyboardMappings = defaults->GetDefaultKeyboardKeyToButtonMappings();
     auto controllerMappings = defaults->GetDefaultSDLButtonToButtonMappings();
+    auto axisMappings = defaults->GetDefaultSDLAxisDirectionToButtonMappings();
 
     keyboardMappings[BTN_CUSTOM_MAP_TRACKER] = { Ship::LUS_KB_M };
-    controllerMappings[BTN_CUSTOM_MAP_TRACKER] = { SDL_CONTROLLER_BUTTON_RIGHTSHOULDER };
+    controllerMappings[BTN_CUSTOM_MAP_TRACKER] = { SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, SDL_CONTROLLER_BUTTON_BACK };
+    keyboardMappings[BTN_CUSTOM_MAP_TRACKER_OVERWORLD] = { Ship::LUS_KB_T };
+    axisMappings[BTN_CUSTOM_MAP_TRACKER_OVERWORLD] = { { SDL_CONTROLLER_AXIS_TRIGGERLEFT, 1 } };
+
+    keyboardMappings[BTN_CUSTOM_MAP_TRACKER_CONFIRM] = { Ship::LUS_KB_ENTER };
+    controllerMappings[BTN_CUSTOM_MAP_TRACKER_CONFIRM] = { SDL_CONTROLLER_BUTTON_A };
+    keyboardMappings[BTN_CUSTOM_MAP_TRACKER_BACK] = { Ship::LUS_KB_BACKSPACE };
+    controllerMappings[BTN_CUSTOM_MAP_TRACKER_BACK] = { SDL_CONTROLLER_BUTTON_B };
+    keyboardMappings[BTN_CUSTOM_MAP_TRACKER_FOCUS] = { Ship::LUS_KB_R };
+    axisMappings[BTN_CUSTOM_MAP_TRACKER_FOCUS] = { { SDL_CONTROLLER_AXIS_TRIGGERRIGHT, 1 } };
+    keyboardMappings[BTN_CUSTOM_MAP_TRACKER_ZOOM_IN] = { Ship::LUS_KB_OEM_PLUS };
+    controllerMappings[BTN_CUSTOM_MAP_TRACKER_ZOOM_IN] = { SDL_CONTROLLER_BUTTON_DPAD_UP };
+    keyboardMappings[BTN_CUSTOM_MAP_TRACKER_ZOOM_OUT] = { Ship::LUS_KB_OEM_MINUS };
+    controllerMappings[BTN_CUSTOM_MAP_TRACKER_ZOOM_OUT] = { SDL_CONTROLLER_BUTTON_DPAD_DOWN };
+    keyboardMappings[BTN_CUSTOM_MAP_TRACKER_LIST_UP] = { Ship::LUS_KB_ARROWKEY_UP };
+    controllerMappings[BTN_CUSTOM_MAP_TRACKER_LIST_UP] = { SDL_CONTROLLER_BUTTON_DPAD_LEFT };
+    keyboardMappings[BTN_CUSTOM_MAP_TRACKER_LIST_DOWN] = { Ship::LUS_KB_ARROWKEY_DOWN };
+    controllerMappings[BTN_CUSTOM_MAP_TRACKER_LIST_DOWN] = { SDL_CONTROLLER_BUTTON_DPAD_RIGHT };
 
     return std::make_shared<LUS::ControllerDefaultMappings>(
         std::move(keyboardMappings), defaults->GetDefaultKeyboardKeyToAxisDirectionMappings(),
         std::move(controllerMappings), defaults->GetDefaultSDLButtonToAxisDirectionMappings(),
-        defaults->GetDefaultSDLAxisDirectionToButtonMappings(),
+        std::move(axisMappings),
         defaults->GetDefaultSDLAxisDirectionToAxisDirectionMappings());
 }
 
@@ -303,6 +321,14 @@ OTRGlobals::OTRGlobals() {
             BTN_CUSTOM_MODIFIER1,
             BTN_CUSTOM_MODIFIER2,
             BTN_CUSTOM_MAP_TRACKER,
+            BTN_CUSTOM_MAP_TRACKER_OVERWORLD,
+            BTN_CUSTOM_MAP_TRACKER_CONFIRM,
+            BTN_CUSTOM_MAP_TRACKER_BACK,
+            BTN_CUSTOM_MAP_TRACKER_FOCUS,
+            BTN_CUSTOM_MAP_TRACKER_ZOOM_IN,
+            BTN_CUSTOM_MAP_TRACKER_ZOOM_OUT,
+            BTN_CUSTOM_MAP_TRACKER_LIST_UP,
+            BTN_CUSTOM_MAP_TRACKER_LIST_DOWN,
             BTN_CUSTOM_OCARINA_NOTE_D4,
             BTN_CUSTOM_OCARINA_NOTE_F4,
             BTN_CUSTOM_OCARINA_NOTE_A4,
@@ -329,6 +355,14 @@ OTRGlobals::OTRGlobals() {
             { BTN_DUP, "DUp" },
             { BTN_DDOWN, "DDown" },
             { BTN_CUSTOM_MAP_TRACKER, "Map Tracker" },
+            { BTN_CUSTOM_MAP_TRACKER_OVERWORLD, "Map Tracker Overworld" },
+            { BTN_CUSTOM_MAP_TRACKER_CONFIRM, "Map Tracker Select" },
+            { BTN_CUSTOM_MAP_TRACKER_BACK, "Map Tracker Back" },
+            { BTN_CUSTOM_MAP_TRACKER_FOCUS, "Map Tracker Focus" },
+            { BTN_CUSTOM_MAP_TRACKER_ZOOM_IN, "Map Tracker Zoom In" },
+            { BTN_CUSTOM_MAP_TRACKER_ZOOM_OUT, "Map Tracker Zoom Out" },
+            { BTN_CUSTOM_MAP_TRACKER_LIST_UP, "Map Tracker List Up" },
+            { BTN_CUSTOM_MAP_TRACKER_LIST_DOWN, "Map Tracker List Down" },
         }));
     context->InitControlDeck(controlDeck);
     context->InitResourceManager({ portArchivePath }, {}, 3, true);

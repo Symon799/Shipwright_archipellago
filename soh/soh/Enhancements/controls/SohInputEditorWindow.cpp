@@ -1,4 +1,5 @@
 #include "SohInputEditorWindow.h"
+#include <algorithm>
 #include <ship/utils/StringHelper.h>
 #include <fast/Fast3dWindow.h>
 #include "soh/OTRGlobals.h"
@@ -220,10 +221,11 @@ void SohInputEditorWindow::GetButtonColorsForDeviceType(Ship::PhysicalDeviceType
     }
 }
 
-void SohInputEditorWindow::DrawInputChip(const char* buttonName, ImVec4 color = CHIP_COLOR_N64_GREY) {
+void SohInputEditorWindow::DrawInputChip(const char* buttonName, ImVec4 color = CHIP_COLOR_N64_GREY,
+                                       float labelWidth = 0.0f) {
     ImGui::BeginDisabled();
     ImGui::PushStyleColor(ImGuiCol_Button, color);
-    ImGui::Button(buttonName, ImVec2(SCALE_IMGUI_SIZE(50.0f), 0));
+    ImGui::Button(buttonName, ImVec2(labelWidth > 0.0f ? labelWidth : SCALE_IMGUI_SIZE(50.0f), 0));
     ImGui::PopStyleColor();
     ImGui::EndDisabled();
 }
@@ -457,12 +459,34 @@ void SohInputEditorWindow::DrawButtonLineEditMappingButton(uint8_t port, N64Butt
 }
 
 void SohInputEditorWindow::DrawButtonLine(const char* buttonName, uint8_t port, N64ButtonMask bitmask,
-                                          ImVec4 color = CHIP_COLOR_N64_GREY) {
+                                          ImVec4 color = CHIP_COLOR_N64_GREY, float labelWidth = 0.0f) {
     ImGui::NewLine();
     ImGui::SameLine(SCALE_IMGUI_SIZE(32.0f));
-    DrawInputChip(buttonName, color);
-    ImGui::SameLine(SCALE_IMGUI_SIZE(86.0f));
-    for (auto id : mBitmaskToMappingIds[port][bitmask]) {
+    const float width = labelWidth > 0.0f ? labelWidth : SCALE_IMGUI_SIZE(50.0f);
+    DrawInputChip(buttonName, color, width);
+    ImGui::SameLine(SCALE_IMGUI_SIZE(32.0f) + width + SCALE_IMGUI_SIZE(4.0f));
+    auto mappingIds = mBitmaskToMappingIds[port][bitmask];
+    const auto button = Ship::Context::GetInstance()->GetControlDeck()->GetControllerByPort(port)->GetButton(bitmask);
+    const auto deviceOrder = [&](const std::string& id) {
+        const auto mapping = button->GetButtonMappingById(id);
+        if (mapping == nullptr) {
+            return 3;
+        }
+        switch (mapping->GetPhysicalDeviceType()) {
+            case Ship::PhysicalDeviceType::Keyboard:
+                return 0;
+            case Ship::PhysicalDeviceType::Mouse:
+                return 1;
+            case Ship::PhysicalDeviceType::SDLGamepad:
+                return 2;
+            default:
+                return 3;
+        }
+    };
+    std::stable_sort(mappingIds.begin(), mappingIds.end(), [&](const std::string& left, const std::string& right) {
+        return deviceOrder(left) < deviceOrder(right);
+    });
+    for (const auto& id : mappingIds) {
         DrawButtonLineEditMappingButton(port, bitmask, id);
     }
     DrawButtonLineAddMappingButton(port, bitmask);
@@ -1572,7 +1596,27 @@ void SohInputEditorWindow::DrawLinkTab() {
         }
 
         if (ImGui::CollapsingHeader("Map Tracker", NULL, ImGuiTreeNodeFlags_DefaultOpen)) {
-            DrawButtonLine("Toggle", portIndex, BTN_CUSTOM_MAP_TRACKER);
+            const struct {
+                const char* name;
+                N64ButtonMask button;
+            } actions[] = {
+                { "Toggle", BTN_CUSTOM_MAP_TRACKER },
+                { "Select", BTN_CUSTOM_MAP_TRACKER_CONFIRM },
+                { "Back", BTN_CUSTOM_MAP_TRACKER_BACK },
+                { "Focus Player", BTN_CUSTOM_MAP_TRACKER_FOCUS },
+                { "Overworld", BTN_CUSTOM_MAP_TRACKER_OVERWORLD },
+                { "List Up", BTN_CUSTOM_MAP_TRACKER_LIST_UP },
+                { "List Down", BTN_CUSTOM_MAP_TRACKER_LIST_DOWN },
+                { "Zoom In", BTN_CUSTOM_MAP_TRACKER_ZOOM_IN },
+                { "Zoom Out", BTN_CUSTOM_MAP_TRACKER_ZOOM_OUT },
+            };
+            float labelWidth = SCALE_IMGUI_SIZE(50.0f);
+            for (const auto& action : actions) {
+                labelWidth = std::max(labelWidth, ImGui::CalcTextSize(action.name).x + ImGui::GetStyle().FramePadding.x * 2.0f);
+            }
+            for (const auto& action : actions) {
+                DrawButtonLine(action.name, portIndex, action.button, CHIP_COLOR_N64_GREY, labelWidth);
+            }
         }
 
         if (ImGui::CollapsingHeader("D-Pad", NULL, ImGuiTreeNodeFlags_DefaultOpen)) {

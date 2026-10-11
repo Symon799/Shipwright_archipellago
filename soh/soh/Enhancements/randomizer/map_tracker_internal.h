@@ -2,6 +2,7 @@
 
 #include "randomizer_check_tracker.h"
 #include "randomizer_check_logic.h"
+#include "map_tracker_calibration.h"
 #include "soh/cvar_prefixes.h"
 
 #include <filesystem>
@@ -83,7 +84,23 @@ struct MapTabData {
     std::string imageError;
     std::vector<MapMarker> markers;
     std::vector<MapLink> links;
+    std::vector<MapTracker::CalibrationProfile> playerCalibrations;
 };
+
+struct MapPlayerIndicator {
+    ImVec2 position;
+    ImVec2 direction;
+};
+
+struct MapCheckTotals {
+    uint16_t checked = 0;
+    uint16_t accessible = 0;
+    uint16_t total = 0;
+};
+
+MapCheckTotals GetMapTrackerCheckTotals();
+
+std::optional<MapPlayerIndicator> GetExperimentalMapPlayerIndicator(const MapTabData& tab);
 
 struct MapIssueEntry {
     std::string summary;
@@ -153,7 +170,11 @@ std::string GetMapTrackerAssetsRootAbsoluteString();
 void ResetMapTrackerState(bool unloadTextures);
 void LoadMapTrackerData();
 void ProcessPendingMapTextureLoads();
-void DrawMapTrackerContent();
+void DrawMapTrackerContent(bool showNavigation = true);
+bool NavigateBackMapTrackerScreen();
+void NavigateMapTrackerScreenToOverworld();
+void SelectMapTrackerScreenMap(int tabIndex);
+ImU32 GetMapTrackerScreenMapStatusColor(int tabIndex);
 void UpdateRequestedMapTabFromCurrentArea(bool force);
 void InvalidateMapTrackerRenderCache(bool closePopups = true);
 

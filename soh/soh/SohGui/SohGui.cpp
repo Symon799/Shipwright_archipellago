@@ -92,6 +92,8 @@ std::shared_ptr<GameplayStatsWindow> mGameplayStatsWindow;
 std::shared_ptr<CheckTracker::CheckTrackerSettingsWindow> mCheckTrackerSettingsWindow;
 std::shared_ptr<CheckTracker::CheckTrackerWindow> mCheckTrackerWindow;
 std::shared_ptr<MapTracker::MapTrackerWindow> mMapTrackerWindow;
+std::shared_ptr<MapTracker::MapTrackerScreenWindow> mMapTrackerScreenWindow;
+bool mMapTrackerWasVisibleBeforeScreen = false;
 std::shared_ptr<MapTracker::MapTrackerSettingsWindow> mMapTrackerSettingsWindow;
 std::shared_ptr<EntranceTracker::EntranceTrackerSettingsWindow> mEntranceTrackerSettingsWindow;
 std::shared_ptr<EntranceTracker::EntranceTrackerWindow> mEntranceTrackerWindow;
@@ -110,6 +112,25 @@ std::shared_ptr<AnchorRoomWindow> mAnchorRoomWindow;
 void ToggleMapTrackerWindow() {
     if (mMapTrackerWindow != nullptr) {
         mMapTrackerWindow->ToggleVisibility();
+    }
+}
+
+void ToggleMapTrackerScreenWindow() {
+    if (mMapTrackerScreenWindow != nullptr) {
+        const bool opening = !mMapTrackerScreenWindow->IsVisible();
+        mMapTrackerScreenWindow->ToggleVisibility();
+        if (opening) {
+            mMapTrackerWasVisibleBeforeScreen = mMapTrackerWindow != nullptr && mMapTrackerWindow->IsVisible();
+            if (mMapTrackerWasVisibleBeforeScreen) {
+                mMapTrackerWindow->Hide();
+            }
+            MapTracker::screenCursorUsesController = false;
+            MapTracker::screenCursorPosition = ImVec2(-1.0f, -1.0f);
+            MapTracker::screenCursorNeedsCenter = true;
+        } else if (mMapTrackerWasVisibleBeforeScreen && mMapTrackerWindow != nullptr) {
+            mMapTrackerWindow->Show();
+            mMapTrackerWasVisibleBeforeScreen = false;
+        }
     }
 }
 
@@ -197,6 +218,11 @@ void SetupGuiElements() {
     mMapTrackerWindow =
         std::make_shared<MapTracker::MapTrackerWindow>(CVAR_WINDOW("MapTracker"), "Map Tracker", ImVec2(700, 700));
     gui->AddGuiWindow(mMapTrackerWindow);
+    mMapTrackerScreenWindow = std::make_shared<MapTracker::MapTrackerScreenWindow>(
+        MapTracker::CVAR_SCREEN, "Map Tracker Screen", ImVec2(1280, 720));
+    mMapTrackerScreenWindow->Hide();
+    CVarSetInteger(MapTracker::CVAR_SCREEN, 0);
+    gui->AddGuiWindow(mMapTrackerScreenWindow);
     mMapTrackerSettingsWindow = std::make_shared<MapTracker::MapTrackerSettingsWindow>(
         CVAR_WINDOW("MapTrackerSettings"), "Map Tracker Settings", ImVec2(600, 375));
     gui->AddGuiWindow(mMapTrackerSettingsWindow);
@@ -248,6 +274,8 @@ void Destroy() {
     mCheckTrackerWindow = nullptr;
     mCheckTrackerSettingsWindow = nullptr;
     mMapTrackerWindow = nullptr;
+    mMapTrackerScreenWindow = nullptr;
+    mMapTrackerWasVisibleBeforeScreen = false;
     mMapTrackerSettingsWindow = nullptr;
     mGameplayStatsWindow = nullptr;
     mDLViewerWindow = nullptr;

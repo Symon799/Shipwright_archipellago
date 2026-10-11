@@ -10,6 +10,7 @@ GameInteractor functions can be called directly.
 */
 
 #include "GameInteractor.h"
+#include "soh/Enhancements/randomizer/map_tracker_gameplay.h"
 #include <libultraship/bridge.h>
 
 extern "C" {
@@ -52,7 +53,7 @@ bool GameInteractor::IsSaveLoaded(bool allowDbgSave) {
 
 bool GameInteractor::IsGameplayPaused() {
     Player* player = GET_PLAYER(gPlayState);
-    return (Player_InBlockingCsMode(gPlayState, player) || gPlayState->pauseCtx.state != 0 ||
+    return (MapTracker_IsGameplayPaused() || Player_InBlockingCsMode(gPlayState, player) || gPlayState->pauseCtx.state != 0 ||
             gPlayState->msgCtx.msgMode != 0)
                ? true
                : false;

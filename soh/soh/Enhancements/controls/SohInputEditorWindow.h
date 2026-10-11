@@ -24,7 +24,7 @@ class SohInputEditorWindow final : public Ship::GuiWindow {
 
     void DrawButton(const char* label, int32_t n64Btn, int32_t currentPort, int32_t* btnReading);
 
-    void DrawInputChip(const char* buttonName, ImVec4 color);
+    void DrawInputChip(const char* buttonName, ImVec4 color, float labelWidth);
     void DrawAnalogPreview(const char* label, ImVec2 stick, float deadzone = 0, bool gyro = false);
     void DrawControllerSchema();
     bool TestingRumble();
@@ -37,7 +37,7 @@ class SohInputEditorWindow final : public Ship::GuiWindow {
   private:
     void DrawStickDirectionLine(const char* axisDirectionName, uint8_t port, uint8_t stick, Ship::Direction direction,
                                 ImVec4 color);
-    void DrawButtonLine(const char* buttonName, uint8_t port, N64ButtonMask bitmask, ImVec4 color);
+    void DrawButtonLine(const char* buttonName, uint8_t port, N64ButtonMask bitmask, ImVec4 color, float labelWidth);
     void DrawButtonLineEditMappingButton(uint8_t port, N64ButtonMask bitmask, std::string id);
     void DrawButtonLineAddMappingButton(uint8_t port, N64ButtonMask bitmask);
 

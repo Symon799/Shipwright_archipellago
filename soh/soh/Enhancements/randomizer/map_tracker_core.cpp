@@ -947,6 +947,10 @@ static bool IsGanonsTowerRelatedScene(SceneID scene) {
 }
 
 static std::optional<std::string> ResolvePreferredMapTabIdForScene(SceneID scene) {
+    if (scene == SCENE_LINKS_HOUSE) {
+        return ResolveFirstExistingMapTabId({ MapIds::KokiriForest, MapIds::Overworld });
+    }
+
     if (scene == SCENE_TEMPLE_OF_TIME) {
         return ResolveFirstExistingMapTabId({ MapIds::TempleOfTime, MapIds::Market, MapIds::Overworld });
     }
@@ -1207,6 +1211,7 @@ struct MapsMetadataParseResult {
     std::unordered_map<std::string, std::string> mapImagePathsById;
     std::unordered_map<std::string, std::string> mapGroupById;
     std::unordered_map<std::string, std::vector<MapLink>> mapLinksById;
+    std::unordered_map<std::string, std::vector<MapTracker::CalibrationProfile>> calibrationsById;
     std::vector<std::string> orderedMapIds;
 };
 
@@ -1321,6 +1326,14 @@ static bool ParseMapMetadataEntries(MapTrackerState& state, const json& mapsJson
             mapGroup = TrimCopy(mapEntry["group"].get<std::string>());
         }
         outMetadata.mapGroupById[mapId] = mapGroup;
+
+        if (mapEntry.contains("player_position")) {
+            std::vector<std::string> warnings;
+            outMetadata.calibrationsById[mapId] = MapTracker::ParsePlayerCalibrations(mapEntry["player_position"], warnings);
+            for (const auto& warning : warnings) {
+                AddSchemaWarning(state, "Invalid player position calibration", mapId + ": " + warning);
+            }
+        }
 
         if (mapEntry.contains("links")) {
             if (!mapEntry["links"].is_array()) {
@@ -1486,6 +1499,9 @@ static void BuildMapTabsFromMetadata(MapTrackerState& state, const MapsMetadataP
         }
         if (metadata.mapLinksById.contains(mapId)) {
             tab.links = metadata.mapLinksById.at(mapId);
+        }
+        if (metadata.calibrationsById.contains(mapId)) {
+            tab.playerCalibrations = metadata.calibrationsById.at(mapId);
         }
         if (metadata.mapImagePathsById.contains(mapId)) {
             tab.imageRelativePath = metadata.mapImagePathsById.at(mapId);

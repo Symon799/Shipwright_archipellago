@@ -898,6 +898,7 @@ void func_8006D684(PlayState* play, Player* player);
 void func_8006DC68(PlayState* play, Player* player);
 void func_8006DD9C(Actor* actor, Vec3f* arg1, s16 arg2);
 s32 Jpeg_Decode(void* data, void* zbuffer, void* workBuff, u32 workSize);
+s32 KaleidoSetup_CanPause(PlayState* play);
 void KaleidoSetup_Update(PlayState* play);
 void KaleidoSetup_Init(PlayState* play);
 void KaleidoSetup_Destroy(PlayState* play);

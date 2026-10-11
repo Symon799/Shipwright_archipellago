@@ -1,5 +1,6 @@
 #include "check_tracker_visibility_debug.h"
 #include "map_tracker_internal.h"
+#include "map_tracker_link_resolver.h"
 #include "randomizer_map_tracker.h"
 #include "soh/OTRGlobals.h"
 #include "soh/SohGui/UIWidgets.hpp"
@@ -191,6 +192,7 @@ struct MapTrackerRenderCache {
     bool mqSpoilers = false;
     bool isAdult = false;
     bool isNight = false;
+    MapCheckTotals checkTotals;
     std::vector<MapTabVisualSummary> tabVisualSummaries;
     std::vector<CachedMapTabRenderData> tabRenderDataByIndex;
 };
@@ -215,6 +217,7 @@ struct LinkPopupState {
     bool open = false;
     std::string tabId;
     std::string targetTabId;
+    size_t sourceLinkIndex = 0;
     ImVec2 popupPosition = { 0.0f, 0.0f };
     ImVec2 anchorMin = { 0.0f, 0.0f };
     ImVec2 anchorMax = { 0.0f, 0.0f };
@@ -224,6 +227,19 @@ struct LinkPopupState {
 };
 
 static LinkPopupState mapLinkPopupState;
+static std::vector<std::string> mapScreenNavigationHistory;
+
+template <typename PopupState>
+static bool IsCursorInsidePopupInteractionRect(const PopupState& popup, const ImVec2& cursorPosition) {
+    if (!popup.open || !popup.hasLastWindowRect) {
+        return false;
+    }
+
+    // All bounds are screen coordinates, taken from the rendered icon and popup window.
+    ImRect interactionRect(popup.anchorMin, popup.anchorMax);
+    interactionRect.Add(ImRect(popup.lastWindowPosition, popup.lastWindowPosition + popup.lastWindowSize));
+    return interactionRect.Contains(cursorPosition);
+}
 
 static void CloseClusterPopup(bool clearTabId = false) {
     mapClusterPopupState.open = false;
@@ -355,12 +371,21 @@ static float GetCheckTrackerTextLineHeight() {
     return std::max(1.0f, CalcCheckTrackerTextSize("Ag").y);
 }
 
-static float GetPopupContentWidthFromWindowWidth(float windowWidth) {
-    return std::max(1.0f, windowWidth - (ImGui::GetStyle().WindowPadding.x * 2.0f) - 4.0f);
+static float GetPopupContentWidthFromWindowWidth(float windowWidth, float windowPaddingX) {
+    return std::max(1.0f, windowWidth - (windowPaddingX * 2.0f) - 4.0f);
 }
 
 static std::string BuildPopupExtraLabel(const std::string& extraText) {
     return extraText.empty() ? std::string() : fmt::format("({})", extraText);
+}
+
+static std::string GetPopupRowExtraText(const RenderableMapMarker& marker) {
+    const std::string extraText = GetCheckExtraInfoText(marker.marker->check);
+    if (marker.isDone) {
+        return extraText;
+    }
+    const std::string requirement = GetCheckRequirementSummary(marker.marker->check);
+    return requirement.empty() ? extraText : requirement;
 }
 
 static ImVec2 CalcPopupTextSize(const std::string& text, float wrapWidth = 0.0f) {
@@ -372,8 +397,9 @@ static ImVec2 CalcPopupTextSize(const std::string& text, float wrapWidth = 0.0f)
 }
 
 static PopupRowLayout ComputePopupRowLayout(const std::string& checkName, const std::string& extraText,
-                                            float rowAvailableWidth) {
+                                            float rowAvailableWidth, const ImVec2* itemSpacingOverride = nullptr) {
     const ImGuiStyle& style = ImGui::GetStyle();
+    const ImVec2 itemSpacing = itemSpacingOverride != nullptr ? *itemSpacingOverride : style.ItemSpacing;
     const float lineHeight = ImGui::GetTextLineHeight();
 
     PopupRowLayout layout;
@@ -390,14 +416,14 @@ static PopupRowLayout ComputePopupRowLayout(const std::string& checkName, const 
     if (!extraLabel.empty()) {
         const float extraLabelWidth = CalcPopupTextSize(extraLabel).x;
         const bool canFitInline =
-            (checkNameSingleLineWidth + style.ItemSpacing.x + extraLabelWidth) <= layout.textAvailableWidth;
+            (checkNameSingleLineWidth + itemSpacing.x + extraLabelWidth) <= layout.textAvailableWidth;
         if (canFitInline) {
             layout.extraOnSameLine = true;
             layout.checkNameWrapWidth =
-                std::max(1.0f, layout.textAvailableWidth - style.ItemSpacing.x - extraLabelWidth);
+                std::max(1.0f, layout.textAvailableWidth - itemSpacing.x - extraLabelWidth);
         } else {
             const float extraHeight = std::max(lineHeight, CalcPopupTextSize(extraLabel, layout.textAvailableWidth).y);
-            textHeight += style.ItemSpacing.y + extraHeight;
+            textHeight += itemSpacing.y + extraHeight;
         }
     }
 
@@ -422,13 +448,15 @@ static float ComputePopupHeaderDesiredContentWidth(const std::optional<int>& pop
 }
 
 static float ComputePopupHeaderHeight(const std::optional<int>& popupNavigationTargetTabIndex,
-                                      const std::optional<std::string>& requirementSummary, float contentWidth) {
+                                      const std::optional<std::string>& requirementSummary, float contentWidth,
+                                      float itemSpacingY = -1.0f) {
     if (!popupNavigationTargetTabIndex.has_value() || *popupNavigationTargetTabIndex < 0 ||
         *popupNavigationTargetTabIndex >= static_cast<int>(mapTrackerState.tabs.size())) {
         return 0.0f;
     }
 
     const ImGuiStyle& popupStyle = ImGui::GetStyle();
+    const float headerItemSpacingY = itemSpacingY >= 0.0f ? itemSpacingY : popupStyle.ItemSpacing.y;
     const float lineHeight = ImGui::GetTextLineHeight();
     const MapTabData& popupTargetTab = mapTrackerState.tabs[static_cast<size_t>(*popupNavigationTargetTabIndex)];
 
@@ -436,10 +464,10 @@ static float ComputePopupHeaderHeight(const std::optional<int>& popupNavigationT
     if (requirementSummary.has_value() && !requirementSummary->empty()) {
         const std::string summaryLabel = BuildPopupExtraLabel(*requirementSummary);
         const float summaryHeight = std::max(lineHeight, CalcPopupTextSize(summaryLabel, contentWidth).y);
-        headerHeight += popupStyle.ItemSpacing.y + summaryHeight;
+        headerHeight += headerItemSpacingY + summaryHeight;
     }
 
-    headerHeight += (popupStyle.ItemSpacing.y * 2.0f) + 2.0f;
+    headerHeight += (headerItemSpacingY * 2.0f) + 2.0f;
     return headerHeight;
 }
 
@@ -587,6 +615,22 @@ static bool IsMapTrackerRenderCacheCurrent(bool mqSpoilers) {
 }
 
 static void RebuildMapTrackerRenderCache(bool mqSpoilers) {
+    mapTrackerRenderCache.checkTotals = {};
+    for (const auto& location : Rando::StaticData::GetLocationTable()) {
+        const auto check = location.GetRandomizerCheck();
+        if (check == RC_UNKNOWN_CHECK || check == RC_MAX || location.GetArea() == RCAREA_INVALID ||
+            !IsVisibleInCheckTracker(check)) {
+            continue;
+        }
+        auto& totals = mapTrackerRenderCache.checkTotals;
+        ++totals.total;
+        if (IsCheckDoneForMapDisplay(check)) {
+            ++totals.checked;
+        } else if (OTRGlobals::Instance->gRandoContext->GetItemLocation(check)->IsAvailable()) {
+            // Availability includes checks reachable with a different age/time (orange on the map).
+            ++totals.accessible;
+        }
+    }
     mapTrackerRenderCache.tabVisualSummaries.resize(mapTrackerState.tabs.size());
     mapTrackerRenderCache.tabRenderDataByIndex.resize(mapTrackerState.tabs.size());
 
@@ -611,6 +655,23 @@ static const MapTrackerRenderCache& GetMapTrackerRenderCache(bool mqSpoilers) {
     return mapTrackerRenderCache;
 }
 
+MapCheckTotals GetMapTrackerCheckTotals() {
+    return GetMapTrackerRenderCache(CVarGetInteger(MapTracker::CVAR_MQ_SPOILERS, 0) != 0).checkTotals;
+}
+
+ImU32 GetMapTrackerScreenMapStatusColor(int tabIndex) {
+    if (tabIndex < 0 || tabIndex >= static_cast<int>(mapTrackerState.tabs.size())) {
+        return IM_COL32(90, 90, 90, 220);
+    }
+    const bool mqSpoilers = CVarGetInteger(MapTracker::CVAR_MQ_SPOILERS, 0) != 0;
+    const auto& cache = GetMapTrackerRenderCache(mqSpoilers);
+    if (static_cast<size_t>(tabIndex) >= cache.tabVisualSummaries.size()) {
+        return IM_COL32(90, 90, 90, 220);
+    }
+    const ImVec4 color = GetMapTabBaseColor(cache.tabVisualSummaries[static_cast<size_t>(tabIndex)]);
+    return ImGui::ColorConvertFloat4ToU32(color);
+}
+
 static ImVec2 ClampWindowPositionToViewport(const ImVec2& desiredPosition, const ImVec2& windowSize,
                                             const ImGuiViewport* viewport) {
     if (viewport == nullptr) {
@@ -628,8 +689,9 @@ static ImVec2 ClampWindowPositionToViewport(const ImVec2& desiredPosition, const
 
 static ImVec2 ComputeAnchoredPopupPosition(const ImVec2& anchorMin, const ImVec2& anchorMax, const ImVec2& windowSize,
                                           const ImGuiViewport* viewport) {
-    constexpr float popupOffsetX = 10.0f;
-    constexpr float popupOffsetY = 4.0f;
+    const bool integratedScreen = CVarGetInteger(MapTracker::CVAR_SCREEN, 0) != 0;
+    const float popupOffsetX = integratedScreen ? 0.0f : 10.0f;
+    const float popupOffsetY = integratedScreen ? 0.0f : 4.0f;
 
     if (viewport == nullptr) {
         return ImVec2(anchorMax.x + popupOffsetX, anchorMin.y - popupOffsetY);
@@ -651,6 +713,8 @@ static ImVec2 ComputeAnchoredPopupPosition(const ImVec2& anchorMin, const ImVec2
     return ClampWindowPositionToViewport(desiredPosition, windowSize, viewport);
 }
 
+static const char* GetMapTrackerHintPrompt();
+
 static float ComputeTooltipDesiredContentWidth(const MarkerTooltipContent& content) {
     float contentWidth = 0.0f;
     auto accumulateWidth = [&](const std::string& text) {
@@ -669,7 +733,7 @@ static float ComputeTooltipDesiredContentWidth(const MarkerTooltipContent& conte
     if (!content.hintText.empty()) {
         accumulateWidth(fmt::format("Hint: {}", content.hintText));
     } else if (content.showHintPrompt) {
-        accumulateWidth("Right click to show hint.");
+        accumulateWidth(GetMapTrackerHintPrompt());
     }
     for (size_t branchIndex = 0; branchIndex < content.logicBranches.size(); branchIndex++) {
         accumulateWidth(branchIndex == 0 ? fmt::format("Logic: {}", content.logicBranches[branchIndex])
@@ -683,6 +747,10 @@ static float ComputeTooltipDesiredContentWidth(const MarkerTooltipContent& conte
     }
 
     return std::max(contentWidth, 1.0f);
+}
+
+static const char* GetMapTrackerHintPrompt() {
+    return "Select to show hint";
 }
 
 static TooltipPlacement ComputeTooltipPlacement(const ImVec2& anchorMin, const ImVec2& anchorMax,
@@ -773,7 +841,7 @@ static MarkerTooltipLayout ComputeMarkerTooltipLayout(const MarkerTooltipContent
     }
     if (!content.hintText.empty() || content.showHintPrompt) {
         const std::string hintLabel =
-            content.hintText.empty() ? "Right click to show hint." : fmt::format("Hint: {}", content.hintText);
+            content.hintText.empty() ? GetMapTrackerHintPrompt() : fmt::format("Hint: {}", content.hintText);
         float hintHeight = CalcCheckTrackerTextSize(hintLabel, contentWidth).y;
         addSectionHeight(std::max(lineHeight, hintHeight));
     }
@@ -813,6 +881,14 @@ static void DrawMarkerTooltip(const MarkerTooltipContent& content, const ImVec2&
                               const ImVec2& avoidRectMax = ImVec2(0.0f, 0.0f)) {
     if (!HasMarkerTooltipVisibleContent(content)) {
         return;
+    }
+
+    const bool integratedScreen = CVarGetInteger(MapTracker::CVAR_SCREEN, 0) != 0;
+    if (integratedScreen) {
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 6.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 2.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(3.0f, 2.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 255, 255, 255));
     }
 
     const ImGuiStyle& style = ImGui::GetStyle();
@@ -923,7 +999,7 @@ static void DrawMarkerTooltip(const MarkerTooltipContent& content, const ImVec2&
             std::string hintLabel = fmt::format("Hint: {}", content.hintText);
             drawWrappedText(hintLabel);
         } else {
-            drawWrappedDisabledText("Right click to show hint.");
+            drawWrappedDisabledText(GetMapTrackerHintPrompt());
         }
     }
 
@@ -951,6 +1027,10 @@ static void DrawMarkerTooltip(const MarkerTooltipContent& content, const ImVec2&
     }
 
     ImGui::End();
+    if (integratedScreen) {
+        ImGui::PopStyleColor();
+        ImGui::PopStyleVar(3);
+    }
 }
 
 static void QueueMarkerTooltip(const MarkerTooltipContent& content, const ImVec2& anchorMin, const ImVec2& anchorMax,
@@ -985,7 +1065,11 @@ static void QueueRenderableMapMarkerTooltip(const RenderableMapMarker& renderabl
 }
 
 static float ComputeMarkerHalfSize(const MapMarker& marker, float imageScale, bool isMultiMarkerCluster) {
-    float markerPixelSize = std::max(CHECK_TRACKER_MAP_MIN_MARKER_PIXEL_SIZE, std::max(0.0f, marker.size) * imageScale);
+    const bool integratedScreen = CVarGetInteger(MapTracker::CVAR_SCREEN, 0) != 0;
+    float markerPixelSize = integratedScreen
+                                ? 34.0f * (2.0f / 3.0f) * 1.15f
+                                : std::max(CHECK_TRACKER_MAP_MIN_MARKER_PIXEL_SIZE,
+                                           std::max(0.0f, marker.size) * imageScale);
     if (isMultiMarkerCluster) {
         markerPixelSize *= CHECK_TRACKER_MAP_MULTI_MARKER_SIZE_SCALE;
     }
@@ -1087,11 +1171,55 @@ static bool IsMouseInsidePopupBridgeRect(const ImVec2& anchorMin, const ImVec2& 
     return mousePosition.x >= minX && mousePosition.x <= maxX && mousePosition.y >= minY && mousePosition.y <= maxY;
 }
 
+static void DrawOverworldConnectionLines(const MapTabData& overview, const ImVec2& imageStart, float imageScale,
+                                         ImDrawList* drawList) {
+    if (overview.mapId != MapIds::Overworld) {
+        return;
+    }
+
+    std::unordered_map<std::string, ImVec2> overviewNodePositions;
+    overviewNodePositions.reserve(overview.links.size());
+    for (const MapLink& link : overview.links) {
+        if (mapTrackerState.tabIndexById.contains(link.targetMapId)) {
+            overviewNodePositions.try_emplace(
+                link.targetMapId,
+                ImVec2(imageStart.x + link.x * imageScale, imageStart.y + link.y * imageScale));
+        }
+    }
+
+    const ImU32 lineColor = IM_COL32(142, 102, 50, 153);
+    std::unordered_set<std::string> drawnConnections;
+    for (const MapTabData& sourceMap : mapTrackerState.tabs) {
+        if (sourceMap.mapId == overview.mapId || !overviewNodePositions.contains(sourceMap.mapId)) {
+            continue;
+        }
+
+        for (const MapLink& link : sourceMap.links) {
+            auto targetNode = overviewNodePositions.find(link.targetMapId);
+            if (targetNode == overviewNodePositions.end() || sourceMap.mapId == link.targetMapId) {
+                continue;
+            }
+
+            const std::string& firstMapId = std::min(sourceMap.mapId, link.targetMapId);
+            const std::string& secondMapId = std::max(sourceMap.mapId, link.targetMapId);
+            const std::string connectionKey = firstMapId + "\n" + secondMapId;
+            if (!drawnConnections.insert(connectionKey).second) {
+                continue;
+            }
+
+            drawList->AddLine(overviewNodePositions.at(sourceMap.mapId), targetNode->second, lineColor, 2.0f);
+        }
+    }
+}
+
 static PopupWindowLayout ComputeClusterPopupLayout(const std::vector<const RenderableMapMarker*>& clusterMarkers,
                                                    const std::optional<int>& popupNavigationTargetTabIndex,
                                                    const std::optional<std::string>& requirementSummary,
                                                    const ImGuiViewport* viewport) {
     const ImGuiStyle& popupStyle = ImGui::GetStyle();
+    const bool integratedScreen = CVarGetInteger(MapTracker::CVAR_SCREEN, 0) != 0;
+    const ImVec2 windowPadding = integratedScreen ? ImVec2(8.0f, 6.0f) : popupStyle.WindowPadding;
+    const ImVec2 itemSpacing = integratedScreen ? ImVec2(4.0f, 2.0f) : popupStyle.ItemSpacing;
     float popupTextLineHeight = ImGui::GetTextLineHeight();
     float popupStatusWidth = std::max(10.0f, popupTextLineHeight - 2.0f);
     const float popupStatusSpacing = std::max(6.0f, popupStyle.ItemInnerSpacing.x);
@@ -1105,10 +1233,10 @@ static PopupWindowLayout ComputeClusterPopupLayout(const std::vector<const Rende
         std::string checkName = GetCheckDisplayName(marker.check);
         float rowWidth = popupStatusWidth + popupStatusSpacing + CalcPopupTextSize(checkName).x;
 
-        std::string extraText = GetCheckExtraInfoText(marker.check);
+        std::string extraText = GetPopupRowExtraText(renderableMarker);
         if (!extraText.empty()) {
             std::string extraLabel = BuildPopupExtraLabel(extraText);
-            rowWidth += popupStyle.ItemSpacing.x + CalcPopupTextSize(extraLabel).x;
+            rowWidth += itemSpacing.x + CalcPopupTextSize(extraLabel).x;
         }
 
         desiredContentWidth = std::max(desiredContentWidth, rowWidth);
@@ -1125,7 +1253,7 @@ static PopupWindowLayout ComputeClusterPopupLayout(const std::vector<const Rende
     }
 
     PopupWindowLayout layout;
-    layout.windowSize.x = std::clamp(desiredContentWidth + (popupStyle.WindowPadding.x * 2.0f) + 4.0f, minPopupWidth,
+    layout.windowSize.x = std::clamp(desiredContentWidth + (windowPadding.x * 2.0f) + 4.0f, minPopupWidth,
                                      maxPopupWidth);
     auto computeMeasuredRowContentHeight = [&](float rowContentWidth) {
         float rowContentHeight = 0.0f;
@@ -1133,37 +1261,39 @@ static PopupWindowLayout ComputeClusterPopupLayout(const std::vector<const Rende
             const RenderableMapMarker& renderableMarker = *clusterMarkers[clusterIndex];
             const MapMarker& marker = *renderableMarker.marker;
             const PopupRowLayout rowLayout = ComputePopupRowLayout(GetCheckDisplayName(marker.check),
-                                                                   GetCheckExtraInfoText(marker.check), rowContentWidth);
+                                                                   GetPopupRowExtraText(renderableMarker), rowContentWidth,
+                                                                   integratedScreen ? &itemSpacing : nullptr);
             rowContentHeight += rowLayout.rowHeight;
             if (clusterIndex + 1 < clusterMarkers.size()) {
-                rowContentHeight += popupStyle.ItemSpacing.y;
+                rowContentHeight += itemSpacing.y;
             }
         }
         return rowContentHeight;
     };
 
-    float popupContentWidth = GetPopupContentWidthFromWindowWidth(layout.windowSize.x);
+    float popupContentWidth = GetPopupContentWidthFromWindowWidth(layout.windowSize.x, windowPadding.x);
     float measuredHeaderHeight =
-        ComputePopupHeaderHeight(popupNavigationTargetTabIndex, requirementSummary, popupContentWidth);
+        ComputePopupHeaderHeight(popupNavigationTargetTabIndex, requirementSummary, popupContentWidth, itemSpacing.y);
     float measuredRowContentHeight = computeMeasuredRowContentHeight(popupContentWidth);
     float availableChildHeight =
-        std::max(popupTextLineHeight, maxPopupHeight - (popupStyle.WindowPadding.y * 2.0f) - measuredHeaderHeight);
+        std::max(popupTextLineHeight, maxPopupHeight - (windowPadding.y * 2.0f) - measuredHeaderHeight);
 
     if (measuredRowContentHeight > availableChildHeight) {
         layout.windowSize.x = std::min(maxPopupWidth, layout.windowSize.x + popupStyle.ScrollbarSize);
-        popupContentWidth = GetPopupContentWidthFromWindowWidth(layout.windowSize.x);
-        measuredHeaderHeight = ComputePopupHeaderHeight(popupNavigationTargetTabIndex, requirementSummary, popupContentWidth);
+        popupContentWidth = GetPopupContentWidthFromWindowWidth(layout.windowSize.x, windowPadding.x);
+        measuredHeaderHeight = ComputePopupHeaderHeight(popupNavigationTargetTabIndex, requirementSummary,
+                                                        popupContentWidth, itemSpacing.y);
 
         // When the list scrolls, the child window loses horizontal space to the scrollbar.
         // Reserve that width up front so borderline rows do not wrap after the scrollbar appears.
         const float scrollableRowContentWidth = std::max(24.0f, popupContentWidth - popupStyle.ScrollbarSize);
         measuredRowContentHeight = computeMeasuredRowContentHeight(scrollableRowContentWidth);
         availableChildHeight =
-            std::max(popupTextLineHeight, maxPopupHeight - (popupStyle.WindowPadding.y * 2.0f) - measuredHeaderHeight);
+            std::max(popupTextLineHeight, maxPopupHeight - (windowPadding.y * 2.0f) - measuredHeaderHeight);
     }
 
     layout.childHeight = std::clamp(measuredRowContentHeight, popupTextLineHeight, availableChildHeight);
-    layout.windowSize.y = std::clamp(measuredHeaderHeight + layout.childHeight + (popupStyle.WindowPadding.y * 2.0f) + 2.0f,
+    layout.windowSize.y = std::clamp(measuredHeaderHeight + layout.childHeight + (windowPadding.y * 2.0f) + 2.0f,
                                      minPopupHeight, maxPopupHeight);
     return layout;
 }
@@ -1183,6 +1313,12 @@ static void NavigateToMapTab(int targetTabIndex) {
         return;
     }
 
+    if (CVarGetInteger(MapTracker::CVAR_SCREEN, 0) != 0 &&
+        mapTrackerState.selectedTabIndex != targetTabIndex && mapTrackerState.selectedTabIndex >= 0 &&
+        mapTrackerState.selectedTabIndex < static_cast<int>(mapTrackerState.tabs.size())) {
+        mapScreenNavigationHistory.push_back(mapTrackerState.tabs[mapTrackerState.selectedTabIndex].mapId);
+    }
+
     mapTrackerState.selectedTabIndex = targetTabIndex;
     const MapTabData& targetTab = mapTrackerState.tabs[static_cast<size_t>(targetTabIndex)];
     mapTrackerState.selectedGroupName = targetTab.groupName;
@@ -1192,15 +1328,63 @@ static void NavigateToMapTab(int targetTabIndex) {
     mapTrackerState.requestedTabId = targetTab.mapId;
 }
 
-static void DrawRenderableMarkerRows(const std::vector<const RenderableMapMarker*>& renderableMarkers) {
+void SelectMapTrackerScreenMap(int tabIndex) {
+    NavigateToMapTab(tabIndex);
+}
+
+bool NavigateBackMapTrackerScreen() {
+    if (mapClusterPopupState.open) {
+        CloseClusterPopup();
+        return true;
+    }
+    if (mapLinkPopupState.open) {
+        CloseLinkPopup();
+        return true;
+    }
+
+    while (!mapScreenNavigationHistory.empty()) {
+        std::string previousMapId = std::move(mapScreenNavigationHistory.back());
+        mapScreenNavigationHistory.pop_back();
+        auto previousTab = mapTrackerState.tabIndexById.find(previousMapId);
+        if (previousTab != mapTrackerState.tabIndexById.end()) {
+            mapTrackerState.selectedTabIndex = static_cast<int>(previousTab->second);
+            mapTrackerState.selectedGroupName = mapTrackerState.tabs[previousTab->second].groupName;
+            mapTrackerState.requestedTabId = previousMapId;
+            return true;
+        }
+    }
+    return false;
+}
+
+void NavigateMapTrackerScreenToOverworld() {
+    const auto overworldTab = mapTrackerState.tabIndexById.find(std::string(MapIds::Overworld));
+    if (overworldTab == mapTrackerState.tabIndexById.end()) {
+        return;
+    }
+
+    mapScreenNavigationHistory.clear();
+    CloseClusterPopup();
+    CloseLinkPopup();
+    mapTrackerState.selectedTabIndex = static_cast<int>(overworldTab->second);
+    mapTrackerState.selectedGroupName = mapTrackerState.tabs[overworldTab->second].groupName;
+    mapTrackerState.lastSelectedTabByGroup[mapTrackerState.selectedGroupName] = mapTrackerState.selectedTabIndex;
+    mapTrackerState.requestedTabId = mapTrackerState.tabs[overworldTab->second].mapId;
+}
+
+static void DrawRenderableMarkerRows(const std::vector<const RenderableMapMarker*>& renderableMarkers,
+                                    bool allowIntegratedHints = true) {
     const ImGuiViewport* currentViewport = ImGui::GetWindowViewport();
+    const bool integratedScreen = CVarGetInteger(MapTracker::CVAR_SCREEN, 0) != 0;
+    if (integratedScreen) {
+        ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 255, 255, 255));
+    }
 
     for (size_t markerIndex = 0; markerIndex < renderableMarkers.size(); markerIndex++) {
         const RenderableMapMarker& renderableMarker = *renderableMarkers[markerIndex];
         const MapMarker& marker = *renderableMarker.marker;
-        bool canToggle = CanToggleSkippedStateForCheck(marker.check);
+        bool canToggle = !integratedScreen && CanToggleSkippedStateForCheck(marker.check);
         std::string checkName = GetCheckDisplayName(marker.check);
-        std::string extraText = GetCheckExtraInfoText(marker.check);
+        std::string extraText = GetPopupRowExtraText(renderableMarker);
         std::string markerRowId = fmt::format("PopupCheckRow_{}_{}_{}_{}", static_cast<int>(marker.check), markerIndex,
                                               marker.packCheckName, marker.mapId);
 
@@ -1210,15 +1394,16 @@ static void DrawRenderableMarkerRows(const std::vector<const RenderableMapMarker
         const std::string extraLabel = BuildPopupExtraLabel(extraText);
 
         ImGui::BeginGroup();
-        if (!canToggle) {
+        if (!canToggle && !integratedScreen) {
             ImGui::BeginDisabled();
         }
 
         ImVec2 statusSize(rowLayout.statusSize, rowLayout.statusSize);
-        bool statusPressed = ImGui::ColorButton("##Status", ImGui::ColorConvertU32ToFloat4(renderableMarker.fillColor),
-                                                ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop,
-                                                statusSize);
+        ImGui::ColorButton("##Status", ImGui::ColorConvertU32ToFloat4(renderableMarker.fillColor),
+                           ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop, statusSize);
         bool statusHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
+        bool statusRightClicked = ImGui::IsItemClicked(ImGuiMouseButton_Right) &&
+                                  !ImGui::IsMouseDragging(ImGuiMouseButton_Right, 4.0f);
         ImVec2 statusRectMin = ImGui::GetItemRectMin();
         ImVec2 statusRectMax = ImGui::GetItemRectMax();
         ImGui::SameLine(0.0f, rowLayout.statusSpacing);
@@ -1233,10 +1418,12 @@ static void DrawRenderableMarkerRows(const std::vector<const RenderableMapMarker
         ImVec2 extraRectMax = ImGui::GetItemRectMax();
         if (!extraLabel.empty()) {
             Color_RGBA8 legacyExtraColor = GetLegacyCheckExtraColor(marker.check);
-            ImGui::PushStyleColor(
-                ImGuiCol_Text,
-                ImVec4(legacyExtraColor.r / 255.0f, legacyExtraColor.g / 255.0f, legacyExtraColor.b / 255.0f,
-                       legacyExtraColor.a / 255.0f));
+            const bool showingRequirement = !renderableMarker.isDone && !GetCheckRequirementSummary(marker.check).empty();
+            const ImVec4 extraColor = showingRequirement
+                                          ? ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]
+                                          : ImVec4(legacyExtraColor.r / 255.0f, legacyExtraColor.g / 255.0f,
+                                                   legacyExtraColor.b / 255.0f, legacyExtraColor.a / 255.0f);
+            ImGui::PushStyleColor(ImGuiCol_Text, extraColor);
             if (rowLayout.extraOnSameLine) {
                 ImGui::SameLine(0.0f, ImGui::GetStyle().ItemSpacing.x);
                 ImGui::TextUnformatted(extraLabel.c_str());
@@ -1253,30 +1440,44 @@ static void DrawRenderableMarkerRows(const std::vector<const RenderableMapMarker
 
         ImGui::EndGroup();
 
-        if (!canToggle) {
+        if (!canToggle && !integratedScreen) {
             ImGui::EndDisabled();
         }
         ImGui::EndGroup();
 
-        bool rowHovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
         ImVec2 rowRectMin = ImGui::GetItemRectMin();
         ImVec2 rowRectMax = ImGui::GetItemRectMax();
-        bool rowPressed = rowHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
-                          !ImGui::IsMouseDragging(ImGuiMouseButton_Left, 4.0f);
-        if ((statusPressed || (!statusPressed && rowPressed)) && canToggle) {
+        ImRect visibleRowRect(rowRectMin, rowRectMax);
+        if (integratedScreen) {
+            visibleRowRect.Max.x = rowRectMin.x + rowAvailableWidth;
+            visibleRowRect.ClipWith(ImGui::GetCurrentWindow()->InnerClipRect);
+        }
+        bool rowHovered = integratedScreen ? visibleRowRect.Contains(MapTracker::screenCursorPosition)
+                                          : ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
+        const bool rowLeftClicked = rowHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+                                    !ImGui::IsMouseDragging(ImGuiMouseButton_Left, 4.0f);
+        const bool rowRightClicked = rowHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right) &&
+                                     !ImGui::IsMouseDragging(ImGuiMouseButton_Right, 4.0f);
+        if (!integratedScreen && (statusRightClicked || rowRightClicked) && canToggle) {
             ToggleSkippedStateForCheck(marker.check);
         }
 
-        bool rowTooltipHovered = statusHovered || rowHovered || extraHovered;
-        bool hintTogglePressed = rowTooltipHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right) &&
-                                 !ImGui::IsMouseDragging(ImGuiMouseButton_Right, 4.0f);
+        bool rowTooltipHovered = integratedScreen ? rowHovered : statusHovered || rowHovered || extraHovered;
+        const bool allowHintForRow = !integratedScreen || allowIntegratedHints;
+        const bool hintTogglePressed = allowHintForRow && rowTooltipHovered &&
+                                       (integratedScreen
+                                            ? MapTracker::screenConfirmPressed || MapTracker::screenMousePressed
+                                            : rowLeftClicked);
         if (rowTooltipHovered) {
             if (hintTogglePressed) {
                 ToggleMapTrackerCheckHint(marker.check);
             }
             ImVec2 tooltipAnchorMin = statusRectMin;
             ImVec2 tooltipAnchorMax = statusRectMax;
-            if (extraHovered) {
+            if (integratedScreen) {
+                tooltipAnchorMin = visibleRowRect.Min;
+                tooltipAnchorMax = visibleRowRect.Max;
+            } else if (extraHovered) {
                 tooltipAnchorMin = extraRectMin;
                 tooltipAnchorMax = extraRectMax;
             } else if (rowHovered) {
@@ -1287,6 +1488,10 @@ static void DrawRenderableMarkerRows(const std::vector<const RenderableMapMarker
             const ImVec2 popupWindowMax(popupWindowMin.x + ImGui::GetWindowSize().x,
                                         popupWindowMin.y + ImGui::GetWindowSize().y);
             MarkerTooltipContent tooltipContent = BuildPopupRowTooltipContent(marker.check);
+            if (!allowHintForRow) {
+                tooltipContent.hintText.clear();
+                tooltipContent.showHintPrompt = false;
+            }
             if (HasMarkerTooltipVisibleContent(tooltipContent)) {
                 QueueMarkerTooltip(tooltipContent, tooltipAnchorMin, tooltipAnchorMax, currentViewport, true,
                                    popupWindowMin, popupWindowMax);
@@ -1295,6 +1500,53 @@ static void DrawRenderableMarkerRows(const std::vector<const RenderableMapMarker
 
         ImGui::PopID();
     }
+    if (integratedScreen) {
+        ImGui::PopStyleColor();
+    }
+}
+
+static void DrawPopupMarkerRows(const char* childId, float childHeight,
+                                const std::vector<const RenderableMapMarker*>& markers, bool integratedScreen,
+                                bool allowIntegratedHints = true) {
+    // A second translucent background would change the color of the fullscreen popup's content.
+    ImGuiWindowFlags childFlags = ImGuiWindowFlags_NavFlattened;
+    if (integratedScreen) {
+        childFlags |= ImGuiWindowFlags_NoBackground;
+    } else {
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::GetStyle().Colors[ImGuiCol_WindowBg]);
+    }
+    if (ImGui::BeginChild(childId, ImVec2(0.0f, childHeight), false, childFlags)) {
+        ApplyCheckTrackerFontScaleToCurrentWindow();
+        const ImRect listRect = ImGui::GetCurrentWindow()->InnerClipRect;
+        if (integratedScreen && MapTracker::screenPanDeltaY != 0.0f &&
+            listRect.Contains(MapTracker::screenCursorPosition)) {
+            ImGui::SetScrollY(ImGui::GetScrollY() + MapTracker::screenPanDeltaY * 1800.0f * ImGui::GetIO().DeltaTime);
+        }
+        DrawRenderableMarkerRows(markers, allowIntegratedHints);
+    }
+    ImGui::EndChild();
+    if (!integratedScreen) {
+        ImGui::PopStyleColor();
+    }
+}
+
+static void DrawExperimentalPlayerIndicator(const MapTabData& tab, const ImVec2& imageStart, float imageScale,
+                                            ImDrawList* drawList) {
+    const auto indicator = GetExperimentalMapPlayerIndicator(tab);
+    if (!indicator) {
+        return;
+    }
+    const ImVec2 center = imageStart + indicator->position * imageScale;
+    drawList->AddCircleFilled(center, 18.0f, IM_COL32(0, 0, 0, 150), 24);
+    drawList->AddCircle(center, 15.0f, IM_COL32(92, 238, 217, 240), 24, 2.0f);
+    const ImVec2 forward = indicator->direction;
+    const ImVec2 side(-forward.y, forward.x);
+    const ImVec2 tip = center + forward * 12.0f;
+    const ImVec2 left = center - forward * 7.0f + side * 7.0f;
+    const ImVec2 right = center - forward * 7.0f - side * 7.0f;
+    drawList->AddTriangleFilled(tip, left, right, IM_COL32(180, 255, 240, 255));
+    drawList->AddTriangle(tip, left, right, IM_COL32(5, 35, 30, 255), 1.5f);
+    drawList->AddText(center + ImVec2(17.0f, -10.0f), IM_COL32(180, 255, 240, 255), "~");
 }
 
 void DrawMapTabContent(int tabIndex, const MapTrackerRenderCache& renderCache) {
@@ -1386,7 +1638,21 @@ void DrawMapTabContent(int tabIndex, const MapTrackerRenderCache& renderCache) {
         mapLinkPopupState.tabId = tab.mapId;
     }
 
-    ImVec2 mousePos = ImGui::GetIO().MousePos;
+    const bool integratedScreen = CVarGetInteger(MapTracker::CVAR_SCREEN, 0) != 0;
+    const ImVec2 cursorPosition = integratedScreen ? MapTracker::screenCursorPosition : ImGui::GetIO().MousePos;
+    bool integratedPopupCaptured = false;
+    if (integratedScreen) {
+        // Keep the owner stable before processing markers beneath the popup or its connecting rectangle.
+        const bool clusterCaptured = IsCursorInsidePopupInteractionRect(mapClusterPopupState, cursorPosition);
+        const bool linkCaptured = IsCursorInsidePopupInteractionRect(mapLinkPopupState, cursorPosition);
+        if (mapClusterPopupState.open && !clusterCaptured) {
+            CloseClusterPopup();
+        }
+        if (mapLinkPopupState.open && !linkCaptured) {
+            CloseLinkPopup();
+        }
+        integratedPopupCaptured = clusterCaptured || linkCaptured;
+    }
     bool mouseOverPopupWindow = false;
 
     if (mapClusterPopupState.open && mapClusterPopupState.tabId == tab.mapId) {
@@ -1396,12 +1662,12 @@ void DrawMapTabContent(int tabIndex, const MapTrackerRenderCache& renderCache) {
             if (!popupMarkers.empty()) {
                 if (mapClusterPopupState.hasLastWindowRect) {
                     mouseOverPopupWindow |= IsMouseInsidePopupWindowRect(mapClusterPopupState.lastWindowPosition,
-                                                                        mapClusterPopupState.lastWindowSize, mousePos);
+                                                                        mapClusterPopupState.lastWindowSize, cursorPosition);
                 } else {
                     const PopupWindowLayout popupLayout =
                         ComputeClusterPopupLayout(popupMarkers, std::nullopt, std::nullopt, currentViewport);
                     mouseOverPopupWindow |= IsMouseInsidePopupWindowRect(mapClusterPopupState.popupPosition,
-                                                                        popupLayout.windowSize, mousePos);
+                                                                        popupLayout.windowSize, cursorPosition);
                 }
             }
         }
@@ -1424,21 +1690,27 @@ void DrawMapTabContent(int tabIndex, const MapTrackerRenderCache& renderCache) {
             if (!popupMarkers.empty()) {
                 if (mapLinkPopupState.hasLastWindowRect) {
                     mouseOverPopupWindow |= IsMouseInsidePopupWindowRect(mapLinkPopupState.lastWindowPosition,
-                                                                        mapLinkPopupState.lastWindowSize, mousePos);
+                                                                        mapLinkPopupState.lastWindowSize, cursorPosition);
                 } else {
                     const PopupWindowLayout popupLayout =
                         ComputeClusterPopupLayout(popupMarkers, targetTabIndex, requirementSummary, currentViewport);
                     mouseOverPopupWindow |= IsMouseInsidePopupWindowRect(mapLinkPopupState.popupPosition,
-                                                                        popupLayout.windowSize, mousePos);
+                                                                        popupLayout.windowSize, cursorPosition);
                 }
             }
         }
     }
 
-    float wheelDelta = ImGui::GetIO().MouseWheel;
-    bool mouseInsideImage = mousePos.x >= imageStartPos.x && mousePos.x <= (imageStartPos.x + drawSize.x) &&
-                            mousePos.y >= imageStartPos.y && mousePos.y <= (imageStartPos.y + drawSize.y);
-    if (wheelDelta != 0.0f && mouseInsideImage && !mouseOverPopupWindow) {
+    float wheelDelta = ImGui::GetIO().MouseWheel + MapTracker::screenZoomDelta;
+    bool cursorInsideImage = cursorPosition.x >= imageStartPos.x && cursorPosition.x <= (imageStartPos.x + drawSize.x) &&
+                             cursorPosition.y >= imageStartPos.y && cursorPosition.y <= (imageStartPos.y + drawSize.y);
+    if (integratedScreen && cursorInsideImage && !integratedPopupCaptured &&
+        (MapTracker::screenPanDeltaX != 0.0f || MapTracker::screenPanDeltaY != 0.0f)) {
+        const float panSpeed = 2160.0f * ImGui::GetIO().DeltaTime;
+        tab.panOffset.x -= MapTracker::screenPanDeltaX * panSpeed;
+        tab.panOffset.y -= MapTracker::screenPanDeltaY * panSpeed;
+    }
+    if (wheelDelta != 0.0f && cursorInsideImage && !mouseOverPopupWindow && !integratedPopupCaptured) {
         float previousZoomFactor = tab.zoomFactor;
         float zoomStep = std::pow(CHECK_TRACKER_MAP_ZOOM_WHEEL_STEP, wheelDelta);
         float nextZoomFactor =
@@ -1447,8 +1719,8 @@ void DrawMapTabContent(int tabIndex, const MapTrackerRenderCache& renderCache) {
             float previousImageScale = imageScale;
             ImVec2 previousImageStartPos = imageStartPos;
 
-            float mapPixelX = (mousePos.x - previousImageStartPos.x) / std::max(0.0001f, previousImageScale);
-            float mapPixelY = (mousePos.y - previousImageStartPos.y) / std::max(0.0001f, previousImageScale);
+            float mapPixelX = (cursorPosition.x - previousImageStartPos.x) / std::max(0.0001f, previousImageScale);
+            float mapPixelY = (cursorPosition.y - previousImageStartPos.y) / std::max(0.0001f, previousImageScale);
 
             tab.zoomFactor = nextZoomFactor;
             imageScale = fitScale * tab.zoomFactor;
@@ -1456,7 +1728,7 @@ void DrawMapTabContent(int tabIndex, const MapTrackerRenderCache& renderCache) {
             horizontalPadding = std::max(0.0f, (availableSize.x - drawSize.x) * 0.5f);
             verticalPadding = std::max(0.0f, (availableSize.y - drawSize.y) * 0.5f);
 
-            ImVec2 desiredImageStartPos(mousePos.x - (mapPixelX * imageScale), mousePos.y - (mapPixelY * imageScale));
+            ImVec2 desiredImageStartPos(cursorPosition.x - (mapPixelX * imageScale), cursorPosition.y - (mapPixelY * imageScale));
             tab.panOffset.x = desiredImageStartPos.x - mapCursorScreenPos.x - horizontalPadding;
             tab.panOffset.y = desiredImageStartPos.y - mapCursorScreenPos.y - verticalPadding;
         }
@@ -1470,6 +1742,7 @@ void DrawMapTabContent(int tabIndex, const MapTrackerRenderCache& renderCache) {
     ImDrawList* drawList = ImGui::GetWindowDrawList();
 
     ImGui::Image(tab.texture, drawSize);
+    DrawOverworldConnectionLines(tab, imageStartPos, imageScale, drawList);
 
     // Capture drag input on the map itself so the parent ImGui window does not move.
     ImGui::SetCursorScreenPos(imageStartPos);
@@ -1479,7 +1752,8 @@ void DrawMapTabContent(int tabIndex, const MapTrackerRenderCache& renderCache) {
     bool mapImageActive = ImGui::IsItemActive();
     ImGui::PopID();
 
-    if (mapImageActive && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f)) {
+    if (mapImageActive && (!integratedScreen || (!integratedPopupCaptured && !MapTracker::screenCursorUsesController)) &&
+        ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f)) {
         ImVec2 dragDelta = ImGui::GetIO().MouseDelta;
         tab.panOffset.x += dragDelta.x;
         tab.panOffset.y += dragDelta.y;
@@ -1496,7 +1770,21 @@ void DrawMapTabContent(int tabIndex, const MapTrackerRenderCache& renderCache) {
 
     bool markerHoveredForPopup = false;
     bool linkHoveredForPopup = false;
-
+    bool cursorOverLinkMarker = false;
+    if (integratedScreen) {
+        for (const MapLink& link : tab.links) {
+            if (!mapTrackerState.tabIndexById.contains(link.targetMapId)) {
+                continue;
+            }
+            const ImVec2 linkCenter(imageStartPos.x + (link.x * imageScale), imageStartPos.y + (link.y * imageScale));
+            constexpr float linkHalfSize = 17.0f;
+            if (cursorPosition.x >= linkCenter.x - linkHalfSize && cursorPosition.x <= linkCenter.x + linkHalfSize &&
+                cursorPosition.y >= linkCenter.y - linkHalfSize && cursorPosition.y <= linkCenter.y + linkHalfSize) {
+                cursorOverLinkMarker = true;
+                break;
+            }
+        }
+    }
     for (const auto& stackKey : cachedTabRenderData.stackOrder) {
         auto renderableMarkersIt = cachedTabRenderData.renderableMarkersByStackKey.find(stackKey);
         if (renderableMarkersIt == cachedTabRenderData.renderableMarkersByStackKey.end()) {
@@ -1519,10 +1807,20 @@ void DrawMapTabContent(int tabIndex, const MapTrackerRenderCache& renderCache) {
         ImGui::SetCursorScreenPos(markerMin);
         ImGui::PushID(fmt::format("MapMarker_{}_{}", tab.mapId, stackKey).c_str());
         ImGui::InvisibleButton("marker", ImVec2(markerMax.x - markerMin.x, markerMax.y - markerMin.y));
-        bool hovered = ImGui::IsItemHovered();
-        bool clicked = ImGui::IsItemClicked(ImGuiMouseButton_Left) && !ImGui::IsMouseDragging(ImGuiMouseButton_Left, 4.0f);
-        bool rightClicked = hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right) &&
-                            !ImGui::IsMouseDragging(ImGuiMouseButton_Right, 4.0f);
+        ImVec2 markerRectMin = ImGui::GetItemRectMin();
+        ImVec2 markerRectMax = ImGui::GetItemRectMax();
+        const bool ownsIntegratedPopup = mapClusterPopupState.open && mapClusterPopupState.stackKey == stackKey;
+        ImRect visibleMarkerRect(markerRectMin, markerRectMax);
+        visibleMarkerRect.ClipWith(ImGui::GetCurrentWindow()->InnerClipRect);
+        bool hovered = integratedScreen
+                           ? visibleMarkerRect.Contains(cursorPosition) && !cursorOverLinkMarker &&
+                                 (!integratedPopupCaptured || ownsIntegratedPopup)
+                           : ImGui::IsItemHovered();
+        bool clicked = integratedScreen
+                           ? hovered && (MapTracker::screenConfirmPressed || MapTracker::screenMousePressed) &&
+                                 !ImGui::IsMouseDragging(ImGuiMouseButton_Left, 4.0f)
+                           : ImGui::IsItemClicked(ImGuiMouseButton_Right) &&
+                                 !ImGui::IsMouseDragging(ImGuiMouseButton_Right, 4.0f);
         ImGui::PopID();
 
         std::vector<ImU32> segmentColors = BuildClusterSegmentColors(renderableMarkers);
@@ -1543,7 +1841,11 @@ void DrawMapTabContent(int tabIndex, const MapTrackerRenderCache& renderCache) {
         drawList->AddRect(markerMin, markerMax, CHECK_TRACKER_MAP_COLOR_BORDER, 1.0f, 0, 1.5f);
 
         if (isMultiMarkerCluster) {
-            if (hovered) {
+            if (integratedScreen && ownsIntegratedPopup) {
+                mapClusterPopupState.anchorMin = markerMin;
+                mapClusterPopupState.anchorMax = markerMax;
+            }
+            if (hovered && (!integratedScreen || !ownsIntegratedPopup)) {
                 markerHoveredForPopup = true;
                 CloseLinkPopup();
                 mapClusterPopupState.open = true;
@@ -1557,16 +1859,22 @@ void DrawMapTabContent(int tabIndex, const MapTrackerRenderCache& renderCache) {
                 mapClusterPopupState.popupPosition =
                     ComputeAnchoredPopupPosition(markerMin, markerMax, popupLayout.windowSize, currentViewport);
                 mapClusterPopupState.hasLastWindowRect = false;
+                integratedPopupCaptured = integratedScreen;
             }
             continue;
         }
 
-        if (clicked) {
+        if (clicked && CVarGetInteger(MapTracker::CVAR_SCREEN, 0) == 0) {
             ToggleSkippedStateForCheck(anchorMarker.check);
         }
 
         if (hovered) {
-            if (rightClicked) {
+            const bool hintPressed = !cursorOverLinkMarker &&
+                                     (integratedScreen
+                                          ? MapTracker::screenConfirmPressed || MapTracker::screenMousePressed
+                                          : ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+                                                !ImGui::IsMouseDragging(ImGuiMouseButton_Left, 4.0f));
+            if (hintPressed) {
                 ToggleMapTrackerCheckHint(anchorMarker.check);
             }
             QueueRenderableMapMarkerTooltip(renderableMarkers.front(), markerMin, markerMax, currentViewport);
@@ -1589,7 +1897,11 @@ void DrawMapTabContent(int tabIndex, const MapTrackerRenderCache& renderCache) {
         bool isPlayerFocusLinkTarget =
             playerFocusTargetTabIndex.has_value() && (*playerFocusTargetTabIndex == targetTabIndex);
 
-        float halfSize = std::max(CHECK_TRACKER_MAP_MIN_MARKER_PIXEL_SIZE, std::max(0.0f, link.size) * imageScale) * 0.5f;
+        const float linkPixelSize = CVarGetInteger(MapTracker::CVAR_SCREEN, 0) != 0
+                                        ? 34.0f
+                                        : std::max(CHECK_TRACKER_MAP_MIN_MARKER_PIXEL_SIZE,
+                                                   std::max(0.0f, link.size) * imageScale);
+        float halfSize = linkPixelSize * 0.5f;
         ImVec2 center(imageStartPos.x + (link.x * imageScale), imageStartPos.y + (link.y * imageScale));
         ImVec2 markerMin(center.x - halfSize, center.y - halfSize);
         ImVec2 markerMax(center.x + halfSize, center.y + halfSize);
@@ -1597,8 +1909,19 @@ void DrawMapTabContent(int tabIndex, const MapTrackerRenderCache& renderCache) {
         ImGui::SetCursorScreenPos(markerMin);
         ImGui::PushID(fmt::format("MapLink_{}_{}_{}", tab.mapId, link.targetMapId, linkIndex).c_str());
         ImGui::InvisibleButton("link", ImVec2(markerMax.x - markerMin.x, markerMax.y - markerMin.y));
-        bool hovered = ImGui::IsItemHovered();
-        bool clicked = ImGui::IsItemClicked(ImGuiMouseButton_Left) && !ImGui::IsMouseDragging(ImGuiMouseButton_Left, 4.0f);
+        ImVec2 linkRectMin = ImGui::GetItemRectMin();
+        ImVec2 linkRectMax = ImGui::GetItemRectMax();
+        const bool ownsIntegratedPopup = mapLinkPopupState.open && mapLinkPopupState.sourceLinkIndex == linkIndex;
+        ImRect visibleLinkRect(linkRectMin, linkRectMax);
+        visibleLinkRect.ClipWith(ImGui::GetCurrentWindow()->InnerClipRect);
+        bool hovered = integratedScreen
+                           ? visibleLinkRect.Contains(cursorPosition) && (!integratedPopupCaptured || ownsIntegratedPopup)
+                           : ImGui::IsItemHovered();
+        bool clicked = integratedScreen
+                           ? hovered && (MapTracker::screenConfirmPressed || MapTracker::screenMousePressed) &&
+                                 !ImGui::IsMouseDragging(ImGuiMouseButton_Left, 4.0f)
+                           : ImGui::IsItemClicked(ImGuiMouseButton_Left) &&
+                                 !ImGui::IsMouseDragging(ImGuiMouseButton_Left, 4.0f);
         ImGui::PopID();
 
         if (segmentColors.size() == 1) {
@@ -1640,12 +1963,17 @@ void DrawMapTabContent(int tabIndex, const MapTrackerRenderCache& renderCache) {
             continue;
         }
 
-        if (hovered) {
+        if (integratedScreen && ownsIntegratedPopup) {
+            mapLinkPopupState.anchorMin = markerMin;
+            mapLinkPopupState.anchorMax = markerMax;
+        }
+        if (hovered && (!integratedScreen || !ownsIntegratedPopup)) {
             linkHoveredForPopup = true;
             CloseClusterPopup();
             mapLinkPopupState.open = true;
             mapLinkPopupState.tabId = tab.mapId;
             mapLinkPopupState.targetTabId = link.targetMapId;
+            mapLinkPopupState.sourceLinkIndex = linkIndex;
             mapLinkPopupState.anchorMin = markerMin;
             mapLinkPopupState.anchorMax = markerMax;
             const auto popupMarkers = BuildPopupRenderableMarkersWithoutDuplicateChecks(linkRenderableMarkers);
@@ -1655,6 +1983,7 @@ void DrawMapTabContent(int tabIndex, const MapTrackerRenderCache& renderCache) {
             mapLinkPopupState.popupPosition =
                 ComputeAnchoredPopupPosition(markerMin, markerMax, popupLayout.windowSize, currentViewport);
             mapLinkPopupState.hasLastWindowRect = false;
+            integratedPopupCaptured = integratedScreen;
         }
     }
 
@@ -1678,8 +2007,14 @@ void DrawMapTabContent(int tabIndex, const MapTrackerRenderCache& renderCache) {
             ImGui::SetNextWindowSize(popupLayout.windowSize, ImGuiCond_Always);
             ImGuiWindowFlags popupFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                                           ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
-                                          ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoDocking |
+                                          ImGuiWindowFlags_NoNav |
+                                          ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoDocking |
                                           ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
+            if (integratedScreen) {
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 6.0f));
+                ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 2.0f));
+                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(3.0f, 2.0f));
+            }
             std::string popupTitle = "Map Checks##MapClusterPopup_" + tab.mapId;
             ImGui::Begin(popupTitle.c_str(), nullptr, popupFlags);
             ApplyCheckTrackerFontScaleToCurrentWindow();
@@ -1687,20 +2022,20 @@ void DrawMapTabContent(int tabIndex, const MapTrackerRenderCache& renderCache) {
             mapClusterPopupState.lastWindowPosition = ImGui::GetWindowPos();
             mapClusterPopupState.lastWindowSize = ImGui::GetWindowSize();
             mapClusterPopupState.hasLastWindowRect = true;
-            popupBridgeHovered = IsMouseInsidePopupBridgeRect(mapClusterPopupState.anchorMin, mapClusterPopupState.anchorMax,
-                                                             mapClusterPopupState.lastWindowPosition,
-                                                             mapClusterPopupState.lastWindowSize, mousePos);
+            if (!integratedScreen) {
+                popupBridgeHovered = IsMouseInsidePopupBridgeRect(mapClusterPopupState.anchorMin, mapClusterPopupState.anchorMax,
+                                                                 mapClusterPopupState.lastWindowPosition,
+                                                                 mapClusterPopupState.lastWindowSize, cursorPosition);
+                popupHovered =
+                    ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem | ImGuiHoveredFlags_ChildWindows);
+            }
 
-            popupHovered =
-                ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem | ImGuiHoveredFlags_ChildWindows);
-
-            ImGui::BeginChild("MapClusterPopupRows", ImVec2(0.0f, popupLayout.childHeight), false,
-                              ImGuiWindowFlags_NavFlattened);
-            ApplyCheckTrackerFontScaleToCurrentWindow();
-            DrawRenderableMarkerRows(popupMarkers);
-            ImGui::EndChild();
+            DrawPopupMarkerRows("MapClusterPopupRows", popupLayout.childHeight, popupMarkers, integratedScreen);
 
             ImGui::End();
+            if (integratedScreen) {
+                ImGui::PopStyleVar(3);
+            }
         }
     }
 
@@ -1734,8 +2069,14 @@ void DrawMapTabContent(int tabIndex, const MapTrackerRenderCache& renderCache) {
             ImGui::SetNextWindowSize(popupLayout.windowSize, ImGuiCond_Always);
             ImGuiWindowFlags popupFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                                           ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
-                                          ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoDocking |
+                                          ImGuiWindowFlags_NoNav |
+                                          ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoDocking |
                                           ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
+            if (integratedScreen) {
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 6.0f));
+                ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 2.0f));
+                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(3.0f, 2.0f));
+            }
             std::string popupTitle = "Map Link##MapLinkPopup_" + tab.mapId + "_" + targetTab.mapId;
             ImGui::Begin(popupTitle.c_str(), nullptr, popupFlags);
             ApplyCheckTrackerFontScaleToCurrentWindow();
@@ -1743,31 +2084,42 @@ void DrawMapTabContent(int tabIndex, const MapTrackerRenderCache& renderCache) {
             mapLinkPopupState.lastWindowPosition = ImGui::GetWindowPos();
             mapLinkPopupState.lastWindowSize = ImGui::GetWindowSize();
             mapLinkPopupState.hasLastWindowRect = true;
-            linkPopupBridgeHovered = IsMouseInsidePopupBridgeRect(mapLinkPopupState.anchorMin, mapLinkPopupState.anchorMax,
-                                                                  mapLinkPopupState.lastWindowPosition,
-                                                                  mapLinkPopupState.lastWindowSize, mousePos);
-
-            linkPopupHovered =
-                ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem | ImGuiHoveredFlags_ChildWindows);
+            if (!integratedScreen) {
+                linkPopupBridgeHovered = IsMouseInsidePopupBridgeRect(mapLinkPopupState.anchorMin, mapLinkPopupState.anchorMax,
+                                                                      mapLinkPopupState.lastWindowPosition,
+                                                                      mapLinkPopupState.lastWindowSize, cursorPosition);
+                linkPopupHovered =
+                    ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem | ImGuiHoveredFlags_ChildWindows);
+            }
 
             DrawClusterPopupTargetHeader(targetTabIndex, requirementSummary);
-            ImGui::BeginChild("MapLinkPopupRows", ImVec2(0.0f, popupLayout.childHeight), false,
-                              ImGuiWindowFlags_NavFlattened);
-            ApplyCheckTrackerFontScaleToCurrentWindow();
-            DrawRenderableMarkerRows(popupMarkers);
-            ImGui::EndChild();
+            DrawPopupMarkerRows("MapLinkPopupRows", popupLayout.childHeight, popupMarkers, integratedScreen, false);
 
             ImGui::End();
+            if (integratedScreen) {
+                ImGui::PopStyleVar(3);
+            }
         }
     }
 
-    if (mapClusterPopupState.open && !markerHoveredForPopup && !popupHovered && !popupBridgeHovered) {
-        CloseClusterPopup();
-    }
-    if (mapLinkPopupState.open && !linkHoveredForPopup && !linkPopupHovered && !linkPopupBridgeHovered) {
-        CloseLinkPopup();
+    if (integratedScreen) {
+        // Evaluate the same region again using this frame's actual window bounds, not ImGui's mouse hover state.
+        if (mapClusterPopupState.open && !IsCursorInsidePopupInteractionRect(mapClusterPopupState, cursorPosition)) {
+            CloseClusterPopup();
+        }
+        if (mapLinkPopupState.open && !IsCursorInsidePopupInteractionRect(mapLinkPopupState, cursorPosition)) {
+            CloseLinkPopup();
+        }
+    } else {
+        if (mapClusterPopupState.open && !markerHoveredForPopup && !popupHovered && !popupBridgeHovered) {
+            CloseClusterPopup();
+        }
+        if (mapLinkPopupState.open && !linkHoveredForPopup && !linkPopupHovered && !linkPopupBridgeHovered) {
+            CloseLinkPopup();
+        }
     }
 
+    DrawExperimentalPlayerIndicator(tab, imageStartPos, imageScale, drawList);
     FlushQueuedMarkerTooltip();
     ImGui::EndChild();
 }
@@ -2016,7 +2368,7 @@ static void DrawMapTrackerTabButtons(const std::vector<int>& visibleTabIndices, 
     ImGui::PopStyleVar();
 }
 
-void DrawMapTrackerContent() {
+void DrawMapTrackerContent(bool showNavigation) {
     if (DrawMapTrackerLoadingOrFatalState()) {
         return;
     }
@@ -2037,8 +2389,10 @@ void DrawMapTrackerContent() {
     const MapTrackerRenderCache& renderCache = GetMapTrackerRenderCache(mqSpoilers);
     const std::vector<MapTabVisualSummary>& tabVisualSummaries = renderCache.tabVisualSummaries;
 
-    DrawMapGroupTabs(showGroupTabs, showDebugFallbackGroup, showIssuesTab, requestGroupTabSelection, issuesGroupName,
-                     debugNoGroupName);
+    if (showNavigation) {
+        DrawMapGroupTabs(showGroupTabs, showDebugFallbackGroup, showIssuesTab, requestGroupTabSelection, issuesGroupName,
+                         debugNoGroupName);
+    }
 
     bool showingIssuesTab = showGroupTabs && showIssuesTab && (mapTrackerState.selectedGroupName == issuesGroupName);
     std::vector<int> visibleTabIndices =
@@ -2046,7 +2400,7 @@ void DrawMapTrackerContent() {
 
     ProcessPendingMapTextureLoads();
 
-    bool showMapButtons = !showingIssuesTab && visibleTabIndices.size() > 1;
+    bool showMapButtons = showNavigation && !showingIssuesTab && visibleTabIndices.size() > 1;
     if (showMapButtons) {
         DrawMapTrackerTabButtons(visibleTabIndices, showGroupTabs, tabVisualSummaries, selectedTabColor);
     }
