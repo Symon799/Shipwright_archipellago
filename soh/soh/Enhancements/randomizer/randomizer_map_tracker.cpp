@@ -210,7 +210,20 @@ void ToggleMapTrackerFromInput() {
     const bool toggleIsPressed = keyboardPressed || (toggleButtons & BTN_CUSTOM_MAP_TRACKER) != 0;
 
     if (toggleIsPressed && !toggleWasPressed) {
-        SetScreenOpen(CVarGetInteger(CVAR_SCREEN, 0) == 0);
+        const bool opening = CVarGetInteger(CVAR_SCREEN, 0) == 0;
+        const bool controllerPressed = std::any_of(trackerMappings.begin(), trackerMappings.end(), [](const auto& entry) {
+            if (entry.second->GetPhysicalDeviceType() != Ship::PhysicalDeviceType::SDLGamepad) {
+                return false;
+            }
+            CONTROLLERBUTTONS_T buttons = 0;
+            entry.second->UpdatePad(buttons);
+            return (buttons & BTN_CUSTOM_MAP_TRACKER) == BTN_CUSTOM_MAP_TRACKER;
+        });
+        SetScreenOpen(opening);
+        if (opening && CVarGetInteger(CVAR_SCREEN, 0) != 0) {
+            // Set the source after opening, which resets cursor state. Mouse/stick movement takes over later.
+            screenCursorUsesController = controllerPressed && !keyboardPressed;
+        }
     }
     toggleWasPressed = toggleIsPressed;
 

@@ -970,6 +970,10 @@ static std::optional<std::string> ResolvePreferredMapTabIdForScene(SceneID scene
 }
 
 void UpdateRequestedMapTabFromCurrentArea(bool force) {
+    // A focus request before metadata is loaded must not consume the first area change.
+    if (!mapTrackerState.loaded) {
+        return;
+    }
     RandomizerCheckArea focusArea = currentArea;
     SceneID focusScene = SCENE_ID_MAX;
 
@@ -989,14 +993,13 @@ void UpdateRequestedMapTabFromCurrentArea(bool force) {
     if (!force && focusArea == mapTrackerState.lastFocusedArea && focusScene == mapTrackerState.lastFocusedScene) {
         return;
     }
-    mapTrackerState.lastFocusedArea = focusArea;
-    mapTrackerState.lastFocusedScene = focusScene;
-
     auto preferredTabId = ResolvePreferredMapTabIdForScene(focusScene);
     if (!preferredTabId.has_value()) {
         preferredTabId = ResolvePreferredMapTabIdForArea(focusArea);
     }
     if (preferredTabId.has_value()) {
+        mapTrackerState.lastFocusedArea = focusArea;
+        mapTrackerState.lastFocusedScene = focusScene;
         mapTrackerState.requestedTabId = *preferredTabId;
     }
 }
