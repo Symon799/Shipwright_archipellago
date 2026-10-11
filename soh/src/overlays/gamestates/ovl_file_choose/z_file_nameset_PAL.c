@@ -379,12 +379,12 @@ void FileChoose_DrawNameEntry(GameState* thisx) {
                         this->configMode = CM_NAME_ENTRY_TO_QUEST_MENU;
                     } else if (this->prevConfigMode == CM_RANDOMIZER_SETTINGS_MENU) {
                         this->configMode = CM_NAME_ENTRY_TO_RANDOMIZER_SETTINGS_MENU;
-                    } else if (this->prevConfigMode = CM_ARCHIPELAGO_SETTINGS_MENU) {
+                    } else if (this->prevConfigMode == CM_ARCHIPELAGO_SETTINGS_MENU) {
                         this->configMode = CM_NAME_ENTRY_TO_ARCHIPELAGO_SETTINGS_MENU;
                     } else {
                         this->configMode = CM_NAME_ENTRY_TO_MAIN;
                     }
-                    this->prevConfigMode = CM_NAME_ENTRY;
+                    this->prevConfigMode = this->configMode == CM_NAME_ENTRY_TO_MAIN ? CM_MAIN_MENU : CM_NAME_ENTRY;
                     sLastCharIndex = -1;
                     CVarSetInteger(CVAR_GENERAL("OnFileSelectNameEntry"), 0);
                 } else {
