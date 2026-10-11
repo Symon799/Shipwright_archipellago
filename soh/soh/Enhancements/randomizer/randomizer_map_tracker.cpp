@@ -16,7 +16,7 @@
 #include <charconv>
 #include <chrono>
 #include <cmath>
-#include <fmt/format.h>
+#include <spdlog/fmt/fmt.h>
 #include <map>
 #include <string_view>
 #include <vector>
