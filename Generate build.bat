@@ -56,7 +56,7 @@ if errorlevel 1 (
 )
 popd
 
-for /f "delims=" %%P in ('powershell -NoProfile -ExecutionPolicy Bypass -Command "(Get-ChildItem -LiteralPath '_packages' -Filter '*.zip' | Where-Object { $_.Name -ne 'SoH_Arch_MapTracker_Windows.zip' } | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName"') do set "NATIVE_PACKAGE=%%P"
+for /f "delims=" %%P in ('powershell -NoProfile -ExecutionPolicy Bypass -Command "(Get-ChildItem -LiteralPath '_packages' -Filter '*.zip' | Where-Object { $_.Name -ne 'SoH_Arch_MapTracker_Windows.zip' -and $_.Name -ne 'SoH_AP_Map_Windows.zip' } | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName"') do set "NATIVE_PACKAGE=%%P"
 if not defined NATIVE_PACKAGE (
     echo No native CPack package was found.
     goto :failed
@@ -66,7 +66,7 @@ if not exist "_packages" mkdir "_packages"
 python scripts\package_map_tracker_release.py ^
   --platform windows ^
   --package "%NATIVE_PACKAGE%" ^
-  --output "_packages\SoH_Arch_MapTracker_Windows.zip" ^
+  --output "_packages\SoH_AP_Map_Windows.zip" ^
   --config "packaging\shipofharkinian.json" ^
   --map-pack "%PACK_FILE%" ^
   --readme "README.md"
@@ -74,7 +74,7 @@ if errorlevel 1 goto :failed
 
 echo.
 echo Windows release package created:
-echo _packages\SoH_Arch_MapTracker_Windows.zip
+echo _packages\SoH_AP_Map_Windows.zip
 pause
 exit /b 0
 

@@ -126,6 +126,21 @@ bool screenClosedForGameplay = false;
 uint16_t suppressedGameplayButtons = 0;
 bool screenOpenedFromPause = false;
 std::chrono::steady_clock::time_point nextScreenToggleTime;
+bool screenClosing = false;
+std::chrono::steady_clock::time_point screenClosingTime;
+constexpr float SCREEN_CLOSE_DURATION = 0.18f;
+// Percentage of the screen reserved on each side of the integrated map panel.
+constexpr float SCREEN_HORIZONTAL_MARGIN_PERCENT = 6.0f;
+constexpr float SCREEN_VERTICAL_MARGIN_PERCENT = 5.5f;
+
+void ResetScreenInput() {
+    screenInput = {};
+    screenCursorDeltaX = screenCursorDeltaY = 0.0f;
+    screenPanDeltaX = screenPanDeltaY = screenZoomDelta = 0.0f;
+    screenConfirmPressed = screenBackPressed = screenFocusPressed = screenOverworldPressed = false;
+    screenZoomInPressed = screenZoomOutPressed = false;
+    screenMapListNavigationDelta = 0;
+}
 
 bool CanOpenScreen() {
     const bool pausedMenuReady = gPlayState != nullptr && gPlayState->pauseCtx.state == 6 &&
@@ -140,21 +155,23 @@ bool CanOpenScreen() {
 void SetScreenOpen(bool opening, bool force = false) {
     const auto now = std::chrono::steady_clock::now();
     if (opening == (CVarGetInteger(CVAR_SCREEN, 0) != 0) || (opening && !CanOpenScreen()) ||
-        (!force && now < nextScreenToggleTime)) {
+        (!force && (screenClosing || now < nextScreenToggleTime))) {
         return;
     }
+    ResetScreenInput();
+    if (!opening && !force) {
+        // Keep visibility (and the gameplay/input lock) until the exit animation finishes.
+        screenClosing = true;
+        screenClosingTime = now;
+        return;
+    }
+    screenClosing = false;
     if (opening) {
         screenOpenedFromPause = gPlayState->pauseCtx.state != 0;
     }
     SohGui::ToggleMapTrackerScreenWindow();
     nextScreenToggleTime = now + std::chrono::milliseconds(500);
     screenClosedForGameplay = !opening;
-    screenInput = {};
-    screenCursorDeltaX = screenCursorDeltaY = 0.0f;
-    screenPanDeltaX = screenPanDeltaY = screenZoomDelta = 0.0f;
-    screenConfirmPressed = screenBackPressed = screenFocusPressed = screenOverworldPressed = false;
-    screenZoomInPressed = screenZoomOutPressed = false;
-    screenMapListNavigationDelta = 0;
     // The vanilla pause menu already owns its audio state; leave it paused when returning to it.
     if (!screenOpenedFromPause) {
         func_800F64E0(opening ? 1 : 0);
@@ -391,19 +408,40 @@ void MapTrackerWindow::DrawElement() {
 }
 
 void MapTrackerScreenWindow::Draw() {
+    static bool wasVisible = false;
+    static std::chrono::steady_clock::time_point openingTime;
     if (!IsVisible()) {
+        wasVisible = false;
         return;
     }
+    const auto now = std::chrono::steady_clock::now();
+    if (!wasVisible) {
+        openingTime = now;
+        wasVisible = true;
+    }
+    const float progress = std::clamp(std::chrono::duration<float>(now - openingTime).count() / 0.5f, 0.0f, 1.0f);
+    const float easedProgress = 1.0f - std::pow(1.0f - progress, 3.0f);
 
     CheckTracker::SetMapTrackerAvailabilityRequested(true);
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(viewport->Pos, ImGuiCond_Always);
-    ImGui::SetNextWindowSize(viewport->Size, ImGuiCond_Always);
+    const ImVec2 margin(viewport->Size.x * SCREEN_HORIZONTAL_MARGIN_PERCENT / 100.0f,
+                        viewport->Size.y * SCREEN_VERTICAL_MARGIN_PERCENT / 100.0f);
+    const float openingOffset = std::min(24.0f, margin.y * 0.75f) * (1.0f - easedProgress);
+    const float closingProgress = screenClosing
+                                      ? std::clamp(std::chrono::duration<float>(now - screenClosingTime).count() /
+                                                       SCREEN_CLOSE_DURATION, 0.0f, 1.0f)
+                                      : 0.0f;
+    const float closingEase = closingProgress * closingProgress;
+    const ImVec2 panelSize = viewport->Size - margin * 2.0f;
+    const ImVec2 closingInset = panelSize * (0.04f * closingEase);
+    ImGui::SetNextWindowPos(viewport->Pos + margin + closingInset +
+                               ImVec2(0.0f, openingOffset + 32.0f * closingEase), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(panelSize - closingInset * 2.0f, ImGuiCond_Always);
     ImGui::SetNextWindowViewport(viewport->ID);
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(24.0f, 18.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 18.0f);
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.035f, 0.045f, 0.055f, 0.97f));
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.06f, 0.07f, 0.075f, 0.92f));
     ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.55f, 0.41f, 0.19f, 0.70f));
@@ -413,7 +451,7 @@ void MapTrackerScreenWindow::Draw() {
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.48f, 0.35f, 0.16f, 1.0f));
     const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                                    ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings |
-                                   ImGuiWindowFlags_NoDocking;
+                                   ImGuiWindowFlags_NoDocking | (screenClosing ? ImGuiWindowFlags_NoInputs : 0);
     if (ImGui::Begin("Map Tracker Screen##fullscreen", nullptr, flags)) {
         DrawElement();
     }
@@ -430,15 +468,19 @@ void MapTrackerScreenWindow::UpdateElement() {
     if (IsVisible() && !CanOpenScreen()) {
         SetScreenOpen(false, true);
     }
+    if (screenClosing && std::chrono::duration<float>(std::chrono::steady_clock::now() - screenClosingTime).count() >=
+                             SCREEN_CLOSE_DURATION) {
+        SetScreenOpen(false, true);
+    }
     ToggleMapTrackerFromInput();
-    if (IsVisible()) {
+    if (IsVisible() && !screenClosing) {
         CaptureScreenInput();
     }
 }
 
 void MapTrackerScreenWindow::DrawElement() {
     LoadSettings();
-    screenMousePressed = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+    screenMousePressed = !screenClosing && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
     CheckTracker::ProcessPendingUpdates();
     if (!GameInteractor::IsSaveLoaded() || !CheckTracker::initialized) {
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 80.0f);
@@ -461,15 +503,16 @@ void MapTrackerScreenWindow::DrawElement() {
                                          ? std::min(3.6f, screenInput.cursorAcceleration + ImGui::GetIO().DeltaTime * 1.5f)
                                          : 1.0f;
     const float cursorSpeed = 850.0f * screenInput.cursorAcceleration * ImGui::GetIO().DeltaTime;
-    screenCursorPosition.x = std::clamp(screenCursorPosition.x + screenCursorDeltaX * cursorSpeed,
-                                        viewport->Pos.x + 4.0f, viewport->Pos.x + viewport->Size.x - 4.0f);
-    screenCursorPosition.y = std::clamp(screenCursorPosition.y + screenCursorDeltaY * cursorSpeed,
-                                        viewport->Pos.y + 4.0f, viewport->Pos.y + viewport->Size.y - 4.0f);
+    const ImVec2 screenMin = ImGui::GetWindowPos();
+    const ImVec2 screenMax = screenMin + ImGui::GetWindowSize();
+    if (screenCursorUsesController) {
+        screenCursorPosition.x = std::clamp(screenCursorPosition.x + screenCursorDeltaX * cursorSpeed,
+                                            screenMin.x + 18.0f, screenMax.x - 18.0f);
+        screenCursorPosition.y = std::clamp(screenCursorPosition.y + screenCursorDeltaY * cursorSpeed,
+                                            screenMin.y + 18.0f, screenMax.y - 18.0f);
+    }
 
     ImDrawList* drawList = ImGui::GetWindowDrawList();
-    const ImVec2 screenMin = ImGui::GetWindowPos();
-    const ImVec2 screenMax(screenMin.x + ImGui::GetWindowSize().x, screenMin.y + ImGui::GetWindowSize().y);
-    drawList->AddRectFilled(screenMin, screenMax, IM_COL32(8, 13, 18, 244));
     drawList->AddRect(screenMin + ImVec2(12.0f, 12.0f), screenMax - ImVec2(12.0f, 12.0f),
                       IM_COL32(186, 144, 66, 150), 8.0f, 0, 1.5f);
 
@@ -541,7 +584,7 @@ void MapTrackerScreenWindow::DrawElement() {
         }
         const ImVec2 rowMin = ImGui::GetItemRectMin();
         const ImVec2 rowMax = ImGui::GetItemRectMax();
-        if ((pressed || ((screenConfirmPressed || screenMousePressed) && IsScreenCursorOverRect(rowMin, rowMax))) &&
+        if (!screenClosing && (pressed || ((screenConfirmPressed || screenMousePressed) && IsScreenCursorOverRect(rowMin, rowMax))) &&
             !selected) {
             CheckTracker::SelectMapTrackerScreenMap(static_cast<int>(mapIndex));
         }

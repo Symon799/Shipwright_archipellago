@@ -165,18 +165,18 @@ jobs:
         python3 scripts/package_map_tracker_release.py \
           --platform macos \
           --package SoH.dmg \
-          --output SoH_Arch_MapTracker_macOS.zip \
+          --output SoH_AP_Map_macOS.zip \
           --config release-assets/shipofharkinian.json \
           --map-pack release-assets/SoH_MapRessource_v1.1.4.zip \
           --readme README.md \
           --soh-otr build-cmake/soh/soh.o2r
-        mkdir -p SoH_Arch_MapTracker_macOS
-        python3 -c "import zipfile; zipfile.ZipFile('SoH_Arch_MapTracker_macOS.zip').extractall('SoH_Arch_MapTracker_macOS')"
+        mkdir -p SoH_AP_Map_macOS
+        python3 -c "import zipfile; zipfile.ZipFile('SoH_AP_Map_macOS.zip').extractall('SoH_AP_Map_macOS')"
     - name: Upload build
       uses: actions/upload-artifact@v7
       with:
-        name: SoH_Arch_MapTracker_macOS
-        path: SoH_Arch_MapTracker_macOS
+        name: SoH_AP_Map_macOS
+        path: SoH_AP_Map_macOS
     - name: Save Cache MacPorts
       if: ${{ github.ref_name == github.event.repository.default_branch }}
       uses: actions/cache/save@v5
@@ -310,21 +310,21 @@ jobs:
         python3 scripts/package_map_tracker_release.py \
           --platform linux \
           --package soh.appimage \
-          --output SoH_Arch_MapTracker_Linux.zip \
+          --output SoH_AP_Map_Linux.zip \
           --config release-assets/shipofharkinian.json \
           --map-pack release-assets/SoH_MapRessource_v1.1.4.zip \
           --readme README.md \
           --soh-otr build-cmake/soh/soh.o2r
-        mkdir -p SoH_Arch_MapTracker_Linux
-        python3 -c "import zipfile; zipfile.ZipFile('SoH_Arch_MapTracker_Linux.zip').extractall('SoH_Arch_MapTracker_Linux')"
+        mkdir -p SoH_AP_Map_Linux
+        python3 -c "import zipfile; zipfile.ZipFile('SoH_AP_Map_Linux.zip').extractall('SoH_AP_Map_Linux')"
       env:
         CC: gcc-12
         CXX: g++-12
     - name: Upload build
       uses: actions/upload-artifact@v7
       with:
-        name: SoH_Arch_MapTracker_Linux
-        path: SoH_Arch_MapTracker_Linux
+        name: SoH_AP_Map_Linux
+        path: SoH_AP_Map_Linux
     - name: Save Cache deps folder
       if: ${{ github.ref_name == github.event.repository.default_branch }}
       uses: actions/cache/save@v5
@@ -390,17 +390,17 @@ jobs:
         python scripts/package_map_tracker_release.py `
           --platform windows `
           --package $nativePackage.FullName `
-          --output SoH_Arch_MapTracker_Windows.zip `
+          --output SoH_AP_Map_Windows.zip `
           --config release-assets/shipofharkinian.json `
           --map-pack release-assets/SoH_MapRessource_v1.1.4.zip `
           --readme README.md `
           --soh-otr build-windows/soh/soh.o2r
-        Expand-Archive -Path SoH_Arch_MapTracker_Windows.zip -DestinationPath SoH_Arch_MapTracker_Windows -Force
+        Expand-Archive -Path SoH_AP_Map_Windows.zip -DestinationPath SoH_AP_Map_Windows -Force
     - name: Upload build
       uses: actions/upload-artifact@v7
       with:
-        name: SoH_Arch_MapTracker_Windows
-        path: SoH_Arch_MapTracker_Windows
+        name: SoH_AP_Map_Windows
+        path: SoH_AP_Map_Windows
     - name: Save Cache VCPKG folder
       if: ${{ github.ref_name == github.event.repository.default_branch }}
       uses: actions/cache/save@v5
