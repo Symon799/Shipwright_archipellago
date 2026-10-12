@@ -98,6 +98,7 @@
         }
       },
       "MapTracker": {
+        "NativePausePage": 1,
         "WindowType": 1,
         "FontSize": 1.0,
         "Draggable": 1,

@@ -1,4 +1,5 @@
 #include "global.h"
+#include "soh/Enhancements/randomizer/map_tracker_pause.h"
 
 s16 sKaleidoSetupKscpPos0[] = { PAUSE_QUEST, PAUSE_EQUIP, PAUSE_ITEM, PAUSE_MAP };
 f32 sKaleidoSetupEyeX0[] = { 0.0f, 64.0f, 0.0f, -64.0f };
@@ -23,12 +24,15 @@ void KaleidoSetup_Update(PlayState* play) {
     Input* input = &play->state.input[0];
 
     if (KaleidoSetup_CanPause(play)) {
+        const s32 trackerMapRequested = MapTracker_UseNativePausePage() && MapTracker_ConsumePauseMapRequest();
+        if (trackerMapRequested) input->press.button |= BTN_START;
 
         if (CHECK_BTN_ALL(input->cur.button, BTN_L) && CHECK_BTN_ALL(input->press.button, BTN_CUP)) {
             if (BREG(0)) {
                 pauseCtx->debugState = 3;
             }
         } else if (CHECK_BTN_ALL(input->press.button, BTN_START)) {
+            MapTracker_BeginPauseSession(play, trackerMapRequested);
 
             gSaveContext.unk_13EE = gSaveContext.unk_13EA;
 
@@ -54,7 +58,15 @@ void KaleidoSetup_Update(PlayState* play) {
             }
 
             pauseCtx->mode = (u16)(pauseCtx->pageIndex * 2) + 1;
+            if (trackerMapRequested) {
+                // Opening rotates one quarter-turn by default, or two with ZREG(47) == 2.
+                pauseCtx->pageIndex = ZREG(47) == 2 ? PAUSE_EQUIP : PAUSE_QUEST;
+                pauseCtx->eye.x = ZREG(47) == 2 ? 64.0f : 0.0f;
+                pauseCtx->eye.z = ZREG(47) == 2 ? 0.0f : -64.0f;
+                pauseCtx->mode = (u16)(pauseCtx->pageIndex * 2) + 1;
+            }
             pauseCtx->state = 1;
+            MapTracker_PrepareNativePausePage();
 
             osSyncPrintf("Ｍｏｄｅ=%d  eye.x=%f,  eye.z=%f  kscp_pos=%d\n", pauseCtx->mode, pauseCtx->eye.x,
                          pauseCtx->eye.z, pauseCtx->pageIndex);

@@ -1,4 +1,5 @@
 #include "z_kaleido_scope.h"
+#include "soh/Enhancements/randomizer/map_tracker_pause.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -1657,7 +1658,9 @@ void KaleidoScope_DrawPages(PlayState* play, GraphicsContext* gfxCtx) {
             POLY_OPA_DISP =
                 KaleidoScope_DrawPageSections(POLY_OPA_DISP, pauseCtx->mapPageVtx, sMapTexs[gSaveContext.language]);
 
-            if (sInDungeonScene) {
+            if (MapTracker_UseNativePausePage()) {
+                MapTracker_DrawNativePausePage(play);
+            } else if (sInDungeonScene) {
                 KaleidoScope_DrawDungeonMap(play, gfxCtx);
                 Gfx_SetupDL_42Opa(gfxCtx);
 
@@ -1699,7 +1702,9 @@ void KaleidoScope_DrawPages(PlayState* play, GraphicsContext* gfxCtx) {
                 POLY_OPA_DISP =
                     KaleidoScope_DrawPageSections(POLY_OPA_DISP, pauseCtx->mapPageVtx, sMapTexs[gSaveContext.language]);
 
-                if (sInDungeonScene) {
+                if (MapTracker_UseNativePausePage()) {
+                    MapTracker_DrawNativePausePage(play);
+                } else if (sInDungeonScene) {
                     KaleidoScope_DrawDungeonMap(play, gfxCtx);
                     Gfx_SetupDL_42Opa(gfxCtx);
 
@@ -2101,6 +2106,7 @@ void KaleidoScope_DrawInfoPanel(PlayState* play) {
 
     Matrix_Translate(0.0f, 0.0f, -144.0f, MTXMODE_NEW);
     Matrix_Scale(1.0f, 1.0f, 1.0f, MTXMODE_APPLY);
+    MapTracker_PositionNativePauseButtons(play);
 
     gSPMatrix(POLY_OPA_DISP++, MATRIX_NEWMTX(play->state.gfxCtx), G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_MODELVIEW);
 
@@ -2160,7 +2166,15 @@ void KaleidoScope_DrawInfoPanel(PlayState* play) {
                       ENVIRONMENT, TEXEL0, ENVIRONMENT, TEXEL0, 0, PRIMITIVE, 0);
     gDPSetEnvColor(POLY_OPA_DISP++, 20, 30, 40, 0);
 
-    if ((pauseCtx->state == 6) && (pauseCtx->namedItem != PAUSE_ITEM_NONE) && (pauseCtx->nameDisplayTimer < WREG(89)) &&
+    if (MapTracker_UseNativePausePage() && pauseCtx->state == 6 && pauseCtx->pageIndex == PAUSE_MAP &&
+        pauseCtx->unk_1E4 == 0) {
+        pauseCtx->infoPanelVtx[16].v.ob[0] = pauseCtx->infoPanelVtx[18].v.ob[0] = -63;
+        pauseCtx->infoPanelVtx[17].v.ob[0] = pauseCtx->infoPanelVtx[19].v.ob[0] = 65;
+        pauseCtx->infoPanelVtx[17].v.tc[0] = pauseCtx->infoPanelVtx[19].v.tc[0] = 0x1000;
+        gSPVertex(POLY_OPA_DISP++, &pauseCtx->infoPanelVtx[16], 4, 0);
+        gDPSetPrimColor(POLY_OPA_DISP++, 0, 0, 255, 255, 255, pauseCtx->alpha);
+        POLY_OPA_DISP = KaleidoScope_QuadTextureIA4(POLY_OPA_DISP, MapTracker_GetPauseTitleTexture(), 128, 16, 0);
+    } else if ((pauseCtx->state == 6) && (pauseCtx->namedItem != PAUSE_ITEM_NONE) && (pauseCtx->nameDisplayTimer < WREG(89)) &&
         (!pauseCtx->unk_1E4 || (pauseCtx->unk_1E4 == 2) || ((pauseCtx->unk_1E4 >= 4) && (pauseCtx->unk_1E4 <= 7)) ||
          (pauseCtx->unk_1E4 == 8)) &&
         (pauseCtx->cursorSpecialPos == 0)) {
@@ -3847,6 +3861,7 @@ void KaleidoScope_Update(PlayState* play) {
     s16 stepA;
     s32 pad;
 
+    MapTracker_HandleNativePauseInput(play);
     if ((R_PAUSE_MENU_MODE >= 3) && (((pauseCtx->state >= 4) && (pauseCtx->state <= 7)) ||
                                      ((pauseCtx->state >= 0xA) && (pauseCtx->state <= 0x12)))) {
 
@@ -4830,6 +4845,7 @@ void KaleidoScope_Update(PlayState* play) {
             }
 
             pauseCtx->state = 0;
+            MapTracker_EndPauseSession(play);
             R_UPDATE_RATE = 3;
             R_PAUSE_MENU_MODE = 0;
 

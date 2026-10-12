@@ -16,6 +16,8 @@ inline constexpr const char* CVAR_SHOW_TOTALS = CVAR_TRACKER("MapTracker.ShowTot
 inline constexpr const char* CVAR_SHOW_DEBUG_INFO = CVAR_TRACKER("MapTracker.ShowDebugInfo");
 inline constexpr const char* CVAR_MQ_SPOILERS = CVAR_TRACKER("MapTracker.MQSpoilers");
 inline constexpr const char* CVAR_PLAYER_POSITION = CVAR_TRACKER("MapTracker.ExperimentalPlayerPosition");
+inline constexpr const char* CVAR_NATIVE_PAUSE = CVAR_TRACKER("MapTracker.NativePausePage");
+inline constexpr int DEFAULT_NATIVE_PAUSE_MODE = 1;
 
 extern bool showLogicTooltip;
 extern bool showMapDebugDetails;
@@ -35,6 +37,9 @@ extern float screenPanDeltaX;
 extern float screenPanDeltaY;
 extern float screenZoomDelta;
 extern ImVec2 screenCursorPosition;
+extern bool renderingNativePause;
+extern bool screenMapInputBlocked;
+bool IsIntegratedMapView();
 bool IsScreenCursorOverRect(const ImVec2& min, const ImVec2& max);
 
 class MapTrackerWindow final : public Ship::GuiWindow {
@@ -57,6 +62,10 @@ class MapTrackerScreenWindow final : public Ship::GuiWindow {
     void InitElement() override;
     void DrawElement() override;
     void UpdateElement() override;
+
+  private:
+    bool nativeMapListVisible = false;
+    ImVec2 previousScreenCursorPosition = ImVec2(-1.0f, -1.0f);
 };
 
 class MapTrackerSettingsWindow final : public Ship::GuiWindow {

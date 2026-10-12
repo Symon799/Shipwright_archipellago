@@ -2,6 +2,7 @@
 #include "map_tracker_internal.h"
 #include "map_tracker_link_resolver.h"
 #include "randomizer_map_tracker.h"
+#include "map_tracker_pause.h"
 #include "soh/OTRGlobals.h"
 #include "soh/SohGui/UIWidgets.hpp"
 #include "soh/SohGui/SohGui.hpp"
@@ -672,6 +673,20 @@ ImU32 GetMapTrackerScreenMapStatusColor(int tabIndex) {
     return ImGui::ColorConvertFloat4ToU32(color);
 }
 
+static const ImGuiViewport* GetMapInteractionViewport(const ImGuiViewport* viewport) {
+    if (!MapTracker::renderingNativePause || viewport == nullptr)
+        return viewport;
+    ImVec2 position, size;
+    if (!MapTracker::GetNativePauseBounds(position, size))
+        return viewport;
+    // Detail windows stay 2D, but share the same usable rectangle as the native page and cursor.
+    static ImGuiViewport pageViewport;
+    pageViewport = *viewport;
+    pageViewport.Pos = pageViewport.WorkPos = position;
+    pageViewport.Size = pageViewport.WorkSize = size;
+    return &pageViewport;
+}
+
 static ImVec2 ClampWindowPositionToViewport(const ImVec2& desiredPosition, const ImVec2& windowSize,
                                             const ImGuiViewport* viewport) {
     if (viewport == nullptr) {
@@ -689,7 +704,7 @@ static ImVec2 ClampWindowPositionToViewport(const ImVec2& desiredPosition, const
 
 static ImVec2 ComputeAnchoredPopupPosition(const ImVec2& anchorMin, const ImVec2& anchorMax, const ImVec2& windowSize,
                                           const ImGuiViewport* viewport) {
-    const bool integratedScreen = CVarGetInteger(MapTracker::CVAR_SCREEN, 0) != 0;
+    const bool integratedScreen = MapTracker::IsIntegratedMapView();
     const float popupOffsetX = integratedScreen ? 0.0f : 10.0f;
     const float popupOffsetY = integratedScreen ? 0.0f : 4.0f;
 
@@ -883,7 +898,7 @@ static void DrawMarkerTooltip(const MarkerTooltipContent& content, const ImVec2&
         return;
     }
 
-    const bool integratedScreen = CVarGetInteger(MapTracker::CVAR_SCREEN, 0) != 0;
+    const bool integratedScreen = MapTracker::IsIntegratedMapView();
     if (integratedScreen) {
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 6.0f));
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 2.0f));
@@ -941,11 +956,12 @@ static void DrawMarkerTooltip(const MarkerTooltipContent& content, const ImVec2&
     ImGui::SetNextWindowPos(tooltipPosition, ImGuiCond_Always);
     ImGui::SetNextWindowSizeConstraints(ImVec2(layout.estimatedWindowSize.x, 0.0f),
                                         ImVec2(layout.estimatedWindowSize.x, layout.maxWindowSize.y));
-    ImGuiWindowFlags tooltipFlags = ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoTitleBar |
-                                    ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
-                                    ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNav |
-                                    ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoScrollbar |
+    ImGuiWindowFlags tooltipFlags = ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove |
+                                    ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings |
+                                    ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoScrollbar |
                                     ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_AlwaysAutoResize;
+    if (MapTracker::renderingNativePause)
+        ImGui::SetNextWindowBgAlpha(1.0f);
     ImGui::Begin("MapMarkerTooltip##CheckTrackerMap", nullptr, tooltipFlags);
     ApplyCheckTrackerFontScaleToCurrentWindow();
     ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());
@@ -1065,7 +1081,7 @@ static void QueueRenderableMapMarkerTooltip(const RenderableMapMarker& renderabl
 }
 
 static float ComputeMarkerHalfSize(const MapMarker& marker, float imageScale, bool isMultiMarkerCluster) {
-    const bool integratedScreen = CVarGetInteger(MapTracker::CVAR_SCREEN, 0) != 0;
+    const bool integratedScreen = MapTracker::IsIntegratedMapView();
     float markerPixelSize = integratedScreen
                                 ? 34.0f * (2.0f / 3.0f) * 1.15f
                                 : std::max(CHECK_TRACKER_MAP_MIN_MARKER_PIXEL_SIZE,
@@ -1217,7 +1233,7 @@ static PopupWindowLayout ComputeClusterPopupLayout(const std::vector<const Rende
                                                    const std::optional<std::string>& requirementSummary,
                                                    const ImGuiViewport* viewport) {
     const ImGuiStyle& popupStyle = ImGui::GetStyle();
-    const bool integratedScreen = CVarGetInteger(MapTracker::CVAR_SCREEN, 0) != 0;
+    const bool integratedScreen = MapTracker::IsIntegratedMapView();
     const ImVec2 windowPadding = integratedScreen ? ImVec2(8.0f, 6.0f) : popupStyle.WindowPadding;
     const ImVec2 itemSpacing = integratedScreen ? ImVec2(4.0f, 2.0f) : popupStyle.ItemSpacing;
     float popupTextLineHeight = ImGui::GetTextLineHeight();
@@ -1250,19 +1266,23 @@ static PopupWindowLayout ComputeClusterPopupLayout(const std::vector<const Rende
     if (viewport != nullptr) {
         maxPopupWidth = std::max(minPopupWidth, viewport->WorkSize.x * 0.75f);
         maxPopupHeight = std::max(minPopupHeight, viewport->WorkSize.y * 0.75f);
+        if (MapTracker::renderingNativePause) {
+            maxPopupWidth = std::max(minPopupWidth, viewport->WorkSize.x - 16.0f);
+            maxPopupHeight = std::max(minPopupHeight, viewport->WorkSize.y - 32.0f);
+        }
     }
 
     PopupWindowLayout layout;
-    layout.windowSize.x = std::clamp(desiredContentWidth + (windowPadding.x * 2.0f) + 4.0f, minPopupWidth,
-                                     maxPopupWidth);
+    layout.windowSize.x =
+        std::clamp(desiredContentWidth + (windowPadding.x * 2.0f) + 4.0f, minPopupWidth, maxPopupWidth);
     auto computeMeasuredRowContentHeight = [&](float rowContentWidth) {
         float rowContentHeight = 0.0f;
         for (size_t clusterIndex = 0; clusterIndex < clusterMarkers.size(); clusterIndex++) {
             const RenderableMapMarker& renderableMarker = *clusterMarkers[clusterIndex];
             const MapMarker& marker = *renderableMarker.marker;
-            const PopupRowLayout rowLayout = ComputePopupRowLayout(GetCheckDisplayName(marker.check),
-                                                                   GetPopupRowExtraText(renderableMarker), rowContentWidth,
-                                                                   integratedScreen ? &itemSpacing : nullptr);
+            const PopupRowLayout rowLayout =
+                ComputePopupRowLayout(GetCheckDisplayName(marker.check), GetPopupRowExtraText(renderableMarker),
+                                      rowContentWidth, integratedScreen ? &itemSpacing : nullptr);
             rowContentHeight += rowLayout.rowHeight;
             if (clusterIndex + 1 < clusterMarkers.size()) {
                 rowContentHeight += itemSpacing.y;
@@ -1313,7 +1333,7 @@ static void NavigateToMapTab(int targetTabIndex) {
         return;
     }
 
-    if (CVarGetInteger(MapTracker::CVAR_SCREEN, 0) != 0 &&
+    if (MapTracker::IsIntegratedMapView() &&
         mapTrackerState.selectedTabIndex != targetTabIndex && mapTrackerState.selectedTabIndex >= 0 &&
         mapTrackerState.selectedTabIndex < static_cast<int>(mapTrackerState.tabs.size())) {
         mapScreenNavigationHistory.push_back(mapTrackerState.tabs[mapTrackerState.selectedTabIndex].mapId);
@@ -1374,7 +1394,7 @@ void NavigateMapTrackerScreenToOverworld() {
 static void DrawRenderableMarkerRows(const std::vector<const RenderableMapMarker*>& renderableMarkers,
                                     bool allowIntegratedHints = true) {
     const ImGuiViewport* currentViewport = ImGui::GetWindowViewport();
-    const bool integratedScreen = CVarGetInteger(MapTracker::CVAR_SCREEN, 0) != 0;
+    const bool integratedScreen = MapTracker::IsIntegratedMapView();
     if (integratedScreen) {
         ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 255, 255, 255));
     }
@@ -1574,13 +1594,15 @@ void DrawMapTabContent(int tabIndex, const MapTrackerRenderCache& renderCache) {
 
     ImVec2 availableSize = ImGui::GetContentRegionAvail();
     availableSize.x = std::max(1.0f, availableSize.x);
-    availableSize.y = std::max(120.0f, availableSize.y);
+    availableSize.y = std::max(MapTracker::renderingNativePause ? 1.0f : 120.0f, availableSize.y);
 
     ImGuiWindowFlags mapCanvasFlags = ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoScrollbar;
+    if (MapTracker::renderingNativePause)
+        mapCanvasFlags |= ImGuiWindowFlags_NoBackground;
     std::string mapCanvasId = "CheckTrackerMapCanvas##" + tab.mapId;
     ImGui::BeginChild(mapCanvasId.c_str(), availableSize, false, mapCanvasFlags);
     ApplyCheckTrackerFontScaleToCurrentWindow();
-    const ImGuiViewport* currentViewport = ImGui::GetWindowViewport();
+    const ImGuiViewport* currentViewport = GetMapInteractionViewport(ImGui::GetWindowViewport());
 
     availableSize = ImGui::GetContentRegionAvail();
     // In a scrollable table cell, available Y can grow with scroll offset. Clamp to a stable visible height so
@@ -1589,8 +1611,8 @@ void DrawMapTabContent(int tabIndex, const MapTrackerRenderCache& renderCache) {
     if (visibleRegionHeight > 0.0f) {
         availableSize.y = std::clamp(availableSize.y, 1.0f, visibleRegionHeight);
     }
-    const float fitPaddingX = 10.0f;
-    const float fitPaddingY = ImGui::GetStyle().ItemSpacing.y + 8.0f;
+    const float fitPaddingX = MapTracker::renderingNativePause ? 0.0f : 10.0f;
+    const float fitPaddingY = MapTracker::renderingNativePause ? 2.0f : ImGui::GetStyle().ItemSpacing.y + 8.0f;
     ImVec2 fitSize = availableSize;
     fitSize.x = std::max(1.0f, fitSize.x - (fitPaddingX * 2.0f));
     fitSize.y = std::max(1.0f, fitSize.y - fitPaddingY);
@@ -1638,8 +1660,10 @@ void DrawMapTabContent(int tabIndex, const MapTrackerRenderCache& renderCache) {
         mapLinkPopupState.tabId = tab.mapId;
     }
 
-    const bool integratedScreen = CVarGetInteger(MapTracker::CVAR_SCREEN, 0) != 0;
-    const ImVec2 cursorPosition = integratedScreen ? MapTracker::screenCursorPosition : ImGui::GetIO().MousePos;
+    const bool integratedScreen = MapTracker::IsIntegratedMapView();
+    const ImVec2 cursorPosition = MapTracker::screenMapInputBlocked
+                                      ? ImVec2(-FLT_MAX, -FLT_MAX)
+                                      : integratedScreen ? MapTracker::screenCursorPosition : ImGui::GetIO().MousePos;
     bool integratedPopupCaptured = false;
     if (integratedScreen) {
         // Keep the owner stable before processing markers beneath the popup or its connecting rectangle.
@@ -1752,7 +1776,8 @@ void DrawMapTabContent(int tabIndex, const MapTrackerRenderCache& renderCache) {
     bool mapImageActive = ImGui::IsItemActive();
     ImGui::PopID();
 
-    if (mapImageActive && (!integratedScreen || (!integratedPopupCaptured && !MapTracker::screenCursorUsesController)) &&
+    if (!MapTracker::screenMapInputBlocked && mapImageActive &&
+        (!integratedScreen || (!integratedPopupCaptured && !MapTracker::screenCursorUsesController)) &&
         ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f)) {
         ImVec2 dragDelta = ImGui::GetIO().MouseDelta;
         tab.panOffset.x += dragDelta.x;
@@ -1864,7 +1889,7 @@ void DrawMapTabContent(int tabIndex, const MapTrackerRenderCache& renderCache) {
             continue;
         }
 
-        if (clicked && CVarGetInteger(MapTracker::CVAR_SCREEN, 0) == 0) {
+        if (clicked && !MapTracker::IsIntegratedMapView()) {
             ToggleSkippedStateForCheck(anchorMarker.check);
         }
 
@@ -1897,7 +1922,7 @@ void DrawMapTabContent(int tabIndex, const MapTrackerRenderCache& renderCache) {
         bool isPlayerFocusLinkTarget =
             playerFocusTargetTabIndex.has_value() && (*playerFocusTargetTabIndex == targetTabIndex);
 
-        const float linkPixelSize = CVarGetInteger(MapTracker::CVAR_SCREEN, 0) != 0
+        const float linkPixelSize = MapTracker::IsIntegratedMapView()
                                         ? 34.0f
                                         : std::max(CHECK_TRACKER_MAP_MIN_MARKER_PIXEL_SIZE,
                                                    std::max(0.0f, link.size) * imageScale);
@@ -2016,6 +2041,8 @@ void DrawMapTabContent(int tabIndex, const MapTrackerRenderCache& renderCache) {
                 ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(3.0f, 2.0f));
             }
             std::string popupTitle = "Map Checks##MapClusterPopup_" + tab.mapId;
+            if (MapTracker::renderingNativePause)
+                ImGui::SetNextWindowBgAlpha(1.0f);
             ImGui::Begin(popupTitle.c_str(), nullptr, popupFlags);
             ApplyCheckTrackerFontScaleToCurrentWindow();
             ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());
@@ -2078,6 +2105,8 @@ void DrawMapTabContent(int tabIndex, const MapTrackerRenderCache& renderCache) {
                 ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(3.0f, 2.0f));
             }
             std::string popupTitle = "Map Link##MapLinkPopup_" + tab.mapId + "_" + targetTab.mapId;
+            if (MapTracker::renderingNativePause)
+                ImGui::SetNextWindowBgAlpha(1.0f);
             ImGui::Begin(popupTitle.c_str(), nullptr, popupFlags);
             ApplyCheckTrackerFontScaleToCurrentWindow();
             ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());
@@ -2163,6 +2192,13 @@ static bool ApplyRequestedMapTabSelection() {
     mapTrackerState.requestedTabId.clear();
 
     return requestGroupTabSelection;
+}
+
+void FocusMapTrackerOnPlayer() {
+    if (!mapTrackerState.loaded)
+        return;
+    UpdateRequestedMapTabFromCurrentArea(true);
+    ApplyRequestedMapTabSelection();
 }
 
 static void ResolveMapGroupState(bool showIssuesTab, const char* issuesGroupName, const char* debugNoGroupName,
@@ -2373,7 +2409,9 @@ void DrawMapTrackerContent(bool showNavigation) {
         return;
     }
 
-    UpdateRequestedMapTabFromCurrentArea(false);
+    // The settled pause page is navigated explicitly; scene auto-focus must not overwrite Overworld.
+    if (!MapTracker::renderingNativePause)
+        UpdateRequestedMapTabFromCurrentArea(false);
     bool mqSpoilers = CVarGetInteger(MapTracker::CVAR_MQ_SPOILERS, 0);
     constexpr const char* issuesGroupName = "Unlinked / Issues";
     constexpr const char* debugNoGroupName = "Others";
@@ -2382,7 +2420,9 @@ void DrawMapTrackerContent(bool showNavigation) {
     bool requestGroupTabSelection = ApplyRequestedMapTabSelection();
     bool showDebugFallbackGroup = false;
     bool showGroupTabs = false;
-    ResolveMapGroupState(showIssuesTab, issuesGroupName, debugNoGroupName, showDebugFallbackGroup, showGroupTabs);
+    if (!MapTracker::renderingNativePause) {
+        ResolveMapGroupState(showIssuesTab, issuesGroupName, debugNoGroupName, showDebugFallbackGroup, showGroupTabs);
+    }
     ClampSelectedMapTabIndex();
 
     ImVec4 selectedTabColor = ImGui::ColorConvertU32ToFloat4(THEME_COLOR);
@@ -2390,8 +2430,8 @@ void DrawMapTrackerContent(bool showNavigation) {
     const std::vector<MapTabVisualSummary>& tabVisualSummaries = renderCache.tabVisualSummaries;
 
     if (showNavigation) {
-        DrawMapGroupTabs(showGroupTabs, showDebugFallbackGroup, showIssuesTab, requestGroupTabSelection, issuesGroupName,
-                         debugNoGroupName);
+        DrawMapGroupTabs(showGroupTabs, showDebugFallbackGroup, showIssuesTab, requestGroupTabSelection,
+                         issuesGroupName, debugNoGroupName);
     }
 
     bool showingIssuesTab = showGroupTabs && showIssuesTab && (mapTrackerState.selectedGroupName == issuesGroupName);
@@ -2405,11 +2445,13 @@ void DrawMapTrackerContent(bool showNavigation) {
         DrawMapTrackerTabButtons(visibleTabIndices, showGroupTabs, tabVisualSummaries, selectedTabColor);
     }
 
-    ImGui::Separator();
+    if (!MapTracker::renderingNativePause) ImGui::Separator();
     ImVec2 mapBodySize = ImGui::GetContentRegionAvail();
     mapBodySize.y = std::max(1.0f, mapBodySize.y - ImGui::GetStyle().ItemSpacing.y);
 
     ImGuiWindowFlags mapBodyFlags = ImGuiWindowFlags_None;
+    if (MapTracker::renderingNativePause)
+        mapBodyFlags |= ImGuiWindowFlags_NoBackground;
     if (!showingIssuesTab) {
         mapBodyFlags |= ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
     }

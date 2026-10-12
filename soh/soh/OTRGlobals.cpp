@@ -278,7 +278,7 @@ static std::shared_ptr<Ship::ControllerDefaultMappings> CreateSohControllerDefau
     auto axisMappings = defaults->GetDefaultSDLAxisDirectionToButtonMappings();
 
     keyboardMappings[BTN_CUSTOM_MAP_TRACKER] = { Ship::LUS_KB_M };
-    controllerMappings[BTN_CUSTOM_MAP_TRACKER] = { SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, SDL_CONTROLLER_BUTTON_BACK };
+    controllerMappings[BTN_CUSTOM_MAP_TRACKER] = { SDL_CONTROLLER_BUTTON_BACK };
     keyboardMappings[BTN_CUSTOM_MAP_TRACKER_OVERWORLD] = { Ship::LUS_KB_T };
     axisMappings[BTN_CUSTOM_MAP_TRACKER_OVERWORLD] = { { SDL_CONTROLLER_AXIS_TRIGGERLEFT, 1 } };
 

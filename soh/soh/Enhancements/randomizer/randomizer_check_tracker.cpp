@@ -2510,7 +2510,7 @@ void InternalRecalculateAvailableChecks(RandomizerRegion startingRegion, RandoAg
 
     StopPerformanceTimer(PT_RECALCULATE_AVAILABLE_CHECKS);
     // Availability changes refresh the rows, not the active fullscreen hover session.
-    InvalidateMapTrackerRenderCache(CVarGetInteger(MapTracker::CVAR_SCREEN, 0) == 0);
+    InvalidateMapTrackerRenderCache(!MapTracker::IsIntegratedMapView());
     SPDLOG_INFO("Recalculate Available Checks Time: {}ms",
                 GetPerformanceTimer(PT_RECALCULATE_AVAILABLE_CHECKS).count());
 }

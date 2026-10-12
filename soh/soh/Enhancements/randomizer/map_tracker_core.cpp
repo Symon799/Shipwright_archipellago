@@ -1,4 +1,5 @@
 #include "map_tracker_internal.h"
+#include "map_tracker_pause.h"
 #include "map_tracker_link_resolver.h"
 #include "randomizer_entrance_tracker.h"
 #include "randomizer_item_tracker.h"
@@ -645,6 +646,7 @@ std::vector<CheckDescriptor> BuildVisibleCheckDescriptors() {
 }
 
 void ResetMapTrackerState(bool unloadTextures) {
+    MapTracker::ClearNativePauseTextures();
     mapTextureLoader.CancelQueuedRequests();
     UnloadMapTrackerResources(mapTrackerState, unloadTextures);
     mapTrackerState = {};
@@ -1682,8 +1684,9 @@ void ProcessPendingMapTextureLoads() {
 
         tab.textureName = BuildMapTextureName(mapTrackerState.textureLoadGeneration, tab.mapId);
         try {
-            gui->LoadTextureFromResource(tab.textureName, std::move(result.texture));
+            gui->LoadTextureFromResource(tab.textureName, result.texture);
             tab.texture = gui->GetTextureByName(tab.textureName);
+            MapTracker::RegisterNativePauseTexture(tab.texture, result.texture);
             tab.textureSize = gui->GetTextureSize(tab.textureName);
             tab.imageLoaded = tab.texture != 0 && tab.textureSize.x > 0.0f && tab.textureSize.y > 0.0f;
             if (!tab.imageLoaded) {
