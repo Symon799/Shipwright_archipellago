@@ -9,9 +9,9 @@ You can open the MapTracker using : Esc -> Randomizer -> Check Tracker -> Toggle
 
 MapTracker discord Thread : https://discord.com/channels/731205301247803413/1481299118264680448
 
-## V2 !
+## SoH AP: MapTracker Edition
 
-V2 has a new full screen Mode and can be opened and fully used with a controller
+This last version has a new full screen Mode and can be opened and fully used with a controller
 <img width="1650" height="844" alt="image" src="https://github.com/user-attachments/assets/e5a01b2d-57a9-4519-a894-c3e47ee98cb0" />
 
 Short Video demo : https://youtu.be/xD1eEm5XNxI
