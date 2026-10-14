@@ -9,7 +9,7 @@ You can open the MapTracker using : Esc -> Randomizer -> Check Tracker -> Toggle
 
 MapTracker discord Thread : https://discord.com/channels/731205301247803413/1481299118264680448
 
-Short Video demo : [https://youtu.be/xD1eEm5XNxI](https://youtu.be/dRRpmfkVSC0)
+Short Video demo : https://youtu.be/6i1bTyHERFQ
 
 ## SoH AP: MapTracker Edition
 
