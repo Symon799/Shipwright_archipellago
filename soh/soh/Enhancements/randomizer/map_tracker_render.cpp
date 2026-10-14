@@ -671,7 +671,10 @@ static const ImGuiViewport* GetMapInteractionViewport(const ImGuiViewport* viewp
         return viewport;
     // Detail windows stay 2D, but share the same usable rectangle as the native page and cursor.
     static ImGuiViewport pageViewport;
-    pageViewport = *viewport;
+    // This is only a geometry proxy, not a platform viewport. Never copy backend ownership.
+    pageViewport.ID = viewport->ID;
+    pageViewport.Flags = viewport->Flags;
+    pageViewport.DpiScale = viewport->DpiScale;
     pageViewport.Pos = pageViewport.WorkPos = position;
     pageViewport.Size = pageViewport.WorkSize = size;
     return &pageViewport;

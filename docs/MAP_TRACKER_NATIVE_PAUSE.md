@@ -20,6 +20,11 @@ Changing views resets page/input state without discarding loaded image registrat
 owns their cleanup on reload or game teardown.
 On application shutdown, the image worker is joined and all captured pages, texture registrations
 and the cached custom background are released before the rendering context and logger are destroyed.
+On Windows/DXGI, the main HWND is detached from the engine's event callback before Context teardown,
+then destroyed afterwards. This prevents late focus/destruction messages from accessing a dead Context
+when quitting with either pause tracker open, without modifying the libultraship submodule.
+The native popup viewport is a geometry-only proxy: it never copies ImGui's platform/renderer
+ownership pointers, so its static destructor remains safe after the ImGui context is destroyed.
 
 ## Behaviour
 

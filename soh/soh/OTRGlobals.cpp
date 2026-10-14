@@ -21,6 +21,11 @@
 #ifdef _WIN32
 #include <Windows.h>
 #include "WindowsConsole.h"
+#include "WindowsWindow.h"
+#if defined(ENABLE_DX11) || defined(ENABLE_DX12)
+#include <fast/backends/gfx_window_manager_api.h>
+#include <fast/backends/gfx_dxgi.h>
+#endif
 #else
 #include <time.h>
 #endif
@@ -1637,12 +1642,34 @@ extern "C" void DeinitOTR() {
     SDLNet_Quit();
 #endif
 
+#if defined(_WIN32) && (defined(ENABLE_DX11) || defined(ENABLE_DX12))
+    HWND nativeWindow = nullptr;
+    if (sohFast3dWindow) {
+        if (auto interpreter = sohFast3dWindow->GetInterpreterWeak().lock()) {
+            if (auto* dxgi = dynamic_cast<Fast::GfxWindowBackendDXGI*>(interpreter->mWapi)) {
+                nativeWindow = dxgi->GetWindowHandle();
+                sohFast3dWindow->SetMouseCapture(false);
+                if (IsWindow(nativeWindow) && !Soh_DetachNativeWindowCallbacks(nativeWindow)) {
+                    SPDLOG_WARN("Could not detach DXGI window callbacks; destroying window before Context shutdown.");
+                    DestroyWindow(nativeWindow);
+                    nativeWindow = nullptr;
+                }
+            }
+        }
+    }
+#endif
+
     // Destroying gui here because we have shared ptrs to LUS objects which output to SPDLOG which is destroyed before
     // these shared ptrs.
     SohGui::Destroy();
     sohFast3dWindow = nullptr;
 
     OTRGlobals::Instance->context = nullptr;
+#if defined(_WIN32) && (defined(ENABLE_DX11) || defined(ENABLE_DX12))
+    if (IsWindow(nativeWindow)) {
+        DestroyWindow(nativeWindow);
+    }
+#endif
 }
 
 #ifdef _WIN32
