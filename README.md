@@ -3,11 +3,12 @@
 
 This is a fork of jeromkiller/Shipwright_archipellago that adds an auto Map Tracker
 
-It is a version of Ocarina of Time Ship of Harkinian with an auto MapTracker that aims to welcome new players to be able to enjoy the archipelago randomizer.
+It is a version of Ocarina of Time Ship of Harkinian with an automatic MapTracker that aims to welcome new players to be able to enjoy the archipelago randomizer.
 
-You can open the MapTracker using : Esc -> Randomizer -> Check Tracker -> Toggle Check Tracker
+The default Toggle Key to open the tracker is Select
+You can open the MapTracker settings and choose your preferred map tracker menu using : Esc -> Randomizer -> Map Tracker
 
-MapTracker discord Thread : https://discord.com/channels/731205301247803413/1481299118264680448
+MapTracker discord Thread (Report issues/Feebacks) : https://discord.com/channels/731205301247803413/1481299118264680448
 
 Short Video demo : https://youtu.be/6i1bTyHERFQ
 
