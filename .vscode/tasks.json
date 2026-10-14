@@ -19,11 +19,11 @@
                     "-S",
                     ".",
                     "-B",
-                    "build/x64",
+                    "build/x64-v143",
                     "-G",
                     "Visual Studio 17 2022",
                     "-T",
-                    "v143",
+                    "v143,version=14.43.34808",
                     "-A",
                     "x64",
                     "-DBUILD_REMOTE_CONTROL=ON"
@@ -59,7 +59,7 @@
                 "command": "${env:ProgramFiles}\\CMake\\bin\\cmake.exe",
                 "args": [
                     "--build",
-                    "build/x64",
+                    "build/x64-v143",
                     "--target",
                     "GenerateSohOtr",
                     "--config",
@@ -97,7 +97,7 @@
                 "command": "${env:ProgramFiles}\\CMake\\bin\\cmake.exe",
                 "args": [
                     "--build",
-                    "build/x64",
+                    "build/x64-v143",
                     "--config",
                     "Debug",
                     "--target",
@@ -143,7 +143,7 @@
                 "command": "${env:ProgramFiles}\\CMake\\bin\\cmake.exe",
                 "args": [
                     "--build",
-                    "build/x64",
+                    "build/x64-v143",
                     "--config",
                     "Debug",
                     "--target",
@@ -193,7 +193,7 @@
                 "command": "${env:ProgramFiles}\\CMake\\bin\\cmake.exe",
                 "args": [
                     "--build",
-                    "build/x64",
+                    "build/x64-v143",
                     "--config",
                     "Release",
                     "--target",
@@ -241,7 +241,7 @@
                 "command": "${env:ProgramFiles}\\CMake\\bin\\cmake.exe",
                 "args": [
                     "--build",
-                    "build/x64",
+                    "build/x64-v143",
                     "--config",
                     "Release",
                     "--target",
@@ -286,7 +286,7 @@
                 "command": "${env:ProgramFiles}\\CMake\\bin\\cmake.exe",
                 "args": [
                     "--build",
-                    "build/x64",
+                    "build/x64-v143",
                     "--config",
                     "Debug",
                     "--parallel"
@@ -329,7 +329,7 @@
                 "command": "${env:ProgramFiles}\\CMake\\bin\\cmake.exe",
                 "args": [
                     "--build",
-                    "build/x64",
+                    "build/x64-v143",
                     "--config",
                     "Debug",
                     "--parallel"
@@ -374,7 +374,7 @@
                 "command": "${env:ProgramFiles}\\CMake\\bin\\cmake.exe",
                 "args": [
                     "--build",
-                    "build/x64",
+                    "build/x64-v143",
                     "--config",
                     "Release",
                     "--parallel"
@@ -412,7 +412,7 @@
                 "command": "${env:ProgramFiles}\\CMake\\bin\\cmake.exe",
                 "args": [
                     "--build",
-                    "build/x64",
+                    "build/x64-v143",
                     "--config",
                     "Release",
                     "--parallel"

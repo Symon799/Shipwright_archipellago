@@ -231,6 +231,11 @@ use_props(${PROJECT_NAME} "${CMAKE_CONFIGURATION_TYPES}" "${DEFAULT_CXX_PROPS}")
 endif()
 
 set(ROOT_NAMESPACE soh)
+option(SOH_ENABLE_QUALITY_SCENARIOS "Enable isolated opt-in quality scenarios in Debug builds" OFF)
+if(SOH_ENABLE_QUALITY_SCENARIOS)
+    set_property(SOURCE soh/validation/QualityScenario.cpp APPEND PROPERTY
+        COMPILE_DEFINITIONS "$<$<CONFIG:Debug>:SOH_ENABLE_QUALITY_SCENARIOS>")
+endif()
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
     set_target_properties(${PROJECT_NAME} PROPERTIES

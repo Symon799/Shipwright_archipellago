@@ -92,7 +92,12 @@ If you're interested in creating and/or packing your own custom asset `.otr` fil
 
 If you want to manually compile SoH, please consult the [building instructions](docs/BUILDING.md).
 
+Windows build launchers are at the repository root; validation launchers are in [tests/windows/](tests/windows/).
+
 ### Playtesting
+For reproducible local quality checks (without a ROM or Archipelago server), see
+[validation commands and reports](docs/VALIDATION.md).
+
 If you want to playtest a continuous integration build, you can find them at the links below. Keep in mind that these are for playtesting only, and you will likely encounter bugs and possibly crashes. 
 
 * [Windows](https://nightly.link/HarbourMasters/Shipwright/workflows/generate-builds/develop/soh-windows.zip)

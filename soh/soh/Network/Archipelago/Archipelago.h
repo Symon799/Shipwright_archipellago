@@ -8,6 +8,7 @@
 #include <map>
 #include <atomic>
 #include "ArchipelagoTypes.h"
+#include "ArchipelagoSession.h"
 
 // Forward declaration
 class APClient;
@@ -25,15 +26,7 @@ static constexpr int MAX_RETRIES = 3;
 
 class ArchipelagoClient {
   public:
-    struct ApItem {
-        std::string itemName;
-        std::string hintName;
-        std::string locationName;
-        std::string playerName;
-        int playerNumber;
-        unsigned int flags;
-        uint64_t index;
-    };
+    using ApItem = Archipelago::Item;
 
     struct ApForeignHint {
         std::string locationName;
@@ -83,6 +76,7 @@ class ArchipelagoClient {
     std::string GetApLocationHint(RandomizerHint rh, uint8_t index);
     const nlohmann::json GetSlotData();
     const std::vector<ApItem>& GetScoutedItems();
+    bool HasScoutedLocations() const { return locationsScouted; }
     void UpdateHintStatus(int player, int location, AP_Hint::HintStatus status);
 
     bool IsConnected() const;
@@ -155,10 +149,10 @@ class ArchipelagoClient {
     nlohmann::json slotData;
     std::set<int64_t> locations;
     std::vector<ApItem> scoutedItems;
-    std::queue<ApItem> receiveQueue;
+    Archipelago::ReceivedItemQueue receiveQueue;
     ApHintFetchData fetchingGroups;
 
-    bool locationsScouted;
+    bool locationsScouted = false;
     bool hintsInitialized;
 };
 

@@ -3,6 +3,8 @@
 #include "randomizer_check_tracker.h"
 #include "randomizer_check_logic.h"
 #include "map_tracker_calibration.h"
+#include "map_tracker_totals.h"
+#include "map_tracker_pack_schema.h"
 #include "soh/cvar_prefixes.h"
 
 #include <filesystem>
@@ -36,13 +38,6 @@ inline constexpr float CHECK_TRACKER_MAP_ZOOM_WHEEL_STEP = 1.15f;
 inline constexpr float CHECK_TRACKER_MAP_BORDER_THICKNESS = 1.5f;
 inline constexpr float CHECK_TRACKER_MAP_LINK_UNAVAILABLE_BORDER_THICKNESS =
     CHECK_TRACKER_MAP_BORDER_THICKNESS * 2.0f;
-
-struct MapPlacement {
-    std::string mapId;
-    float x = 0.0f;
-    float y = 0.0f;
-    float size = 22.0f;
-};
 
 struct CheckDescriptor {
     RandomizerCheck check = RC_UNKNOWN_CHECK;
@@ -90,12 +85,6 @@ struct MapTabData {
 struct MapPlayerIndicator {
     ImVec2 position;
     ImVec2 direction;
-};
-
-struct MapCheckTotals {
-    uint16_t checked = 0;
-    uint16_t accessible = 0;
-    uint16_t total = 0;
 };
 
 MapCheckTotals GetMapTrackerCheckTotals();
@@ -170,6 +159,7 @@ std::string GetMapTrackerAssetsRootAbsoluteString();
 void ResetMapTrackerState(bool unloadTextures);
 void LoadMapTrackerData();
 void ProcessPendingMapTextureLoads();
+bool HasPendingMapTextureWork();
 void DrawMapTrackerContent(bool showNavigation = true);
 void DrawMapTrackerIssuesTab();
 void FocusMapTrackerOnPlayer();

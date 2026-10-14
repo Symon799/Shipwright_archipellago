@@ -1,33 +1,35 @@
+#include "check.h"
 #include "soh/soh/Enhancements/randomizer/map_tracker_calibration.h"
-#include <cassert>
 #include <iostream>
 
 using namespace MapTracker;
 
 int main() {
     CalibrationMesh mesh;
-    mesh.anchors = { { 0, 0, 10, 20 }, { 100, 0, 210, 20 }, { 0, 100, 10, 220 },
-                     { 100, 100, 210, 220 }, { 50, 50, 120, 130 } };
-    assert(mesh.Build());
-    assert(mesh.triangles.size() == 4);
+    mesh.anchors = {
+        { 0, 0, 10, 20 }, { 100, 0, 210, 20 }, { 0, 100, 10, 220 }, { 100, 100, 210, 220 }, { 50, 50, 120, 130 }
+    };
+    CHECK(mesh.Build());
+    CHECK(mesh.triangles.size() == 4);
     for (const auto& anchor : mesh.anchors) {
         auto fit = mesh.ProjectionAt(anchor.sourceX, anchor.sourceY);
-        assert(fit);
+        CHECK(fit);
         auto point = fit->Project(anchor.sourceX, anchor.sourceY);
-        assert(std::abs(point.mapX - anchor.mapX) < 1e-5);
-        assert(std::abs(point.mapY - anchor.mapY) < 1e-5);
+        CHECK(std::abs(point.mapX - anchor.mapX) < 1e-5);
+        CHECK(std::abs(point.mapY - anchor.mapY) < 1e-5);
     }
-    assert(!mesh.ProjectionAt(-10, 50));
+    CHECK(!mesh.ProjectionAt(-10, 50));
     mesh.hideOutside = false;
-    assert(mesh.Build() && mesh.ProjectionAt(-10, 50));
+    CHECK(mesh.Build() && mesh.ProjectionAt(-10, 50));
     mesh.anchors.pop_back();
-    assert(mesh.Build() && mesh.triangles.size() == 2); // Co-circular square.
-    for (auto& anchor : mesh.anchors) anchor.mapX *= -1;
-    assert(mesh.Build()); // Consistent mirrored orientation is valid.
+    CHECK(mesh.Build() && mesh.triangles.size() == 2); // Co-circular square.
+    for (auto& anchor : mesh.anchors)
+        anchor.mapX *= -1;
+    CHECK(mesh.Build()); // Consistent mirrored orientation is valid.
     mesh.anchors.push_back(mesh.anchors.front());
-    assert(!mesh.Build());
-    mesh.anchors = { {0, 0, 0, 0}, {1, 1, 1, 1}, {2, 2, 2, 2} };
-    assert(!mesh.Build());
+    CHECK(!mesh.Build());
+    mesh.anchors = { { 0, 0, 0, 0 }, { 1, 1, 1, 1 }, { 2, 2, 2, 2 } };
+    CHECK(!mesh.Build());
 
     auto data = nlohmann::json::parse(R"({"version":1,"calibrations":[{
       "id":"test","scene_id":85,"room_id":null,"setup_ids":null,"layout":"any",
@@ -36,20 +38,22 @@ int main() {
                  {"world":{"x":0,"z":100},"map":{"x":10,"y":220}}]}]})");
     std::vector<std::string> warnings;
     auto profiles = ParsePlayerCalibrations(data, warnings);
-    assert(profiles.size() == 1 && warnings.empty());
-    assert(profiles[0].Matches(85, 3, 4, false));
-    assert(!profiles[0].Matches(86, 3, 4, false));
+    CHECK(profiles.size() == 1 && warnings.empty());
+    CHECK(profiles[0].Matches(85, 3, 4, false));
+    CHECK(!profiles[0].Matches(86, 3, 4, false));
     profiles[0].room = 1;
-    profiles[0].setups = {0, 1};
+    profiles[0].setups = { 0, 1 };
     profiles[0].layout = "mq";
-    assert(profiles[0].Matches(85, 1, 0, true));
-    assert(!profiles[0].Matches(85, 2, 0, true));
-    assert(!profiles[0].Matches(85, 1, 2, true));
-    assert(!profiles[0].Matches(85, 1, 0, false));
+    CHECK(profiles[0].Matches(85, 1, 0, true));
+    CHECK(!profiles[0].Matches(85, 2, 0, true));
+    CHECK(!profiles[0].Matches(85, 1, 2, true));
+    CHECK(!profiles[0].Matches(85, 1, 0, false));
     data["calibrations"][0]["anchors"].erase(0);
-    assert(ParsePlayerCalibrations(data, warnings).empty() && !warnings.empty());
+    CHECK(ParsePlayerCalibrations(data, warnings).empty() && !warnings.empty());
     data["version"] = 2;
-    assert(ParsePlayerCalibrations(data, warnings).empty());
-    std::cout << "PASS: piecewise interpolation, co-circular/mirrored meshes, hull policy, "
-                 "duplicates, collinearity, profile contexts and nonfatal invalid schema\n";
+    CHECK(ParsePlayerCalibrations(data, warnings).empty());
+    std::cout << "PASS: piecewise interpolation, co-circular/mirrored meshes, "
+                 "hull policy, "
+                 "duplicates, collinearity, profile contexts and nonfatal "
+                 "invalid schema\n";
 }

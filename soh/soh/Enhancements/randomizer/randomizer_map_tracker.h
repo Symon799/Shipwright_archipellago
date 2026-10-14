@@ -1,6 +1,7 @@
 #pragma once
 
 #include "randomizerTypes.h"
+#include "map_tracker_display_mode.h"
 #include "soh/cvar_prefixes.h"
 #include <libultraship/libultraship.h>
 
@@ -16,11 +17,10 @@ inline constexpr const char* CVAR_SHOW_DEBUG_INFO = CVAR_TRACKER("MapTracker.Sho
 inline constexpr const char* CVAR_MQ_SPOILERS = CVAR_TRACKER("MapTracker.MQSpoilers");
 inline constexpr const char* CVAR_PLAYER_POSITION = CVAR_TRACKER("MapTracker.ExperimentalPlayerPosition");
 inline constexpr const char* CVAR_NATIVE_CUSTOM_BACKGROUND = CVAR_TRACKER("MapTracker.NativeCustomBackground");
-enum class DisplayMode { Pause3D, Pause2D, Windowed, Floating };
-inline constexpr int DEFAULT_DISPLAY_MODE = static_cast<int>(DisplayMode::Pause3D);
 inline constexpr int DEFAULT_NATIVE_CUSTOM_BACKGROUND = 1;
 DisplayMode GetDisplayMode();
 bool IsInGameMode();
+void ToggleInGameMap(bool controller);
 void Shutdown();
 
 extern bool showLogicTooltip;

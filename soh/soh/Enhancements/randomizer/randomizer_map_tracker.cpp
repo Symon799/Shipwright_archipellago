@@ -39,15 +39,11 @@ bool IsIntegratedMapView() {
 
 DisplayMode GetDisplayMode() {
     const int mode = CVarGetInteger(CVAR_DISPLAY_MODE, -1);
-    if (mode >= 0)
-        return static_cast<DisplayMode>(std::clamp(mode, 0, 3));
     // Preserve legacy preferences until a unified display-mode preference is saved.
-    if (CVarGetInteger(CVAR_TRACKER("MapTracker.InGameEnabled"), 1) != 0)
-        return CVarGetInteger(CVAR_TRACKER("MapTracker.NativePausePage"), 1) != 0 ? DisplayMode::Pause3D
-                                                                                  : DisplayMode::Pause2D;
-    return CVarGetInteger(CVAR_TRACKER("MapTracker.WindowType"), TRACKER_WINDOW_WINDOW) == TRACKER_WINDOW_FLOATING
-               ? DisplayMode::Floating
-               : DisplayMode::Windowed;
+    return ResolveDisplayMode(mode, CVarGetInteger(CVAR_TRACKER("MapTracker.InGameEnabled"), 1) != 0,
+                              CVarGetInteger(CVAR_TRACKER("MapTracker.NativePausePage"), 1) != 0,
+                              CVarGetInteger(CVAR_TRACKER("MapTracker.WindowType"), TRACKER_WINDOW_WINDOW) ==
+                                  TRACKER_WINDOW_FLOATING);
 }
 
 bool IsInGameMode() {
@@ -316,17 +312,9 @@ void ToggleMapTrackerFromInput() {
                 entry.second->UpdatePad(buttons);
                 return (buttons & BTN_CUSTOM_MAP_TRACKER) == BTN_CUSTOM_MAP_TRACKER;
             });
-        if (NativePauseEnabled()) {
-            if (gPlayState->pauseCtx.state != 0 && nativeShoulderPressed && !keyboardPressed) {
-                // Even if rebound to Toggle, RB belongs to native page navigation while paused.
-            } else if (NativePauseInteractive()) {
-                RequestNativePauseClose();
-            } else if (CanOpenScreen()) {
-                RequestNativePauseMap(controllerPressed && !keyboardPressed);
-            }
-        } else {
-            SetScreenOpen(opening);
-        }
+        // Even if rebound to Toggle, RB belongs to native page navigation while paused.
+        if (!(NativePauseEnabled() && gPlayState->pauseCtx.state != 0 && nativeShoulderPressed && !keyboardPressed))
+            ToggleInGameMap(controllerPressed && !keyboardPressed);
         if (opening && CVarGetInteger(CVAR_SCREEN, 0) != 0) {
             // Set the source after opening, which resets cursor state. Mouse/stick movement takes over later.
             screenCursorUsesController = controllerPressed && !keyboardPressed;
@@ -336,7 +324,8 @@ void ToggleMapTrackerFromInput() {
 }
 
 void CaptureScreenInput() {
-    const auto controlDeck = std::dynamic_pointer_cast<LUS::ControlDeck>(Ship::Context::GetInstance()->GetControlDeck());
+    const auto controlDeck =
+        std::dynamic_pointer_cast<LUS::ControlDeck>(Ship::Context::GetInstance()->GetControlDeck());
     const auto controller = controlDeck == nullptr ? nullptr : controlDeck->GetControllerByPort(0);
     const int32_t pressedScancode = Ship::Context::GetInstance()->GetWindow()->GetLastScancode();
     const auto actionHeld = [&](CONTROLLERBUTTONS_T bitmask) {
@@ -430,13 +419,24 @@ void CaptureScreenInput() {
 
 } // namespace
 
+void ToggleInGameMap(bool controller) {
+    if (NativePauseEnabled()) {
+        if (NativePauseInteractive())
+            RequestNativePauseClose();
+        else if (CanOpenScreen())
+            RequestNativePauseMap(controller);
+    } else {
+        SetScreenOpen(CVarGetInteger(CVAR_SCREEN, 0) == 0);
+    }
+}
+
 void MapTrackerWindow::Draw() {
     if (IsInGameMode() && IsVisible())
         Hide();
     // Both views share availability data; hiding the classic view must not disable the fullscreen view.
-    CheckTracker::SetMapTrackerAvailabilityRequested((IsVisible() && !IsInGameMode()) || CVarGetInteger(CVAR_SCREEN, 0) != 0 ||
-                                                     CVarGetInteger(CVAR_DEBUG_WINDOW, 0) != 0 ||
-                                                     NativePauseInteractive());
+    CheckTracker::SetMapTrackerAvailabilityRequested(
+        (IsVisible() && !IsInGameMode()) || CVarGetInteger(CVAR_SCREEN, 0) != 0 ||
+        CVarGetInteger(CVAR_DEBUG_WINDOW, 0) != 0 || NativePauseInteractive());
     // Both views share navigation and popup state. Do not let classic tabs consume native requests.
     if (!IsVisible() || IsInGameMode() || (NativePauseEnabled() && gPlayState && gPlayState->pauseCtx.state != 0)) {
         return;

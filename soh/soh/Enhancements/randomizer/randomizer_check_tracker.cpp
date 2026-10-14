@@ -4,6 +4,7 @@
 #include "randomizer_map_tracker.h"
 #include "check_tracker_visibility_debug.h"
 #include "map_tracker_internal.h"
+#include "archipelago_check_visibility.h"
 #include "randomizerTypes.h"
 #include "soh/OTRGlobals.h"
 #include "soh/cvar_prefixes.h"
@@ -118,8 +119,9 @@ u8 fishsanityMode;
 u8 fishsanityPondCount;
 bool fishsanityAgeSplit;
 
-static std::unordered_set<RandomizerCheck> archipelagoScoutedChecks;
-static std::vector<std::string> archipelagoScoutedUnresolvedLocationNames;
+static ScoutedCheckIndex<RandomizerCheck> archipelagoScoutIndex;
+static auto& archipelagoScoutedChecks = archipelagoScoutIndex.checks;
+static auto& archipelagoScoutedUnresolvedLocationNames = archipelagoScoutIndex.unresolvedNames;
 
 // persistent during gameplay
 bool initialized;
@@ -1921,26 +1923,18 @@ bool IsCheckShuffled(RandomizerCheck rc) {
 }
 
 void RefreshArchipelagoScoutedChecks() {
-    if (!IS_ARCHIPELAGO && !ArchipelagoClient::GetInstance().IsConnected()) {
-        return;
-    }
-
     archipelagoScoutedChecks.clear();
     archipelagoScoutedUnresolvedLocationNames.clear();
+    if (!IS_ARCHIPELAGO && !ArchipelagoClient::GetInstance().IsConnected()) {
+        InvalidateMapTrackerRenderCache(false);
+        return;
+    }
 
     const std::vector<ArchipelagoClient::ApItem>& scoutedItems = ArchipelagoClient::GetInstance().GetScoutedItems();
     archipelagoScoutedChecks.reserve(scoutedItems.size());
     archipelagoScoutedUnresolvedLocationNames.reserve(8);
 
-    for (const ArchipelagoClient::ApItem& apItem : scoutedItems) {
-        const std::optional<RandomizerCheck> rc = Rando::StaticData::TryResolveLocationName(apItem.locationName);
-        if (!rc.has_value()) {
-            archipelagoScoutedUnresolvedLocationNames.push_back(apItem.locationName);
-            continue;
-        }
-
-        archipelagoScoutedChecks.insert(*rc);
-    }
+    archipelagoScoutIndex.Update(scoutedItems, Rando::StaticData::TryResolveLocationName);
 
     // Scouts replace the provisional seed-based visibility used while connecting.
     // Updating totals alone leaves the map's cached markers from that provisional list.
@@ -1979,15 +1973,15 @@ bool IsVisibleInCheckTracker(RandomizerCheck rc) {
         if (IS_ARCHIPELAGO) {
             MaybeRefreshArchipelagoScoutedChecksFromClient();
             const bool excluded = Rando::Context::GetInstance()->GetItemLocation(rc)->IsExcluded();
-            if (excluded) {
-                return false;
-            }
-            // AP scout list: always show these checks (ignores tracker showGrass/showShops/etc.).
-            if (IsArchipelagoScoutedCheck(rc)) {
-                return true;
-            }
-            if (!archipelagoScoutedChecks.empty()) {
-                return false;
+            // An authoritative empty scout list must not restore provisional grass/shop checks.
+            switch (ResolveArchipelagoVisibility(excluded, IsArchipelagoScoutedCheck(rc),
+                                                 ArchipelagoClient::GetInstance().HasScoutedLocations())) {
+                case ArchipelagoVisibility::Hidden:
+                    return false;
+                case ArchipelagoVisibility::Visible:
+                    return true;
+                case ArchipelagoVisibility::SeedFallback:
+                    break;
             }
             // Scouts not received yet — use seed logic with shuffle-type toggles enabled.
             return IsCheckShuffledWithApShuffleTypesEnabled(rc);

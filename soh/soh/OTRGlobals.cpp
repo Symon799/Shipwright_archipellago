@@ -1,4 +1,5 @@
 #include "OTRGlobals.h"
+#include "validation/QualityScenario.h"
 #include "OTRAudio.h"
 #include <algorithm>
 #include <atomic>
@@ -1617,6 +1618,7 @@ extern "C" void InitOTR(int argc, char* argv[]) {
     ShipInit::InitAll();
     Rando::StaticData::InitHashMaps();
     OTRGlobals::Instance->gRandoContext->AddExcludedOptions();
+    SohValidation_Register();
 }
 
 extern "C" void SaveManager_ThreadPoolWait() {

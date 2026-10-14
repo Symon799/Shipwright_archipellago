@@ -6,9 +6,9 @@
         "Path": "C:\\Program Files\\Git\\cmd;${env:Path}"
     },
     "cmake.sourceDirectory": "${workspaceFolder}",
-    "cmake.buildDirectory": "${workspaceFolder}/build/x64",
+    "cmake.buildDirectory": "${workspaceFolder}/build/x64-v143",
     "cmake.generator": "Visual Studio 17 2022",
-    "cmake.toolset": "v143",
+    "cmake.toolset": "v143,version=14.43.34808",
     "cmake.platform": "x64",
     "cmake.preferredGenerators": [
         "Visual Studio 17 2022"
@@ -21,9 +21,9 @@
     "cmake.options.statusBarVisibility": "visible",
     "cmake.defaultBuildType": "Release",
     "cmake.configureOnOpen": false,
-    "cmake.parallelJobs": 0,
+    "cmake.parallelJobs": 2,
     "cmake.buildArgs": [
-        "--parallel"
+        "--parallel", "2", "--", "/p:VCToolsVersion=14.43.34808", "/p:CL_MPCount=2"
     ],
     "cmake.configureSettings": {
         "CMAKE_VS_PLATFORM_NAME": "x64",

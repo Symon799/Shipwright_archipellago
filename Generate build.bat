@@ -5,8 +5,8 @@ cd /d "%~dp0"
 set "CONFIG=Release"
 set "BUILD_DIR=build\x64-v143"
 set "CMAKE=C:\Program Files\CMake\bin\cmake.exe"
-set "VCTOOLS_VERSION=14.43.34808"
-set "BUILD_JOBS=16"
+if not defined VCTOOLS_VERSION set "VCTOOLS_VERSION=14.43.34808"
+if not defined BUILD_JOBS set "BUILD_JOBS=2"
 set "PACK_DIR=release-assets"
 set "PACK_FILE=%PACK_DIR%\SoH_MapRessource_v1.1.4.zip"
 set "PACK_URL=https://github.com/Symon799/SoH_Map_Ressource_Maker/releases/download/SoH_MapRessource_v1.1.4/SoH_MapRessource_v1.1.4.zip"
@@ -20,18 +20,16 @@ if not exist "%CMAKE%" (
 
 if not exist "%BUILD_DIR%\CMakeCache.txt" (
     echo CMake configuration is missing. Configuring the project...
-    "%CMAKE%" -S . -B "%BUILD_DIR%" -G "Visual Studio 17 2022" -A x64 -DBUILD_REMOTE_CONTROL=1
+    "%CMAKE%" -S . -B "%BUILD_DIR%" -G "Visual Studio 17 2022" -T "v143,version=%VCTOOLS_VERSION%" -A x64 -DBUILD_REMOTE_CONTROL=1
     if errorlevel 1 goto :failed
 )
 
-if not exist "x64\%CONFIG%\soh.o2r" (
-    echo soh.o2r is missing. Generating resources...
-    "%CMAKE%" --build "%BUILD_DIR%" --config %CONFIG% --target GenerateSohOtr --parallel %BUILD_JOBS% -- /p:VCToolsVersion=%VCTOOLS_VERSION%
-    if errorlevel 1 goto :failed
-)
+echo Refreshing soh.o2r from the current source assets...
+"%CMAKE%" --build "%BUILD_DIR%" --config %CONFIG% --target GenerateSohOtr --parallel %BUILD_JOBS% -- /p:VCToolsVersion=%VCTOOLS_VERSION% /p:CL_MPCount=%BUILD_JOBS%
+if errorlevel 1 goto :failed
 
 echo Building SoH in %CONFIG% configuration...
-"%CMAKE%" --build "%BUILD_DIR%" --config %CONFIG% --target soh --parallel %BUILD_JOBS% -- /p:VCToolsVersion=%VCTOOLS_VERSION%
+"%CMAKE%" --build "%BUILD_DIR%" --config %CONFIG% --target soh --parallel %BUILD_JOBS% -- /p:VCToolsVersion=%VCTOOLS_VERSION% /p:CL_MPCount=%BUILD_JOBS%
 if errorlevel 1 goto :failed
 
 if not exist "%PACK_FILE%" (
@@ -69,7 +67,9 @@ python scripts\package_map_tracker_release.py ^
   --output "_packages\SoH_AP_Map_Windows.zip" ^
   --config "packaging\shipofharkinian.json" ^
   --map-pack "%PACK_FILE%" ^
-  --readme "README.md"
+  --readme "README.md" ^
+  --soh-otr "x64\%CONFIG%\soh.o2r" ^
+  --verify-pause-texture "soh\assets\custom\textures\map_tracker\pause_map_tracker.png"
 if errorlevel 1 goto :failed
 
 echo.

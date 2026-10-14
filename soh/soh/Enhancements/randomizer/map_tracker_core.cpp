@@ -122,6 +122,11 @@ class AsyncMapTextureLoader {
         return true;
     }
 
+    bool HasOutstandingWork() {
+        std::lock_guard<std::mutex> lock(mutex);
+        return processing || !requests.empty() || !results.empty();
+    }
+
   private:
     void Run() {
         std::unique_ptr<Ship::O2rArchive> archive;
@@ -137,6 +142,7 @@ class AsyncMapTextureLoader {
                 }
                 request = std::move(requests.front());
                 requests.pop_front();
+                processing = true;
             }
 
             MapTextureLoadResult result;
@@ -181,6 +187,7 @@ class AsyncMapTextureLoader {
             {
                 std::lock_guard<std::mutex> lock(mutex);
                 results.push_back(std::move(result));
+                processing = false;
             }
         }
     }
@@ -191,9 +198,14 @@ class AsyncMapTextureLoader {
     std::deque<MapTextureLoadResult> results;
     std::thread worker;
     bool stopRequested = false;
+    bool processing = false;
 };
 
 static AsyncMapTextureLoader mapTextureLoader;
+
+bool HasPendingMapTextureWork() {
+    return mapTextureLoader.HasOutstandingWork();
+}
 
 std::string TrimCopy(const std::string& value) {
     size_t start = value.find_first_not_of(" \t\r\n");
@@ -250,27 +262,7 @@ double GetElapsedMilliseconds(const std::chrono::steady_clock::time_point& start
 }
 
 bool TryReadFloat(const json& value, float& outValue) {
-    if (value.is_number_float()) {
-        outValue = value.get<float>();
-        return true;
-    }
-    if (value.is_number_integer()) {
-        outValue = static_cast<float>(value.get<int>());
-        return true;
-    }
-    if (value.is_string()) {
-        std::string str = TrimCopy(value.get<std::string>());
-        if (str.empty()) {
-            return false;
-        }
-        try {
-            outValue = std::stof(str);
-            return true;
-        } catch (...) {
-            return false;
-        }
-    }
-    return false;
+    return ReadMapCoordinate(value, outValue);
 }
 
 std::vector<std::filesystem::path> BuildMapTrackerAssetsRootCandidates() {
@@ -576,59 +568,11 @@ static void AddSchemaWarning(MapTrackerState& state, std::string context, std::s
 
 std::vector<MapPlacement> ExtractPlacementsFromNode(MapTrackerState& state, const json& node, const std::string& sourceFile,
                                                     const std::string& checkLabel, bool& hadSchemaError) {
-    std::vector<MapPlacement> placements;
-    if (!node.contains("map_locations") || !node["map_locations"].is_array()) {
-        return placements;
+    std::vector<std::string> warnings;
+    auto placements = ParseMapPlacements(node, warnings, hadSchemaError);
+    for (const auto& warning : warnings) {
+        AddSchemaWarning(state, "Invalid map location in " + sourceFile, checkLabel + ": " + warning);
     }
-
-    for (size_t placementIndex = 0; placementIndex < node["map_locations"].size(); placementIndex++) {
-        const auto& mapLoc = node["map_locations"][placementIndex];
-        if (!mapLoc.is_object()) {
-            hadSchemaError = true;
-            AddSchemaWarning(state, "Invalid map location in " + sourceFile,
-                             fmt::format("Check \"{}\" has a non-object map_locations entry at index {}.", checkLabel,
-                                         placementIndex));
-            continue;
-        }
-
-        if (!mapLoc.contains("map_id") || !mapLoc["map_id"].is_string()) {
-            hadSchemaError = true;
-            AddSchemaWarning(state, "Invalid map location in " + sourceFile,
-                             fmt::format("Check \"{}\" is missing a valid string map_id at map_locations[{}].",
-                                         checkLabel, placementIndex));
-            continue;
-        }
-
-        MapPlacement placement;
-        placement.mapId = TrimCopy(mapLoc["map_id"].get<std::string>());
-        if (placement.mapId.empty()) {
-            hadSchemaError = true;
-            AddSchemaWarning(state, "Invalid map location in " + sourceFile,
-                             fmt::format("Check \"{}\" has an empty map_id at map_locations[{}].", checkLabel,
-                                         placementIndex));
-            continue;
-        }
-
-        bool hasX = mapLoc.contains("x") && TryReadFloat(mapLoc["x"], placement.x);
-        bool hasY = mapLoc.contains("y") && TryReadFloat(mapLoc["y"], placement.y);
-        bool hasSize = true;
-        if (mapLoc.contains("size")) {
-            hasSize = TryReadFloat(mapLoc["size"], placement.size);
-        } else {
-            placement.size = 22.0f;
-        }
-
-        if (!hasX || !hasY || !hasSize) {
-            hadSchemaError = true;
-            AddSchemaWarning(state, "Invalid map coordinates in " + sourceFile,
-                             fmt::format("Check \"{}\" has invalid x/y/size values at map_locations[{}] for map_id \"{}\".",
-                                         checkLabel, placementIndex, placement.mapId));
-            continue;
-        }
-
-        placements.push_back(placement);
-    }
-
     return placements;
 }
 

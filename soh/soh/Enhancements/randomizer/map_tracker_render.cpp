@@ -1,5 +1,7 @@
 #include "check_tracker_visibility_debug.h"
 #include "map_tracker_internal.h"
+#include "map_tracker_viewport.h"
+#include "soh/validation/QualityScenario.h"
 #include "map_tracker_link_resolver.h"
 #include "randomizer_map_tracker.h"
 #include "map_tracker_pause.h"
@@ -613,14 +615,10 @@ static void RebuildMapTrackerRenderCache(bool mqSpoilers) {
             !IsVisibleInCheckTracker(check)) {
             continue;
         }
-        auto& totals = mapTrackerRenderCache.checkTotals;
-        ++totals.total;
-        if (IsCheckDoneForMapDisplay(check)) {
-            ++totals.checked;
-        } else if (OTRGlobals::Instance->gRandoContext->GetItemLocation(check)->IsAvailable()) {
-            // Availability includes checks reachable with a different age/time (orange on the map).
-            ++totals.accessible;
-        }
+        const bool done = IsCheckDoneForMapDisplay(check);
+        // Availability includes checks reachable with a different age/time (orange on the map).
+        mapTrackerRenderCache.checkTotals.AddVisibleCheck(
+            done, !done && OTRGlobals::Instance->gRandoContext->GetItemLocation(check)->IsAvailable());
     }
     mapTrackerRenderCache.tabVisualSummaries.resize(mapTrackerState.tabs.size());
     mapTrackerRenderCache.tabRenderDataByIndex.resize(mapTrackerState.tabs.size());
@@ -670,14 +668,8 @@ static const ImGuiViewport* GetMapInteractionViewport(const ImGuiViewport* viewp
     if (!MapTracker::GetNativePauseBounds(position, size))
         return viewport;
     // Detail windows stay 2D, but share the same usable rectangle as the native page and cursor.
-    static ImGuiViewport pageViewport;
-    // This is only a geometry proxy, not a platform viewport. Never copy backend ownership.
-    pageViewport.ID = viewport->ID;
-    pageViewport.Flags = viewport->Flags;
-    pageViewport.DpiScale = viewport->DpiScale;
-    pageViewport.Pos = pageViewport.WorkPos = position;
-    pageViewport.Size = pageViewport.WorkSize = size;
-    return &pageViewport;
+    static MapTracker::MapInteractionViewport pageViewport;
+    return pageViewport.Update(*viewport, position, size);
 }
 
 static ImVec2 ClampWindowPositionToViewport(const ImVec2& desiredPosition, const ImVec2& windowSize,
@@ -1845,6 +1837,8 @@ void DrawMapTabContent(int tabIndex, const MapTrackerRenderCache& renderCache) {
         const bool ownsIntegratedPopup = mapClusterPopupState.open && mapClusterPopupState.stackKey == stackKey;
         ImRect visibleMarkerRect(markerRectMin, markerRectMax);
         visibleMarkerRect.ClipWith(ImGui::GetCurrentWindow()->InnerClipRect);
+        if (integratedScreen && isMultiMarkerCluster)
+            SohValidation::ObserveMultiMarker(visibleMarkerRect.Min, visibleMarkerRect.Max);
         bool hovered = integratedScreen
                            ? visibleMarkerRect.Contains(cursorPosition) && !cursorOverLinkMarker &&
                                  (!integratedPopupCaptured || ownsIntegratedPopup)
@@ -2056,6 +2050,9 @@ void DrawMapTabContent(int tabIndex, const MapTrackerRenderCache& renderCache) {
             ImGui::BringWindowToDisplayFront(ImGui::GetCurrentWindow());
             mapClusterPopupState.lastWindowPosition = ImGui::GetWindowPos();
             mapClusterPopupState.lastWindowSize = ImGui::GetWindowSize();
+            if (integratedScreen)
+                SohValidation::ObservePopup(mapClusterPopupState.lastWindowPosition,
+                    mapClusterPopupState.lastWindowPosition + mapClusterPopupState.lastWindowSize);
             mapClusterPopupState.hasLastWindowRect = true;
             if (!integratedScreen) {
                 popupBridgeHovered = IsMouseInsidePopupBridgeRect(mapClusterPopupState.anchorMin, mapClusterPopupState.anchorMax,

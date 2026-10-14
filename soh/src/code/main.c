@@ -12,6 +12,7 @@
 
 #include <libultraship/bridge.h>
 #include "soh/CrashHandlerExt.h"
+#include "soh/validation/QualityScenario.h"
 
 s32 gScreenWidth = SCREEN_WIDTH;
 s32 gScreenHeight = SCREEN_HEIGHT;
@@ -61,8 +62,12 @@ int SDL_main(int argc, char* argv[]) {
 #else //_WIN32
 int main(int argc, char* argv[]) {
 #endif
+    const int validationMode = SohValidation_Configure(argc, argv);
+    if (validationMode < 0)
+        return 2;
     GameConsole_Init();
-    InitOTR(argc, argv);
+    // Validation is not a ROM extraction argument; keep it away from the extractor's interactive path.
+    InitOTR(validationMode > 0 ? 1 : argc, argv);
     // TODO: Was moved to below InitOTR because it requires window to be setup. But will be late to catch crashes.
     CrashHandlerRegisterCallback(CrashHandler_PrintSohData);
     BootCommands_Init();
@@ -71,7 +76,7 @@ int main(int argc, char* argv[]) {
     Main(0);
     DeinitOTR();
     Heaps_Free();
-    return 0;
+    return SohValidation_Finish();
 }
 
 void Main(void* arg) {

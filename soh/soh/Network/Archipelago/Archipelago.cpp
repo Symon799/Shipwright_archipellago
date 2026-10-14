@@ -66,16 +66,7 @@ ArchipelagoClient& ArchipelagoClient::GetInstance() {
 }
 
 // Encode the seed/slot pair: profile keys must not contain Config's path separator.
-static std::string ConnectionProfileKey(const std::string& seed, const std::string& slot) {
-    constexpr char hex[] = "0123456789abcdef";
-    const std::string identity = seed + '\0' + slot;
-    std::string key = "Archipelago.Connections.";
-    for (unsigned char byte : identity) {
-        key += hex[byte >> 4];
-        key += hex[byte & 15];
-    }
-    return key;
-}
+using Archipelago::ConnectionProfileKey;
 
 void ArchipelagoClient::RememberConnection() {
     auto config = Ship::Context::GetInstance()->GetConfig();
@@ -125,6 +116,10 @@ bool ArchipelagoClient::StartClient() {
     uri = newUri;
     password = newPassword;
     locationsScouted = false;
+    scoutedItems.clear();
+    receiveQueue.Clear();
+    itemQueued = false;
+    CheckTracker::RefreshArchipelagoScoutedChecks();
     hintsInitialized = false;
 
     uuid = ap_get_uuid(Ship::Context::GetPathRelativeToAppDirectory("ap-client-uuid"));
@@ -177,16 +172,18 @@ bool ArchipelagoClient::StartClient() {
         std::string clientVersionMinor = AP_Client_consts::AP_WORLD_VERSION_MINOR;
 
         // Get APWorld version and split it by .
-        std::string apworldVersion = slotData["apworld_version"];
-        std::stringstream ss;
-        ss << apworldVersion;
-        std::string segment;
-        std::vector<std::string> seglist;
-        while (std::getline(ss, segment, '.')) {
-            seglist.push_back(segment);
+        if (!slotData.contains("apworld_version") || !slotData["apworld_version"].is_string()) {
+            disconnecting = true;
+            ArchipelagoConsole_SendMessage("[ERROR] Missing or invalid APWorld version, disconnecting...");
+            return;
         }
-        std::string apworldVersionMajor = seglist[0];
-        std::string apworldVersionMinor = seglist[1];
+        const auto apworldVersion = Archipelago::WorldVersion(slotData["apworld_version"].get<std::string>());
+        if (!apworldVersion) {
+            disconnecting = true;
+            ArchipelagoConsole_SendMessage("[ERROR] Malformed APWorld version, disconnecting...");
+            return;
+        }
+        const auto& [apworldVersionMajor, apworldVersionMinor] = *apworldVersion;
 
         if (clientVersionMajor != apworldVersionMajor || clientVersionMinor != apworldVersionMinor) {
             disconnecting = true;
@@ -258,15 +255,7 @@ bool ArchipelagoClient::StartClient() {
         }
 
         for (const APClient::NetworkItem& item : items) {
-            ApItem apItem;
-            const std::string game = apClient->get_player_game(item.player);
-            apItem.itemName = apClient->get_item_name(item.item, AP_Client_consts::AP_GAME_NAME);
-            apItem.locationName = apClient->get_location_name(item.location, game);
-            apItem.playerName = apClient->get_player_alias(item.player);
-            apItem.playerNumber = item.player;
-            apItem.flags = item.flags;
-            apItem.index = item.index;
-            OnItemReceived(apItem);
+            OnItemReceived(Archipelago::DecodeReceivedItem(*apClient, item, AP_Client_consts::AP_GAME_NAME));
         }
     });
 
@@ -617,6 +606,7 @@ void ArchipelagoClient::StartLocationScouts() {
     }
 
     if (location_list.empty()) {
+        locationsScouted = true;
         SPDLOG_WARN("[Archipelago] StartLocationScouts: no locations to scout (missing + checked lists empty)");
         CVarSetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatus"), 4);
         CheckTracker::RefreshArchipelagoScoutedChecks();
@@ -753,22 +743,21 @@ void ArchipelagoClient::OnItemReceived(const ApItem apItem) {
 
     // Don't queue up any items when we aren't in game
     // Any Items missed this way will get synched when we load the save
-    if (!GameInteractor::IsSaveLoaded(true)) {
-        return;
-    }
-
-    // Skip queueing any items we already have
-    if (apItem.index < gSaveContext.ship.quest.data.archipelago.lastReceivedItemIndex) {
-        return;
-    }
-
-    // Add item to the queue
-    receiveQueue.push(apItem);
+    receiveQueue.Push(apItem, GameInteractor::IsSaveLoaded(true),
+                      gSaveContext.ship.quest.data.archipelago.lastReceivedItemIndex);
 }
 
 void ArchipelagoClient::QueueItem(const ApItem item) {
-    RandomizerGet RG = Rando::StaticData::itemNameToEnum[item.itemName];
+    const auto found = Rando::StaticData::itemNameToEnum.find(item.itemName);
+    if (found == Rando::StaticData::itemNameToEnum.end()) {
+        disconnecting = true;
+        ArchipelagoConsole_SendMessage("[ERROR] Unsupported received item: %s. Disconnecting...", item.itemName.c_str());
+        return;
+    }
+    RandomizerGet RG = found->second;
     if (RG == RG_NONE) {
+        // A known No Item consumes an event without a grant animation; unknown names must not corrupt the index.
+        ++gSaveContext.ship.quest.data.archipelago.lastReceivedItemIndex;
         return;
     }
 
@@ -966,10 +955,10 @@ void ArchipelagoClient::Poll() {
     }
 
     // queue another item to be received
-    if (!itemQueued && receiveQueue.size() > 0) {
-        const ApItem item = receiveQueue.front();
-        receiveQueue.pop();
-        QueueItem(item);
+    if (!itemQueued) {
+        if (auto item = receiveQueue.TakeNext(gSaveContext.ship.quest.data.archipelago.lastReceivedItemIndex)) {
+            QueueItem(*item);
+        }
     }
 
     apClient->poll();
@@ -977,8 +966,7 @@ void ArchipelagoClient::Poll() {
 
 void ArchipelagoClient::ResetQueue() {
     itemQueued = false;
-    std::queue<ApItem> empty;
-    std::swap(receiveQueue, empty);
+    receiveQueue.Clear();
 }
 
 void ArchipelagoClient::AfterSceneCommands(uint16_t sceneNum) {
@@ -1325,15 +1313,12 @@ bool ArchipelagoClient::slotMatch(const std::string& slotName, const std::string
     const std::string seed = apClient->get_seed();
     const std::string slot = GetSlotName();
 
-    const bool seedMatch = apClient->get_seed().compare(roomHash) == 0;
-    const bool slotMatch = GetSlotName().compare(slotName) == 0;
-    return seedMatch && slotMatch;
+    return Archipelago::SameSlot(apClient->get_seed(), GetSlotName(), roomHash, slotName);
 }
 
 bool ArchipelagoClient::isRightSaveLoaded() const {
-    const bool seedMatch = apClient->get_seed().compare(gSaveContext.ship.quest.data.archipelago.roomHash) == 0;
-    const bool slotMatch = GetSlotName().compare(gSaveContext.ship.quest.data.archipelago.slotName) == 0;
-    return seedMatch && slotMatch;
+    return Archipelago::SameSlot(apClient->get_seed(), GetSlotName(), gSaveContext.ship.quest.data.archipelago.roomHash,
+                                gSaveContext.ship.quest.data.archipelago.slotName);
 }
 
 int ArchipelagoClient::GetSlot() const {
