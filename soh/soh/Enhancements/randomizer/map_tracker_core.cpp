@@ -1,4 +1,5 @@
 #include "map_tracker_internal.h"
+#include "randomizer_map_tracker.h"
 #include "map_tracker_pause.h"
 #include "map_tracker_link_resolver.h"
 #include "randomizer_entrance_tracker.h"
@@ -76,19 +77,28 @@ struct MapTextureLoadResult {
 class AsyncMapTextureLoader {
   public:
     ~AsyncMapTextureLoader() {
+        Shutdown();
+    }
+
+    void Shutdown() {
         {
             std::lock_guard<std::mutex> lock(mutex);
             stopRequested = true;
+            requests.clear();
         }
         condition.notify_one();
         if (worker.joinable()) {
             worker.join();
         }
+        results.clear();
     }
 
     void Enqueue(MapTextureLoadRequest request) {
         {
             std::lock_guard<std::mutex> lock(mutex);
+            if (stopRequested) {
+                return;
+            }
             if (!worker.joinable()) {
                 worker = std::thread(&AsyncMapTextureLoader::Run, this);
             }
@@ -1725,4 +1735,11 @@ void ProcessPendingMapTextureLoads() {
 }
 
 } // namespace CheckTracker
+
+void MapTracker::Shutdown() {
+    // The worker owns an archive whose destructor logs; join before Context tears down spdlog.
+    CheckTracker::mapTextureLoader.Shutdown();
+    ShutdownNativePauseRenderer();
+    CheckTracker::ResetMapTrackerState(true);
+}
 

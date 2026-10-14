@@ -1,10 +1,11 @@
 #include "map_tracker_pause.h"
 #include "map_tracker_internal.h"
 #include "randomizer_map_tracker.h"
-#include "textures/item_name_static/item_name_static.h"
+#include "soh/ShipUtils.h"
 #include "soh/Enhancements/game-interactor/GameInteractor.h"
 #include <imgui_internal.h>
 #include <ship/window/gui/resource/GuiTexture.h>
+#include <spdlog/spdlog.h>
 #include <fast/Fast3dWindow.h>
 #include <algorithm>
 #include <array>
@@ -128,6 +129,7 @@ void AlignNativePauseButton(Vtx* vertices, float leftScreen, float rightScreen, 
         vertices[i].v.ob[0] += shift;
 }
 std::unordered_map<ImTextureID, std::shared_ptr<CpuTexture>> textures;
+std::shared_ptr<Ship::GuiTexture> nativePauseBackgroundTexture;
 std::shared_ptr<PageFrame> capturedPage;
 // Display lists can be replayed for interpolated frames; never retire their data on a GUI update.
 std::deque<std::shared_ptr<PageSubmission>> submittedPages;
@@ -310,7 +312,8 @@ void RegisterPixels(ImTextureID id, const uint8_t* pixels, int width, int height
 bool NativePauseEnabled() {
     // Keep the renderer and input owner stable until the current vanilla pause has closed.
     const bool enabled =
-        pauseSessionActive ? nativePauseSession : CVarGetInteger(CVAR_NATIVE_PAUSE, DEFAULT_NATIVE_PAUSE_MODE) != 0;
+        pauseSessionActive ? nativePauseSession
+                           : GetDisplayMode() == DisplayMode::Pause3D;
     return enabled && GameInteractor::IsSaveLoaded() && CheckTracker::initialized;
 }
 bool NativePauseInteractive() {
@@ -349,10 +352,60 @@ bool GetNativePauseBounds(ImVec2& position, ImVec2& size) {
 void RegisterNativePauseTexture(ImTextureID id, const std::shared_ptr<Ship::GuiTexture>& texture) {
     RegisterPixels(id, texture->Data, texture->Metadata.Width, texture->Metadata.Height, texture);
 }
+ImTextureID GetNativePauseBackgroundTexture() {
+    static bool attempted = false;
+    auto& texture = nativePauseBackgroundTexture;
+    static ImTextureID textureId = 0;
+    const auto gui = Ship::Context::GetInstance()->GetWindow()->GetGui();
+    if (!gui)
+        return 0;
+    if (!attempted) {
+        attempted = true;
+        try {
+            auto init = std::make_shared<Ship::ResourceInitData>();
+            init->Format = RESOURCE_FORMAT_BINARY;
+            init->Type = RESOURCE_TYPE_GUI_TEXTURE;
+            init->ResourceVersion = 0;
+            init->Path = "textures/map_tracker/pause_map_tracker.png";
+            texture = std::dynamic_pointer_cast<Ship::GuiTexture>(
+                Ship::Context::GetInstance()->GetResourceManager()->LoadResource(init->Path, false, init));
+            if (texture && texture->Data && texture->Metadata.Width > 0 && texture->Metadata.Height > 0) {
+                constexpr const char* name = "MapTracker.NativePauseBackground";
+                gui->LoadTextureFromResource(name, texture);
+                textureId = gui->GetTextureByName(name);
+            }
+        } catch (const std::exception& error) {
+            SPDLOG_WARN("Could not load Map Tracker background: {}", error.what());
+        }
+    }
+    // Pack reloads clear native registrations; retain the decoded background and upload only once.
+    if (textureId && !textures.contains(textureId))
+        RegisterNativePauseTexture(textureId, texture);
+    return textureId;
+}
+void DrawNativePauseBackground(ImTextureID texture) {
+    if (!texture)
+        return;
+    const ImVec2 position = ImGui::GetWindowPos();
+    const ImVec2 maximum = position + ImGui::GetWindowSize();
+    auto* draw = ImGui::GetWindowDrawList();
+    // Draw beneath all content, including padding. Only reserve an inset when the window has a border.
+    const ImVec2 inset(ImGui::GetStyle().WindowBorderSize, ImGui::GetStyle().WindowBorderSize);
+    draw->PushClipRect(position, maximum, false);
+    draw->AddImage(texture, position + inset, maximum - inset);
+    draw->PopClipRect();
+}
 void ClearNativePauseTextures() {
     textures.clear();
     capturedPage.reset();
     boundsReady = false;
+}
+void ShutdownNativePauseRenderer() {
+    // Display-list snapshots can release renderer-owned tiles; the renderer must still be alive.
+    submittedPages.clear();
+    ClearNativePauseTextures();
+    nativePauseBackgroundTexture.reset();
+    ResetNativePauseState();
 }
 void ResetNativePauseState() {
     pauseSessionActive = nativePauseSession = restorePausePage = false;
@@ -375,6 +428,15 @@ void SetNativePauseShoulderInput(bool rightShoulder) {
     rightShoulderPressed |= rightShoulder;
 }
 
+void DrawNativePauseCursor() {
+    if (!NativePauseInteractive())
+        return;
+    // Always above 2D detail windows, even when only the outer ring overlaps a popup.
+    auto* foreground = ImGui::GetForegroundDrawList();
+    foreground->AddCircle(screenCursorPosition, 16.0f, IM_COL32(255, 236, 161, 255), 24, 2.5f);
+    foreground->AddCircleFilled(screenCursorPosition, 4.0f, IM_COL32_WHITE, 12);
+}
+
 void CaptureNativePausePage(ImGuiWindow* root) {
     const auto* atlas = ImGui::GetIO().Fonts;
     if (!textures.contains(atlas->TexID)) {
@@ -387,32 +449,87 @@ void CaptureNativePausePage(ImGuiWindow* root) {
     frame->origin = root->Pos;
     frame->size = root->Size;
     AppendNativePauseWindow(*frame, root);
-    bool cursorOverDetails = !root->Rect().Contains(screenCursorPosition);
-    for (ImGuiWindow* window : ImGui::GetCurrentContext()->Windows) {
-        if (window->Active &&
-            (std::strncmp(window->Name, "Map Checks##", 12) == 0 ||
-             std::strncmp(window->Name, "Map Link##", 10) == 0) &&
-            window->Rect().Contains(screenCursorPosition)) {
-            cursorOverDetails = true;
-        }
-    }
-    if (NativePauseInteractive() && cursorOverDetails) {
-        // Detail panels are 2D: keep the custom cursor above them, not behind their background.
-        auto* foreground = ImGui::GetForegroundDrawList();
-        foreground->AddCircle(screenCursorPosition, 16.0f, IM_COL32(255, 236, 161, 255), 24, 2.5f);
-        foreground->AddCircleFilled(screenCursorPosition, 4.0f, IM_COL32_WHITE, 12);
-    }
-    if (NativePauseInteractive()) {
-        ImDrawList cursor(ImGui::GetDrawListSharedData());
-        cursor._ResetForNewFrame();
-        cursor.PushTextureID(atlas->TexID);
-        cursor.PushClipRect(root->Pos, root->Pos + root->Size);
-        cursor.AddCircle(screenCursorPosition, 16.0f, IM_COL32(255, 236, 161, 255), 24, 2.5f);
-        cursor.AddCircleFilled(screenCursorPosition, 4.0f, IM_COL32_WHITE, 12);
-        AppendDrawList(*frame, cursor);
-    }
+    DrawNativePauseCursor();
     capturedPage = std::move(frame);
     previewRequested = false;
+}
+
+static uint8_t GetPauseTitleCharacter(unsigned int codepoint) {
+    if (codepoint >= 0x20 && codepoint <= 0x7E)
+        return static_cast<uint8_t>(codepoint);
+    constexpr std::array<unsigned int, 31> accentedCharacters = {
+        0xC0, 0xCE, 0xC2, 0xC4, 0xC7, 0xC8, 0xC9, 0xCA, 0xCB, 0xCF, 0xD4, 0xD6, 0xD9, 0xDB, 0xDC, 0xDF,
+        0xE0, 0xE1, 0xE2, 0xE4, 0xE7, 0xE8, 0xE9, 0xEA, 0xEB, 0xEF, 0xF4, 0xF6, 0xF9, 0xFB, 0xFC,
+    };
+    const auto found = std::find(accentedCharacters.begin(), accentedCharacters.end(), codepoint);
+    return found == accentedCharacters.end() ? '?' : static_cast<uint8_t>(0x80 + (found - accentedCharacters.begin()));
+}
+
+static std::array<uint8_t, 128 * 16 / 2> BuildPauseTitleTexture(const std::string& title) {
+    struct Glyph {
+        const uint8_t* pixels;
+        int x;
+    };
+    std::vector<Glyph> glyphs;
+    int advance = 0;
+    const char* character = title.c_str();
+    const char* end = character + title.size();
+    // Bound temporary raster size even if a resource pack provides an unusually long name.
+    while (character < end && glyphs.size() < 256) {
+        unsigned int codepoint;
+        const int bytes = ImTextCharFromUtf8(&codepoint, character, end);
+        if (bytes <= 0)
+            break;
+        character += bytes;
+        const uint8_t gameCharacter = GetPauseTitleCharacter(codepoint);
+        const char* texture = static_cast<const char*>(Ship_GetCharFontTexture(gameCharacter));
+        glyphs.push_back({ static_cast<const uint8_t*>(ResourceGetDataByName(texture)), advance });
+        advance += std::max(1, static_cast<int>(std::lround(Ship_GetCharFontWidth(gameCharacter))));
+    }
+    const int sourceWidth = advance + 16;
+    std::vector<uint8_t> source(sourceWidth * 16, 0);
+    int left = sourceWidth, right = -1, top = 16, bottom = -1;
+    for (const auto& glyph : glyphs) {
+        if (!glyph.pixels)
+            continue;
+        for (int y = 0; y < 16; ++y) {
+            for (int x = 0; x < 16; ++x) {
+                const int index = y * 16 + x;
+                const uint8_t intensity = (glyph.pixels[index / 2] >> (index % 2 ? 0 : 4)) & 15;
+                if (!intensity)
+                    continue;
+                auto& pixel = source[y * sourceWidth + glyph.x + x];
+                pixel = std::max(pixel, intensity);
+                left = std::min(left, glyph.x + x);
+                right = std::max(right, glyph.x + x);
+                top = std::min(top, y);
+                bottom = std::max(bottom, y);
+            }
+        }
+    }
+    std::array<uint8_t, 128 * 16 / 2> pixels{};
+    if (right < left || bottom < top)
+        return pixels;
+    const int width = right - left + 1, height = bottom - top + 1;
+    const float scale = std::min({ 1.0f, 120.0f / width, 14.0f / height });
+    const int drawWidth = std::clamp(static_cast<int>(std::lround(width * scale)), 1, 120);
+    const int drawHeight = std::clamp(static_cast<int>(std::lround(height * scale)), 1, 14);
+    const int offsetX = (128 - drawWidth) / 2, offsetY = (16 - drawHeight) / 2;
+    for (int y = 0; y < drawHeight; ++y) {
+        for (int x = 0; x < drawWidth; ++x) {
+            const float sx = std::clamp(left + (x + 0.5f) * width / drawWidth - 0.5f, 0.0f, sourceWidth - 1.0f);
+            const float sy = std::clamp(top + (y + 0.5f) * height / drawHeight - 0.5f, 0.0f, 15.0f);
+            const int x0 = static_cast<int>(sx), y0 = static_cast<int>(sy);
+            const int x1 = std::min(x0 + 1, sourceWidth - 1), y1 = std::min(y0 + 1, 15);
+            const float upper = std::lerp(source[y0 * sourceWidth + x0], source[y0 * sourceWidth + x1], sx - x0);
+            const float lower = std::lerp(source[y1 * sourceWidth + x0], source[y1 * sourceWidth + x1], sx - x0);
+            const int intensity = std::clamp(static_cast<int>(std::lround(std::lerp(upper, lower, sy - y0))), 0, 15);
+            const uint8_t ia = ((intensity >> 1) << 1) | (intensity > 0);
+            const int destination = (offsetY + y) * 128 + offsetX + x;
+            pixels[destination / 2] |= ia << (destination % 2 ? 0 : 4);
+        }
+    }
+    return pixels;
 }
 
 } // namespace MapTracker
@@ -422,7 +539,7 @@ extern "C" int MapTracker_UseNativePausePage(void) {
 }
 extern "C" void MapTracker_BeginPauseSession(PlayState* play, int trackerRequested) {
     using namespace MapTracker;
-    nativePauseSession = CVarGetInteger(CVAR_NATIVE_PAUSE, DEFAULT_NATIVE_PAUSE_MODE) != 0 &&
+    nativePauseSession = GetDisplayMode() == DisplayMode::Pause3D &&
                          GameInteractor::IsSaveLoaded() && CheckTracker::initialized;
     pauseSessionActive = true;
     previousPausePage = play->pauseCtx.pageIndex;
@@ -440,44 +557,18 @@ extern "C" void MapTracker_EndPauseSession(PlayState* play) {
 }
 
 extern "C" void* MapTracker_GetPauseTitleTexture(void) {
-    // Reuse glyphs from the original pause labels, retaining their IA4 shading and 16-pixel height.
-    static const auto texture = [] {
-        std::array<uint8_t, 128 * 16 / 2> pixels{};
-        struct Glyph {
-            const char* texture;
-            int column, width, spacing;
-        };
-        const std::array<Glyph, 8> glyphs = { {
-            { gDungeonMapItemNameENGTex, 78, 27, 5 }, // Map
-            { gMaskofTruthItemNameENGTex, 72, 9, 0 }, // T
-            { gMaskofTruthItemNameENGTex, 81, 5, 0 }, // r
-            { gDungeonMapItemNameENGTex, 90, 7, 0 },  // a
-            { gDekuStickItemNameENGTex, 82, 7, 0 },   // c
-            { gDekuStickItemNameENGTex, 50, 7, 0 },   // k
-            { gDekuStickItemNameENGTex, 43, 7, 0 },   // e
-            { gMaskofTruthItemNameENGTex, 81, 5, 0 }, // r
-        } };
-        int width = 0;
-        for (const auto& glyph : glyphs)
-            width += glyph.width + glyph.spacing;
-        int x = (128 - width) / 2;
-        for (const auto& glyph : glyphs) {
-            const auto* source = static_cast<const uint8_t*>(ResourceGetDataByName(glyph.texture));
-            if (source) {
-                for (int y = 0; y < 16; ++y) {
-                    for (int column = 0; column < glyph.width; ++column) {
-                        const int sourceIndex = y * 128 + glyph.column + column;
-                        const uint8_t ia = (source[sourceIndex / 2] >> (sourceIndex % 2 ? 0 : 4)) & 15;
-                        const int destination = y * 128 + x + column;
-                        pixels[destination / 2] |= ia << (destination % 2 ? 0 : 4);
-                    }
-                }
-            }
-            x += glyph.width + glyph.spacing;
-        }
-        return pixels;
-    }();
-    return const_cast<uint8_t*>(texture.data());
+    static const std::string fallback = "Map Tracker";
+    const auto& state = CheckTracker::mapTrackerState;
+    const std::string& title =
+        state.tabs.empty()
+            ? fallback
+            : state.tabs[std::clamp(state.selectedTabIndex, 0, static_cast<int>(state.tabs.size()) - 1)].mapName;
+    // Separate immutable buffers keep texture caches and interpolated frames valid across map changes.
+    static std::unordered_map<std::string, std::array<uint8_t, 128 * 16 / 2>> titles;
+    const auto [entry, inserted] = titles.try_emplace(title.empty() ? fallback : title);
+    if (inserted)
+        entry->second = MapTracker::BuildPauseTitleTexture(entry->first);
+    return entry->second.data();
 }
 extern "C" void MapTracker_PrepareNativePausePage(void) {
     if (MapTracker::NativePauseEnabled())

@@ -6,18 +6,22 @@
 
 namespace MapTracker {
 
-inline constexpr const char* CVAR_WINDOW_TYPE = CVAR_TRACKER("MapTracker.WindowType");
+inline constexpr const char* CVAR_DISPLAY_MODE = CVAR_TRACKER("MapTracker.DisplayMode");
 inline constexpr const char* CVAR_SCREEN = CVAR_WINDOW("MapTrackerScreen");
 inline constexpr const char* CVAR_FONT_SIZE = CVAR_TRACKER("MapTracker.FontSize");
 inline constexpr const char* CVAR_DRAGGABLE = CVAR_TRACKER("MapTracker.Draggable");
-inline constexpr const char* CVAR_SHOW_ONLY_PAUSED = CVAR_TRACKER("MapTracker.ShowOnlyPaused");
+inline constexpr const char* CVAR_DEBUG_WINDOW = CVAR_WINDOW("MapTrackerDebug");
 inline constexpr const char* CVAR_SHOW_LOGIC = CVAR_TRACKER("MapTracker.ShowLogic");
-inline constexpr const char* CVAR_SHOW_TOTALS = CVAR_TRACKER("MapTracker.ShowTotals");
 inline constexpr const char* CVAR_SHOW_DEBUG_INFO = CVAR_TRACKER("MapTracker.ShowDebugInfo");
 inline constexpr const char* CVAR_MQ_SPOILERS = CVAR_TRACKER("MapTracker.MQSpoilers");
 inline constexpr const char* CVAR_PLAYER_POSITION = CVAR_TRACKER("MapTracker.ExperimentalPlayerPosition");
-inline constexpr const char* CVAR_NATIVE_PAUSE = CVAR_TRACKER("MapTracker.NativePausePage");
-inline constexpr int DEFAULT_NATIVE_PAUSE_MODE = 1;
+inline constexpr const char* CVAR_NATIVE_CUSTOM_BACKGROUND = CVAR_TRACKER("MapTracker.NativeCustomBackground");
+enum class DisplayMode { Pause3D, Pause2D, Windowed, Floating };
+inline constexpr int DEFAULT_DISPLAY_MODE = static_cast<int>(DisplayMode::Pause3D);
+inline constexpr int DEFAULT_NATIVE_CUSTOM_BACKGROUND = 1;
+DisplayMode GetDisplayMode();
+bool IsInGameMode();
+void Shutdown();
 
 extern bool showLogicTooltip;
 extern bool showMapDebugDetails;
@@ -69,6 +73,16 @@ class MapTrackerScreenWindow final : public Ship::GuiWindow {
 };
 
 class MapTrackerSettingsWindow final : public Ship::GuiWindow {
+  public:
+    using GuiWindow::GuiWindow;
+
+  protected:
+    void InitElement() override;
+    void DrawElement() override;
+    void UpdateElement() override;
+};
+
+class MapTrackerDebugWindow final : public Ship::GuiWindow {
   public:
     using GuiWindow::GuiWindow;
 

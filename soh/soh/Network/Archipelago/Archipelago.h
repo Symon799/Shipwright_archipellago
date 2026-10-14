@@ -54,6 +54,7 @@ class ArchipelagoClient {
 
     bool StartClient();
     bool StopClient();
+    void Shutdown();
 
     void RequestInitData();
     void GameLoaded();
@@ -140,6 +141,8 @@ class ArchipelagoClient {
     void operator=(const ArchipelagoClient&) = delete;
 
     bool isRightSaveLoaded() const;
+    void RememberConnection();
+    void RestoreSaveConnection();
     std::string get_random_group_from_item(const std::string& item_name, unsigned int item_flags,
                                            const std::string& game);
     std::string get_random_group_from_location(const std::string& item_name, const std::string& game);

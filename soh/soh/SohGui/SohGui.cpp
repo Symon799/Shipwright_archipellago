@@ -95,6 +95,7 @@ std::shared_ptr<MapTracker::MapTrackerWindow> mMapTrackerWindow;
 std::shared_ptr<MapTracker::MapTrackerScreenWindow> mMapTrackerScreenWindow;
 bool mMapTrackerWasVisibleBeforeScreen = false;
 std::shared_ptr<MapTracker::MapTrackerSettingsWindow> mMapTrackerSettingsWindow;
+std::shared_ptr<MapTracker::MapTrackerDebugWindow> mMapTrackerDebugWindow;
 std::shared_ptr<EntranceTracker::EntranceTrackerSettingsWindow> mEntranceTrackerSettingsWindow;
 std::shared_ptr<EntranceTracker::EntranceTrackerWindow> mEntranceTrackerWindow;
 std::shared_ptr<ItemTrackerSettingsWindow> mItemTrackerSettingsWindow;
@@ -226,6 +227,9 @@ void SetupGuiElements() {
     mMapTrackerSettingsWindow = std::make_shared<MapTracker::MapTrackerSettingsWindow>(
         CVAR_WINDOW("MapTrackerSettings"), "Map Tracker Settings", ImVec2(600, 375));
     gui->AddGuiWindow(mMapTrackerSettingsWindow);
+    mMapTrackerDebugWindow = std::make_shared<MapTracker::MapTrackerDebugWindow>(
+        MapTracker::CVAR_DEBUG_WINDOW, "Map Tracker Debug", ImVec2(760, 600));
+    gui->AddGuiWindow(mMapTrackerDebugWindow);
     mEntranceTrackerWindow = std::make_shared<EntranceTracker::EntranceTrackerWindow>(
         CVAR_WINDOW("EntranceTracker"), "Entrance Tracker", ImVec2(500, 750));
     gui->AddGuiWindow(mEntranceTrackerWindow);
@@ -277,6 +281,7 @@ void Destroy() {
     mMapTrackerScreenWindow = nullptr;
     mMapTrackerWasVisibleBeforeScreen = false;
     mMapTrackerSettingsWindow = nullptr;
+    mMapTrackerDebugWindow = nullptr;
     mGameplayStatsWindow = nullptr;
     mDLViewerWindow = nullptr;
     mValueViewerWindow = nullptr;

@@ -16,6 +16,7 @@
 #include <array>
 #include <charconv>
 #include <chrono>
+#include <cfloat>
 #include <cmath>
 #include <spdlog/fmt/fmt.h>
 #include <map>
@@ -34,6 +35,24 @@ bool renderingNativePause = false;
 bool screenMapInputBlocked = false;
 bool IsIntegratedMapView() {
     return renderingNativePause || NativePauseInteractive() || CVarGetInteger(CVAR_SCREEN, 0) != 0;
+}
+
+DisplayMode GetDisplayMode() {
+    const int mode = CVarGetInteger(CVAR_DISPLAY_MODE, -1);
+    if (mode >= 0)
+        return static_cast<DisplayMode>(std::clamp(mode, 0, 3));
+    // Preserve legacy preferences until a unified display-mode preference is saved.
+    if (CVarGetInteger(CVAR_TRACKER("MapTracker.InGameEnabled"), 1) != 0)
+        return CVarGetInteger(CVAR_TRACKER("MapTracker.NativePausePage"), 1) != 0 ? DisplayMode::Pause3D
+                                                                                  : DisplayMode::Pause2D;
+    return CVarGetInteger(CVAR_TRACKER("MapTracker.WindowType"), TRACKER_WINDOW_WINDOW) == TRACKER_WINDOW_FLOATING
+               ? DisplayMode::Floating
+               : DisplayMode::Windowed;
+}
+
+bool IsInGameMode() {
+    const auto mode = GetDisplayMode();
+    return mode == DisplayMode::Pause3D || mode == DisplayMode::Pause2D;
 }
 
 bool showLogicTooltip = false;
@@ -64,13 +83,11 @@ namespace {
 
 using namespace UIWidgets;
 
-const std::map<int32_t, const char*> windowTypes = {
-    { TRACKER_WINDOW_FLOATING, "Floating" },
-    { TRACKER_WINDOW_WINDOW, "Window" },
-};
-const std::map<int32_t, const char*> screenModes = {
-    { 0, "Fullscreen 2D" },
-    { 1, "Native Pause 3D" },
+const std::map<int32_t, const char*> displayModes = {
+    { static_cast<int>(DisplayMode::Pause3D), "In-Game Pause 3D" },
+    { static_cast<int>(DisplayMode::Pause2D), "In-Game Pause 2D" },
+    { static_cast<int>(DisplayMode::Windowed), "Windowed" },
+    { static_cast<int>(DisplayMode::Floating), "Floating Overlay" },
 };
 
 bool IsKeyboardMappingPressed(const std::string& mappingId, int32_t pressedScancode) {
@@ -147,6 +164,13 @@ constexpr float SCREEN_VERTICAL_MARGIN_PERCENT = 5.5f;
 // Native main-panel opacity: 0 = transparent, 1 = opaque. Does not affect lists or hover panels.
 constexpr float NATIVE_PAUSE_BACKGROUND_OPACITY = 0.97f;
 
+void DrawNativeTextShadow(ImDrawList* draw, const ImVec2& position, const char* text, float fontSize = 0.0f,
+                          const ImVec4* clip = nullptr) {
+    const float size = fontSize > 0.0f ? fontSize : ImGui::GetFontSize();
+    for (const ImVec2 offset : { ImVec2(1.0f, 1.0f), ImVec2(2.0f, 1.0f), ImVec2(1.0f, 2.0f), ImVec2(2.0f, 2.0f) })
+        draw->AddText(ImGui::GetFont(), size, position + offset, IM_COL32(0, 0, 0, 245), text, nullptr, 0.0f, clip);
+}
+
 int RepeatZoomInput(int direction, float deltaTime) {
     if (direction == 0) {
         screenInput.repeatingZoomDirection = 0;
@@ -177,6 +201,8 @@ void ResetScreenInput() {
 }
 
 bool CanOpenScreen() {
+    if (!IsInGameMode())
+        return false;
     const bool pausedMenuReady = gPlayState != nullptr && gPlayState->pauseCtx.state == 6 &&
                                  gPlayState->pauseCtx.debugState == 0 &&
                                  gPlayState->gameOverCtx.state == GAMEOVER_INACTIVE &&
@@ -224,20 +250,23 @@ void LoadSettings() {
 }
 
 void ToggleMapTrackerFromInput() {
+    static bool toggleWasPressed = false;
+    if (!IsInGameMode()) {
+        toggleWasPressed = true; // Require release before accepting a toggle after re-enabling.
+        return;
+    }
     auto controlDeck = std::dynamic_pointer_cast<LUS::ControlDeck>(Ship::Context::GetInstance()->GetControlDeck());
     if (controlDeck == nullptr || controlDeck->GetControllerByPort(0) == nullptr) {
         return;
     }
 
-    static bool toggleWasPressed = false;
     static bool defaultMappingsInitialized = false;
     const auto trackerButton = controlDeck->GetControllerByPort(0)->GetButton(BTN_CUSTOM_MAP_TRACKER);
     if (!defaultMappingsInitialized) {
         const std::array<CONTROLLERBUTTONS_T, 9> mapTrackerButtons = {
-            BTN_CUSTOM_MAP_TRACKER, BTN_CUSTOM_MAP_TRACKER_OVERWORLD, BTN_CUSTOM_MAP_TRACKER_CONFIRM,
-            BTN_CUSTOM_MAP_TRACKER_BACK, BTN_CUSTOM_MAP_TRACKER_FOCUS, BTN_CUSTOM_MAP_TRACKER_ZOOM_IN,
-            BTN_CUSTOM_MAP_TRACKER_ZOOM_OUT,
-            BTN_CUSTOM_MAP_TRACKER_LIST_UP, BTN_CUSTOM_MAP_TRACKER_LIST_DOWN,
+            BTN_CUSTOM_MAP_TRACKER,          BTN_CUSTOM_MAP_TRACKER_OVERWORLD, BTN_CUSTOM_MAP_TRACKER_CONFIRM,
+            BTN_CUSTOM_MAP_TRACKER_BACK,     BTN_CUSTOM_MAP_TRACKER_FOCUS,     BTN_CUSTOM_MAP_TRACKER_ZOOM_IN,
+            BTN_CUSTOM_MAP_TRACKER_ZOOM_OUT, BTN_CUSTOM_MAP_TRACKER_LIST_UP,   BTN_CUSTOM_MAP_TRACKER_LIST_DOWN,
         };
         for (const CONTROLLERBUTTONS_T bitmask : mapTrackerButtons) {
             const auto button = controlDeck->GetControllerByPort(0)->GetButton(bitmask);
@@ -249,6 +278,10 @@ void ToggleMapTrackerFromInput() {
             }
         }
         defaultMappingsInitialized = true;
+    }
+    if (GetDisplayMode() == DisplayMode::Pause3D && !NativePauseEnabled()) {
+        toggleWasPressed = true;
+        return;
     }
 
     const auto trackerMappings = trackerButton->GetAllButtonMappings();
@@ -395,42 +428,37 @@ void CaptureScreenInput() {
     }
 }
 
-void DrawMapHeader() {
-    const float buttonWidth = std::max(1.0f, ImGui::CalcTextSize("Reload Data").x +
-                                                    ImGui::GetStyle().FramePadding.x * 2.0f + 20.0f);
-    if (UIWidgets::Button("Focus Player", UIWidgets::ButtonOptions().Color(THEME_COLOR).Size({ buttonWidth, 0.0f }))) {
-        CheckTracker::UpdateRequestedMapTabFromCurrentArea(true);
-    }
-    ImGui::SameLine();
-    if (UIWidgets::Button("Reload Data", UIWidgets::ButtonOptions().Color(THEME_COLOR).Size({ buttonWidth, 0.0f }))) {
-        CheckTracker::LoadMapTrackerData();
-    }
-    if (CVarGetInteger(CVAR_SHOW_TOTALS, 1) != 0) {
-        ImGui::SameLine();
-        const auto totals = CheckTracker::GetMapTrackerCheckTotals();
-        ImGui::Text("%u Checked / %u Accessible / %u Total", totals.checked, totals.accessible, totals.total);
-    }
-    const float debugWidth = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x +
-                             ImGui::CalcTextSize("Debug").x;
-    const float rightPadding = ImGui::GetStyle().WindowPadding.x + ImGui::GetStyle().ItemSpacing.x + 6.0f;
-    const float rightAlignedX = ImGui::GetWindowContentRegionMax().x - debugWidth - rightPadding;
-    ImGui::SameLine(std::max(ImGui::GetCursorPosX() + ImGui::GetStyle().ItemSpacing.x, rightAlignedX));
-    UIWidgets::CVarCheckbox("Debug", CVAR_SHOW_DEBUG_INFO,
-                            UIWidgets::CheckboxOptions().Color(THEME_COLOR));
-    showMapDebugDetails = CVarGetInteger(CVAR_SHOW_DEBUG_INFO, 0) != 0;
-}
-
 } // namespace
 
 void MapTrackerWindow::Draw() {
+    if (IsInGameMode() && IsVisible())
+        Hide();
     // Both views share availability data; hiding the classic view must not disable the fullscreen view.
-    CheckTracker::SetMapTrackerAvailabilityRequested(IsVisible() || CVarGetInteger(CVAR_SCREEN, 0) != 0 ||
+    CheckTracker::SetMapTrackerAvailabilityRequested((IsVisible() && !IsInGameMode()) || CVarGetInteger(CVAR_SCREEN, 0) != 0 ||
+                                                     CVarGetInteger(CVAR_DEBUG_WINDOW, 0) != 0 ||
                                                      NativePauseInteractive());
     // Both views share navigation and popup state. Do not let classic tabs consume native requests.
-    if (!IsVisible() || (NativePauseEnabled() && gPlayState->pauseCtx.state != 0)) {
+    if (!IsVisible() || IsInGameMode() || (NativePauseEnabled() && gPlayState && gPlayState->pauseCtx.state != 0)) {
         return;
     }
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 8.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 2.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 4.0f));
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.035f, 0.045f, 0.055f, 0.97f));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.035f, 0.045f, 0.055f, 0.97f));
+    ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(248, 244, 234, 255));
+    ImGui::PushStyleColor(ImGuiCol_TextDisabled, IM_COL32(176, 177, 164, 255));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(58, 66, 65, 255));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, IM_COL32(76, 66, 42, 255));
+    ImGui::PushStyleColor(ImGuiCol_Separator, IM_COL32(186, 144, 66, 115));
+    ImGui::PushStyleColor(ImGuiCol_Border, IM_COL32(120, 99, 58, 150));
+    ImGui::PushStyleColor(ImGuiCol_TitleBg, IM_COL32(27, 33, 35, 255));
+    ImGui::PushStyleColor(ImGuiCol_TitleBgActive, IM_COL32(53, 47, 34, 255));
+    ImGui::PushStyleColor(ImGuiCol_TitleBgCollapsed, IM_COL32(27, 33, 35, 245));
     DrawElement();
+    ImGui::PopStyleColor(11);
+    ImGui::PopStyleVar(4);
     SyncVisibilityConsoleVariable();
 }
 
@@ -442,15 +470,12 @@ void MapTrackerWindow::UpdateElement() {
 
 void MapTrackerWindow::DrawElement() {
     LoadSettings();
-    if (CVarGetInteger(CVAR_SHOW_ONLY_PAUSED, 0) != 0 &&
-        (gPlayState == nullptr || gPlayState->pauseCtx.state == 0)) {
-        return;
-    }
-
     if (!CheckTracker::Trackers::BeginFloatWindows(
-            "Map Tracker", mIsVisible, { 0, 0, 0, 255 },
-            static_cast<TrackerWindowType>(CVarGetInteger(CVAR_WINDOW_TYPE, TRACKER_WINDOW_WINDOW)),
+            "Map Tracker", mIsVisible, { 9, 12, 14, 247 },
+            GetDisplayMode() == DisplayMode::Floating ? TRACKER_WINDOW_FLOATING : TRACKER_WINDOW_WINDOW,
             CVarGetInteger(CVAR_DRAGGABLE, 1), ImGuiWindowFlags_NoScrollbar)) {
+        // Begin still pushes the window/style stacks when the window is collapsed.
+        CheckTracker::Trackers::EndFloatWindows();
         return;
     }
 
@@ -460,16 +485,7 @@ void MapTrackerWindow::DrawElement() {
         return;
     }
 
-    ImGui::SetWindowFontScale(CVarGetFloat(CVAR_FONT_SIZE, 1.0f));
-    DrawMapHeader();
-    if (showMapDebugDetails) {
-        const std::string activeAssetsPath = CheckTracker::mapTrackerState.assetsRoot.empty()
-                                                 ? CheckTracker::GetMapTrackerAssetsRootAbsoluteString()
-                                                 : CheckTracker::mapTrackerState.assetsRoot.string();
-        ImGui::TextWrapped("Assets: %s", activeAssetsPath.c_str());
-        CheckTracker::DrawCheckTrackerVisibilityDebugControls();
-    }
-    ImGui::Separator();
+    ImGui::SetWindowFontScale(std::clamp(CVarGetFloat(CVAR_FONT_SIZE, 1.0f), 0.3f, 1.3f));
     CheckTracker::ProcessPendingUpdates();
     CheckTracker::DrawMapTrackerContent();
     CheckTracker::Trackers::EndFloatWindows();
@@ -514,6 +530,10 @@ void MapTrackerScreenWindow::Draw() {
     ImVec2 nativePosition, nativeSize;
     if (nativePage && !GetNativePauseBounds(nativePosition, nativeSize))
         return;
+    const auto nativeBackground =
+        nativePage && CVarGetInteger(CVAR_NATIVE_CUSTOM_BACKGROUND, DEFAULT_NATIVE_CUSTOM_BACKGROUND) != 0
+            ? GetNativePauseBackgroundTexture()
+            : 0;
     ImGui::SetNextWindowPos(nativePage ? nativePosition
                                        : viewport->Pos + margin + closingInset +
                                              ImVec2(0.0f, openingOffset + 32.0f * closingEase),
@@ -522,7 +542,7 @@ void MapTrackerScreenWindow::Draw() {
     ImGui::SetNextWindowViewport(viewport->ID);
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, nativePage ? ImVec2(6.0f, 14.0f) : ImVec2(24.0f, 18.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, nativeBackground ? 0.0f : 1.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, nativePage ? 0.0f : 18.0f);
     if (nativePage) {
         ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 0.0f);
@@ -545,7 +565,10 @@ void MapTrackerScreenWindow::Draw() {
     const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
                                    ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDocking |
                                    (screenClosing || nativePreview ? ImGuiWindowFlags_NoInputs : 0);
+    if (nativeBackground)
+        ImGui::SetNextWindowBgAlpha(0.0f);
     if (ImGui::Begin("Map Tracker Screen##fullscreen", nullptr, flags)) {
+        DrawNativePauseBackground(nativeBackground);
         renderingNativePause = nativePage;
         DrawElement();
         renderingNativePause = false;
@@ -562,6 +585,12 @@ void MapTrackerScreenWindow::InitElement() {
 }
 
 void MapTrackerScreenWindow::UpdateElement() {
+    if (!IsInGameMode() && !NativePauseEnabled()) {
+        if (IsVisible())
+            SetScreenOpen(false, true);
+        ResetScreenInput();
+        return;
+    }
     if (NativePauseEnabled()) {
         if (IsVisible())
             SetScreenOpen(false, true);
@@ -642,39 +671,53 @@ void MapTrackerScreenWindow::DrawElement() {
 
     const float nativeFontScale =
         renderingNativePause ? std::clamp(ImGui::GetWindowSize().x / 1100.0f, 0.55f, 1.0f) : 1.0f;
-    ImGui::SetWindowFontScale(std::max(0.3f, CVarGetFloat(CVAR_FONT_SIZE, 1.0f)) * 1.05f * nativeFontScale);
-    const bool showTotals = CVarGetInteger(CVAR_SHOW_TOTALS, 1) != 0;
+    ImGui::SetWindowFontScale(std::clamp(CVarGetFloat(CVAR_FONT_SIZE, 1.0f), 0.3f, 1.3f) * 1.05f * nativeFontScale);
     if (renderingNativePause) {
-        std::string label;
-        if (showTotals) {
-            const auto totals = CheckTracker::GetMapTrackerCheckTotals();
-            label =
-                fmt::format("{} Checked / {} Accessible / {} Total", totals.checked, totals.accessible, totals.total);
-        }
-        const float textWidth = ImGui::CalcTextSize(label.c_str()).x;
         const float centerX = (ImGui::GetWindowContentRegionMin().x + ImGui::GetWindowContentRegionMax().x) * 0.5f;
         const ImVec2 rowPosition = ImGui::GetCursorScreenPos();
-        const ImVec2 titlePosition = rowPosition + ImVec2(ImGui::CalcTextSize(" ").x, 0.0f);
-        const float titleSize = ImGui::GetFontSize() * 1.10f;
-        const float titleRight = showTotals ? screenMin.x + centerX - textWidth * 0.5f - 12.0f
-                                            : screenMin.x + ImGui::GetWindowContentRegionMax().x;
-        const ImVec4 titleClip(titlePosition.x, titlePosition.y, titleRight, titlePosition.y + titleSize);
-        const auto& state = CheckTracker::mapTrackerState;
-        const char* title =
-            state.tabs.empty()
-                ? "MAP TRACKER"
-                : state.tabs[std::clamp(state.selectedTabIndex, 0, static_cast<int>(state.tabs.size()) - 1)]
-                      .mapName.c_str();
-        if (titleClip.z > titleClip.x) {
-            // Embolden the existing font without adding another font atlas.
-            for (float offset : { 0.0f, 0.6f })
-                drawList->AddText(ImGui::GetFont(), titleSize, titlePosition + ImVec2(offset, 0.0f),
-                                  IM_COL32(224, 179, 92, 255), title, nullptr, 0.0f, &titleClip);
+        const float titleSize = ImGui::GetFontSize() * 1.40f;
+        constexpr const char* title = "MAP TRACKER";
+        const float titleWidth = ImGui::GetFont()->CalcTextSizeA(titleSize, FLT_MAX, 0.0f, title).x;
+        const ImVec2 titlePosition(screenMin.x + centerX - titleWidth * 0.5f, rowPosition.y);
+        for (const ImVec2 offset :
+             { ImVec2(-2.5f, -2.5f), ImVec2(0.0f, -2.5f), ImVec2(2.5f, -2.5f), ImVec2(-2.5f, 0.0f), ImVec2(2.5f, 0.0f),
+               ImVec2(-2.5f, 2.5f), ImVec2(0.0f, 2.5f), ImVec2(2.5f, 2.5f) })
+            drawList->AddText(ImGui::GetFont(), titleSize, titlePosition + offset, IM_COL32(0, 0, 0, 255), title);
+        // Embolden the existing font without adding another font atlas.
+        for (float offset : { 0.0f, 0.6f })
+            drawList->AddText(ImGui::GetFont(), titleSize, titlePosition + ImVec2(offset, 0.0f), IM_COL32_WHITE, title);
+        const ImRect titleRect(titlePosition - ImVec2(3.0f, 3.0f),
+                               titlePosition + ImVec2(titleWidth + 3.0f, titleSize + 3.0f));
+        if (!nativePreview && titleRect.Contains(screenCursorPosition)) {
+            const auto totals = CheckTracker::GetMapTrackerCheckTotals();
+            const std::string label =
+                fmt::format("{} Accessible / {} Checked / {} Total", totals.accessible, totals.checked, totals.total);
+            float fontSize = ImGui::GetFontSize() * 0.9f;
+            const float width = ImGui::GetFont()->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, label.c_str()).x;
+            const float availableWidth = ImGui::GetWindowContentRegionMax().x - ImGui::GetWindowContentRegionMin().x;
+            fontSize *= std::min(1.0f, std::max(1.0f, availableWidth - 24.0f) / std::max(1.0f, width));
+            const float textWidth = ImGui::GetFont()->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, label.c_str()).x;
+            const float fontScale = ImGui::GetCurrentWindow()->FontWindowScale * fontSize / ImGui::GetFontSize();
+            ImGui::SetNextWindowPos(ImVec2(screenMin.x + centerX, titlePosition.y + titleSize + 8.0f), ImGuiCond_Always,
+                                    ImVec2(0.5f, 0.0f));
+            ImGui::SetNextWindowSize(ImVec2(textWidth + 24.0f, fontSize + 20.0f));
+            ImGui::SetNextWindowBgAlpha(1.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12.0f, 10.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+            ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.19f, 0.045f, 0.04f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(248, 244, 234, 255));
+            // Separate 2D detail panel, like multichecks; never capture it into the 3D page.
+            if (ImGui::Begin("##MapTrackerNativeTotals", nullptr,
+                             ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings |
+                                 ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoFocusOnAppearing)) {
+                ImGui::SetWindowFontScale(fontScale);
+                ImGui::TextUnformatted(label.c_str());
+            }
+            ImGui::End();
+            ImGui::PopStyleColor(2);
+            ImGui::PopStyleVar(3);
         }
-        if (showTotals)
-            drawList->AddText(ImVec2(screenMin.x + centerX - textWidth * 0.5f,
-                                     rowPosition.y + (titleSize - ImGui::GetFontSize()) * 0.5f),
-                              ImGui::GetColorU32(ImGuiCol_Text), label.c_str());
         ImGui::Dummy(ImVec2(0.0f, titleSize));
     } else {
         ImGui::TextColored(ImVec4(0.88f, 0.70f, 0.36f, 1.0f), "MAP TRACKER");
@@ -686,15 +729,13 @@ void MapTrackerScreenWindow::DrawElement() {
                                       .tabs[std::clamp(CheckTracker::mapTrackerState.selectedTabIndex, 0,
                                                        static_cast<int>(CheckTracker::mapTrackerState.tabs.size()) - 1)]
                                       .mapName.c_str());
-        if (showTotals) {
-            const auto totals = CheckTracker::GetMapTrackerCheckTotals();
-            const std::string label =
-                fmt::format("{} Checked / {} Accessible / {} Total", totals.checked, totals.accessible, totals.total);
-            const float textWidth = ImGui::CalcTextSize(label.c_str()).x;
-            ImGui::SameLine(std::max(ImGui::GetCursorPosX() + ImGui::GetStyle().ItemSpacing.x,
-                                     ImGui::GetWindowContentRegionMax().x - textWidth));
-            ImGui::TextUnformatted(label.c_str());
-        }
+        const auto totals = CheckTracker::GetMapTrackerCheckTotals();
+        const std::string label =
+            fmt::format("{} Accessible / {} Checked / {} Total", totals.accessible, totals.checked, totals.total);
+        const float textWidth = ImGui::CalcTextSize(label.c_str()).x;
+        ImGui::SameLine(std::max(ImGui::GetCursorPosX() + ImGui::GetStyle().ItemSpacing.x,
+                                 ImGui::GetWindowContentRegionMax().x - textWidth));
+        ImGui::TextUnformatted(label.c_str());
     }
     if (screenFocusPressed) {
         CheckTracker::UpdateRequestedMapTabFromCurrentArea(true);
@@ -707,10 +748,16 @@ void MapTrackerScreenWindow::DrawElement() {
             std::clamp(CheckTracker::mapTrackerState.selectedTabIndex + screenMapListNavigationDelta, 0, lastIndex);
         CheckTracker::SelectMapTrackerScreenMap(nextIndex);
     }
-    ImGui::Separator();
+    if (renderingNativePause) {
+        ImGui::PushStyleColor(ImGuiCol_Separator, IM_COL32(0, 0, 0, 255));
+        ImGui::SeparatorEx(ImGuiSeparatorFlags_Horizontal, 3.0f);
+        ImGui::PopStyleColor();
+    } else
+        ImGui::Separator();
 
     const float footerHeight = ImGui::GetTextLineHeightWithSpacing() + ImGui::GetStyle().FramePadding.y * 2.0f +
-                               ImGui::GetStyle().WindowPadding.y + 8.0f;
+                               ImGui::GetStyle().WindowPadding.y + 8.0f +
+                               (renderingNativePause ? ImGui::GetTextLineHeight() * 0.15f : 0.0f);
     const float sidebarWidth = std::clamp(ImGui::GetWindowSize().x * 0.18f, 190.0f, 270.0f);
     const ImVec2 canvasOrigin = ImGui::GetCursorScreenPos();
     const ImVec2 canvasSize(ImGui::GetContentRegionAvail().x,
@@ -844,9 +891,14 @@ void MapTrackerScreenWindow::DrawElement() {
         drawCanvas();
     screenMapInputBlocked = false;
 
-    ImGui::Separator();
+    if (renderingNativePause) {
+        ImGui::PushStyleColor(ImGuiCol_Separator, IM_COL32(0, 0, 0, 255));
+        ImGui::SeparatorEx(ImGuiSeparatorFlags_Horizontal, 3.0f);
+        ImGui::PopStyleColor();
+    } else
+        ImGui::Separator();
     const std::array<std::pair<CONTROLLERBUTTONS_T, const char*>, 8> controls = { {
-        { BTN_CUSTOM_MAP_TRACKER_CONFIRM, "Select / Hint" },
+        { BTN_CUSTOM_MAP_TRACKER_CONFIRM, renderingNativePause ? "Select" : "Select / Hint" },
         { BTN_CUSTOM_MAP_TRACKER_BACK, "Back" },
         { BTN_CUSTOM_MAP_TRACKER_FOCUS, "Focus Player" },
         { BTN_CUSTOM_MAP_TRACKER_OVERWORLD, "Overworld" },
@@ -861,27 +913,29 @@ void MapTrackerScreenWindow::DrawElement() {
     for (size_t i = 0; i < controls.size(); ++i)
         controlLabels[i] = GetMapTrackerButtonLabel(controls[i].first, deviceType);
     const float footerFontScale = ImGui::GetCurrentWindow()->FontWindowScale;
+    const float availableFooterWidth = ImGui::GetContentRegionAvail().x;
+    auto measureFooter = [&]() {
+        float width = -8.0f;
+        for (size_t i = 0; i < controls.size(); ++i) {
+            width += ImGui::CalcTextSize(controlLabels[i].c_str()).x + 10.0f + 4.0f +
+                     ImGui::CalcTextSize(controls[i].second).x + 8.0f;
+        }
+        return width;
+    };
     if (renderingNativePause) {
-        const float availableWidth = ImGui::GetContentRegionAvail().x;
-        auto measureFooter = [&]() {
-            float width = -8.0f;
-            for (size_t i = 0; i < controls.size(); ++i) {
-                width += ImGui::CalcTextSize(controlLabels[i].c_str()).x + 10.0f + 4.0f +
-                         ImGui::CalcTextSize(controls[i].second).x + 8.0f;
-            }
-            return width;
-        };
+        const float enlargedFooterScale = footerFontScale * 1.15f;
+        ImGui::SetWindowFontScale(enlargedFooterScale);
         const float width = measureFooter();
         // Custom bindings can be longer than the defaults. Keep the native footer on one centered row.
-        const float usableWidth = std::max(1.0f, availableWidth - 16.0f); // Allow for per-label pixel rounding.
+        const float usableWidth = std::max(1.0f, availableFooterWidth - 16.0f); // Allow for per-label pixel rounding.
         if (width > usableWidth) {
             const float fixedSpacing = controls.size() * 22.0f - 8.0f;
             const float scale =
                 std::clamp((usableWidth - fixedSpacing) / std::max(1.0f, width - fixedSpacing), 0.35f, 1.0f);
-            ImGui::SetWindowFontScale(footerFontScale * scale);
+            ImGui::SetWindowFontScale(enlargedFooterScale * scale);
         }
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (availableWidth - measureFooter()) * 0.5f));
     }
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (availableFooterWidth - measureFooter()) * 0.5f));
     auto drawControlHint = [](CONTROLLERBUTTONS_T bitmask, const char* action, const std::string& key) {
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(5.0f, 2.0f));
         const ImU32 keyColor = renderingNativePause ? IM_COL32(83, 27, 22, 255) : IM_COL32(40, 46, 49, 255);
@@ -894,7 +948,16 @@ void MapTrackerScreenWindow::DrawElement() {
         ImGui::PopStyleColor(3);
         ImGui::PopStyleVar();
         ImGui::SameLine(0.0f, 4.0f);
-        ImGui::TextDisabled("%s", action);
+        if (renderingNativePause) {
+            const ImVec2 textPosition =
+                ImGui::GetCursorScreenPos() + ImVec2(0.0f, ImGui::GetCurrentWindow()->DC.CurrLineTextBaseOffset);
+            DrawNativeTextShadow(ImGui::GetWindowDrawList(), textPosition, action);
+            ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(248, 244, 234, 255));
+            ImGui::TextUnformatted(action);
+            ImGui::PopStyleColor();
+        } else {
+            ImGui::TextDisabled("%s", action);
+        }
         ImGui::SameLine(0.0f, 8.0f);
     };
     for (size_t i = 0; i < controls.size(); ++i)
@@ -924,75 +987,143 @@ void MapTrackerSettingsWindow::UpdateElement() {
 }
 
 void MapTrackerSettingsWindow::DrawElement() {
-    ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, { 8.0f, 8.0f });
-    if (ImGui::BeginTable("MapTrackerSettingsTable", 2, ImGuiTableFlags_BordersH | ImGuiTableFlags_BordersV)) {
-        ImGui::TableSetupColumn("General settings", ImGuiTableColumnFlags_WidthStretch, 200.0f);
-        ImGui::TableSetupColumn("Map settings", ImGuiTableColumnFlags_WidthStretch, 200.0f);
-        ImGui::TableHeadersRow();
+    const int displayMode = static_cast<int>(GetDisplayMode());
+    if (CVarGetInteger(CVAR_DISPLAY_MODE, -1) != displayMode) {
+        CVarSetInteger(CVAR_DISPLAY_MODE, displayMode);
+        Ship::Context::GetInstance()->GetWindow()->GetGui()->SaveConsoleVariablesNextFrame();
+    }
+    if (UIWidgets::CVarCombobox(
+            "Display Mode", CVAR_DISPLAY_MODE, displayModes,
+            UIWidgets::ComboboxOptions()
+                .Color(THEME_COLOR)
+                .DefaultIndex(DEFAULT_DISPLAY_MODE)
+                .Tooltip(
+                    "Choose one tracker presentation. Pause modes use the mapped Map Tracker button; Windowed/Floating "
+                    "use the menu toggle. Changes during native pause apply after closing it."))) {
+        SetScreenOpen(false, true);
+        ResetScreenInput();
+        if (!gPlayState || gPlayState->pauseCtx.state == 0)
+            ResetNativePauseState();
+        CheckTracker::InvalidateMapTrackerRenderCache();
+        if (const auto classic = Ship::Context::GetInstance()->GetWindow()->GetGui()->GetGuiWindow("Map Tracker")) {
+            if (IsInGameMode())
+                classic->Hide();
+            else
+                classic->Show();
+        }
+    }
 
+    ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(8.0f, 8.0f));
+    if (ImGui::BeginTable("MapTrackerSettingsTable", 2, ImGuiTableFlags_BordersInnerV)) {
+        ImGui::TableSetupColumn("Map Content", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Appearance", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableHeadersRow();
         ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        UIWidgets::CVarCheckbox(
+            "Show Logic", CVAR_SHOW_LOGIC,
+            UIWidgets::CheckboxOptions().Color(THEME_COLOR).Tooltip("Show check logic when hovering locations."));
+        UIWidgets::CVarCheckbox(
+            "Reveal Unspoiled Dungeon Checks", CVAR_MQ_SPOILERS,
+            UIWidgets::CheckboxOptions()
+                .Color(THEME_COLOR)
+                .Tooltip("Show dungeon checks before the dungeon has been spoiled, including MQ dungeons."));
+        UIWidgets::CVarCheckbox(
+            "Experimental Player Position", CVAR_PLAYER_POSITION,
+            UIWidgets::CheckboxOptions()
+                .Color(THEME_COLOR)
+                .Tooltip("Approximate position and facing using calibration points or scene exits."));
+
         ImGui::TableNextColumn();
         UIWidgets::CVarSliderFloat("Font Size", CVAR_FONT_SIZE,
                                    UIWidgets::FloatSliderOptions()
                                        .Format("%.1f")
                                        .Step(0.1f)
                                        .Min(0.3f)
-                                       .Max(2.0f)
+                                       .Max(1.3f)
                                        .Color(THEME_COLOR)
                                        .DefaultValue(1.0f));
-        UIWidgets::CVarCheckbox("Enable Dragging", CVAR_DRAGGABLE,
-                                UIWidgets::CheckboxOptions().Color(THEME_COLOR).DefaultValue(true));
-        UIWidgets::CVarCheckbox("Only Enable While Paused", CVAR_SHOW_ONLY_PAUSED,
-                                UIWidgets::CheckboxOptions().Color(THEME_COLOR));
-        UIWidgets::CVarCheckbox("Show Logic", CVAR_SHOW_LOGIC,
-                                UIWidgets::CheckboxOptions()
-                                    .Tooltip("Show a check's logic when hovering over it on the map.")
-                                    .Color(THEME_COLOR));
-        UIWidgets::CVarCheckbox("Show Check Totals", CVAR_SHOW_TOTALS,
-                                UIWidgets::CheckboxOptions().Color(THEME_COLOR).DefaultValue(true));
-
-        ImGui::TableNextColumn();
-        if (UIWidgets::CVarCombobox(
-                "In-Game Map Mode", CVAR_NATIVE_PAUSE, screenModes,
-                UIWidgets::ComboboxOptions()
-                    .Color(THEME_COLOR)
-                    .DefaultIndex(DEFAULT_NATIVE_PAUSE_MODE)
-                    .Tooltip("Fullscreen 2D: animated standalone panel. Native Pause 3D: "
-                             "replace the game's Map page. Changes during a pause apply after closing it. "
-                             "The classic ImGui tracker is unchanged."))) {
-            SetScreenOpen(false, true);
-            ResetScreenInput();
-            if (gPlayState == nullptr || gPlayState->pauseCtx.state == 0)
-                ResetNativePauseState();
-            CheckTracker::InvalidateMapTrackerRenderCache();
-        }
-        UIWidgets::CVarCombobox("Window Type", CVAR_WINDOW_TYPE, windowTypes,
-                                UIWidgets::ComboboxOptions().Color(THEME_COLOR).DefaultIndex(TRACKER_WINDOW_WINDOW));
-        UIWidgets::CVarCheckbox(
-            "Reveal Unspoiled Dungeon Checks", CVAR_MQ_SPOILERS,
-            UIWidgets::CheckboxOptions()
-                .Tooltip("Show dungeon checks before the dungeon has been spoiled, including MQ dungeons.")
-                .Color(THEME_COLOR));
-        UIWidgets::CVarCheckbox("Experimental Player Position", CVAR_PLAYER_POSITION,
-                                UIWidgets::CheckboxOptions()
-                                    .Color(THEME_COLOR)
-                                    .Tooltip("Show position and facing using pack calibration points when available. "
-                                             "Otherwise approximate from scene exits and map links."));
-
+        const bool floating = GetDisplayMode() == DisplayMode::Floating;
+        auto floatingOptions = UIWidgets::CheckboxOptions().Color(THEME_COLOR).DefaultValue(true)
+                                   .Tooltip("Allow interaction and dragging of the floating overlay.");
+        floatingOptions.disabled = !floating;
+        floatingOptions.disabledTooltip =
+            "Only available in Floating Overlay mode. Windowed is always draggable; pause maps are fixed.";
+        UIWidgets::CVarCheckbox("Move Floating Overlay", CVAR_DRAGGABLE, floatingOptions);
+        const bool native = GetDisplayMode() == DisplayMode::Pause3D;
+        auto nativeOptions = UIWidgets::CheckboxOptions().Color(THEME_COLOR)
+                                 .DefaultValue(DEFAULT_NATIVE_CUSTOM_BACKGROUND != 0)
+                                 .Tooltip("Use pause_map_tracker.png instead of the red color fill.");
+        nativeOptions.disabled = !native;
+        nativeOptions.disabledTooltip = "Only available in In-Game Pause 3D mode.";
+        UIWidgets::CVarCheckbox("Use Custom Background (3D)", CVAR_NATIVE_CUSTOM_BACKGROUND, nativeOptions);
         ImGui::EndTable();
     }
     ImGui::PopStyleVar();
+    ImGui::SeparatorText("Data & Diagnostics");
+    if (UIWidgets::Button(
+            "Open Map Tracker Debug Tools",
+            UIWidgets::ButtonOptions().Color(THEME_COLOR).Size({ ImGui::GetContentRegionAvail().x, 0.0f }))) {
+        if (const auto debug = Ship::Context::GetInstance()->GetWindow()->GetGui()->GetGuiWindow("Map Tracker Debug"))
+            debug->Show();
+    }
+}
+
+void MapTrackerDebugWindow::InitElement() {
+}
+
+void MapTrackerDebugWindow::UpdateElement() {
+}
+
+void MapTrackerDebugWindow::DrawElement() {
+    const bool saveReady = GameInteractor::IsSaveLoaded() && CheckTracker::initialized;
+    if (saveReady)
+        CheckTracker::ProcessPendingUpdates();
+    if (!CheckTracker::mapTrackerState.attemptedLoad)
+        CheckTracker::LoadMapTrackerData();
+    const std::string assets = CheckTracker::mapTrackerState.assetsRoot.empty()
+                                   ? CheckTracker::GetMapTrackerAssetsRootAbsoluteString()
+                                   : CheckTracker::mapTrackerState.assetsRoot.string();
+    ImGui::TextWrapped("Assets: %s", assets.c_str());
+    if (UIWidgets::CVarCheckbox(
+            "Debug", CVAR_SHOW_DEBUG_INFO,
+            UIWidgets::CheckboxOptions()
+                .Color(THEME_COLOR)
+                .DefaultValue(false)
+                .Tooltip("Show tracker IDs and pack names in single/multicheck tooltips in all views.")))
+        showMapDebugDetails = CVarGetInteger(CVAR_SHOW_DEBUG_INFO, 0) != 0;
+    if (UIWidgets::Button("Reload Map Data", UIWidgets::ButtonOptions().Color(THEME_COLOR)))
+        CheckTracker::LoadMapTrackerData();
+    for (const auto& error : CheckTracker::mapTrackerState.fatalErrors)
+        ImGui::TextWrapped("%s", error.c_str());
+    if (ImGui::BeginTabBar("MapTrackerDiagnosticsTabs")) {
+        if (ImGui::BeginTabItem("Tracker Visibility")) {
+            if (saveReady)
+                CheckTracker::DrawCheckTrackerVisibilityDebugControls();
+            else
+                ImGui::TextUnformatted("Load a save to inspect tracker visibility and export checks.");
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Unlinked / Issues")) {
+            CheckTracker::DrawMapTrackerIssuesTab();
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
 }
 
 void RegisterMapTrackerWidgets() {
     WidgetInfo showLogicWidget = { .name = "Show Logic", .type = WidgetType::WIDGET_CVAR_CHECKBOX };
     showLogicWidget.CVar(CVAR_SHOW_LOGIC)
         .Options(CheckboxOptions().Color(THEME_COLOR).Tooltip("Show check logic in Map Tracker tooltips."));
-    SohGui::GetSohMenu()->AddSearchWidget({ showLogicWidget, "Randomizer", "Map Tracker", "General Settings" });
-    WidgetInfo playerPositionWidget = { .name = "Experimental Player Position", .type = WidgetType::WIDGET_CVAR_CHECKBOX };
+    SohGui::GetSohMenu()->AddSearchWidget({ showLogicWidget, "Randomizer", "Map Tracker", "Content" });
+    WidgetInfo playerPositionWidget = { .name = "Experimental Player Position",
+                                        .type = WidgetType::WIDGET_CVAR_CHECKBOX };
     playerPositionWidget.CVar(CVAR_PLAYER_POSITION)
-        .Options(CheckboxOptions().Color(THEME_COLOR).Tooltip("Approximate player position and facing using scene exits and map links."));
-    SohGui::GetSohMenu()->AddSearchWidget({ playerPositionWidget, "Randomizer", "Map Tracker", "Map Settings" });
+        .Options(CheckboxOptions()
+                     .Color(THEME_COLOR)
+                     .Tooltip("Approximate player position and facing using scene exits and map links."));
+    SohGui::GetSohMenu()->AddSearchWidget({ playerPositionWidget, "Randomizer", "Map Tracker", "Content" });
 }
 
 static RegisterMenuInitFunc menuInitFunc(RegisterMapTrackerWidgets);

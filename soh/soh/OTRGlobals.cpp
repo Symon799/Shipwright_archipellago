@@ -20,6 +20,7 @@
 #include "Enhancements/gameconsole.h"
 #ifdef _WIN32
 #include <Windows.h>
+#include "WindowsConsole.h"
 #else
 #include <time.h>
 #endif
@@ -31,6 +32,8 @@
 #include "Enhancements/randomizer/randomizer.h"
 #include "Enhancements/randomizer/randomizer_entrance_tracker.h"
 #include "Enhancements/randomizer/randomizer_check_tracker.h"
+#include "Enhancements/randomizer/randomizer_map_tracker.h"
+#include "Network/Archipelago/Archipelago.h"
 #include "Enhancements/randomizer/static_data.h"
 #include "Enhancements/gameplaystats.h"
 #include "frame_interpolation.h"
@@ -862,6 +865,10 @@ void OTRGlobals::Initialize() {
     auto logLevel =
         static_cast<spdlog::level::level_enum>(CVarGetInteger(CVAR_DEVELOPER_TOOLS("LogLevel"), defaultLogLevel));
     context->InitLogging(logLevel, logLevel);
+#ifdef _WIN32
+    // The logging setup recreates the debug console, so its input mode must be reapplied.
+    Soh_DisableConsoleQuickEdit();
+#endif
     Ship::Context::GetInstance()->GetLogger()->set_pattern("[%H:%M:%S.%e] [%s:%#] [%l] %v");
 
     context->InitGfxDebugger();
@@ -1613,6 +1620,9 @@ extern "C" void SaveManager_ThreadPoolWait() {
 
 extern "C" void DeinitOTR() {
     SaveManager_ThreadPoolWait();
+    ArchipelagoClient::GetInstance().Shutdown();
+    MapTracker::Shutdown();
+    CVarSave();
     OTRAudio_Exit();
     if (CVarGetInteger(CVAR_REMOTE_CROWD_CONTROL("Enabled"), 0)) {
         CrowdControl::Instance->Disable();

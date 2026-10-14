@@ -98,13 +98,11 @@
         }
       },
       "MapTracker": {
-        "NativePausePage": 1,
-        "WindowType": 1,
+        "DisplayMode": 0,
+        "NativeCustomBackground": 1,
         "FontSize": 1.0,
         "Draggable": 1,
-        "ShowOnlyPaused": 0,
         "ShowLogic": 0,
-        "ShowTotals": 1,
         "ShowDebugInfo": 0,
         "MQSpoilers": 0
       },

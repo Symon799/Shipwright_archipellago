@@ -2,6 +2,8 @@
 #include "soh/Enhancements/enhancementTypes.h"
 #include "soh/Enhancements/randomizer/randomizer.h"
 #include "soh/Enhancements/randomizer/randomizerTypes.h"
+#include "soh/Enhancements/randomizer/randomizer_map_tracker.h"
+#include "soh/Enhancements/randomizer/map_tracker_pause.h"
 #include "soh/OTRGlobals.h"
 #include "soh/SohGui/SohGui.hpp"
 
@@ -766,6 +768,13 @@ void SohMenu::AddMenuRandomizer() {
         .RaceDisable(false)
         .WindowName("Map Tracker")
         .HideInSearch(true)
+        .PreFunc([](WidgetInfo& info) {
+            info.options->disabled = MapTracker::IsInGameMode() || MapTracker::NativePauseEnabled();
+            info.options->disabledTooltip =
+                "The window toggle is only available in Windowed/Floating mode. "
+                "Pause modes open with the mapped Map Tracker button (Settings > Controls). "
+                "Mode changes during native pause apply after closing it.";
+        })
         .Options(WindowButtonOptions().Tooltip("Toggles the Map Tracker.").EmbedWindow(false));
 
     AddWidget(path, "Map Tracker Settings", WIDGET_SEPARATOR_TEXT);

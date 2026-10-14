@@ -31,6 +31,7 @@
 #include "soh/OTRGlobals.h"
 #include "soh/Network/Anchor/Anchor.h"
 #include "soh/ObjectExtension/ObjectExtension.h"
+#include <ship/config/Config.h>
 
 extern "C" {
 #include "variables.h"
@@ -62,6 +63,42 @@ ArchipelagoClient::ArchipelagoClient() {
 ArchipelagoClient& ArchipelagoClient::GetInstance() {
     static ArchipelagoClient Client;
     return Client;
+}
+
+// Encode the seed/slot pair: profile keys must not contain Config's path separator.
+static std::string ConnectionProfileKey(const std::string& seed, const std::string& slot) {
+    constexpr char hex[] = "0123456789abcdef";
+    const std::string identity = seed + '\0' + slot;
+    std::string key = "Archipelago.Connections.";
+    for (unsigned char byte : identity) {
+        key += hex[byte >> 4];
+        key += hex[byte & 15];
+    }
+    return key;
+}
+
+void ArchipelagoClient::RememberConnection() {
+    auto config = Ship::Context::GetInstance()->GetConfig();
+    const std::string key = ConnectionProfileKey(apClient->get_seed(), GetSlotName());
+    config->SetString(key + ".ServerAddress", uri);
+    config->SetString(key + ".Password", password);
+    CVarSetString(CVAR_REMOTE_ARCHIPELAGO("ServerAddress"), uri.c_str());
+    CVarSetString(CVAR_REMOTE_ARCHIPELAGO("SlotName"), GetSlotName().c_str());
+    CVarSetString(CVAR_REMOTE_ARCHIPELAGO("Password"), password.c_str());
+    CVarSave();
+}
+
+void ArchipelagoClient::RestoreSaveConnection() {
+    const auto& save = gSaveContext.ship.quest.data.archipelago;
+    auto config = Ship::Context::GetInstance()->GetConfig();
+    const std::string key = ConnectionProfileKey(save.roomHash, save.slotName);
+    const std::string rememberedAddress = config->GetString(key + ".ServerAddress", "");
+    const std::string address = rememberedAddress.empty() ? save.archiUri : rememberedAddress;
+    // Config::GetString treats an empty value as missing; a remembered empty password must stay empty.
+    const std::string pass = rememberedAddress.empty() ? save.roomPass : config->GetString(key + ".Password", "");
+    CVarSetString(CVAR_REMOTE_ARCHIPELAGO("ServerAddress"), address.c_str());
+    CVarSetString(CVAR_REMOTE_ARCHIPELAGO("SlotName"), save.slotName);
+    CVarSetString(CVAR_REMOTE_ARCHIPELAGO("Password"), pass.c_str());
 }
 
 bool ArchipelagoClient::StartClient() {
@@ -194,6 +231,7 @@ bool ArchipelagoClient::StartClient() {
             ArchipelagoClient::SetDataStorage("scene", gPlayState->sceneNum);
         }
 
+        RememberConnection();
         const int team_number = apClient->get_team_number();
         const int player_id = apClient->get_player_number();
         std::list<std::string> requests;
@@ -481,6 +519,14 @@ bool ArchipelagoClient::StopClient() {
     return true;
 }
 
+void ArchipelagoClient::Shutdown() {
+    disconnecting = true;
+    apClient.reset();
+    ResetQueue();
+    CVarSetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatus"), 0);
+    CVarSetInteger(CVAR_REMOTE_ARCHIPELAGO("ConnectionStatusInGame"), 0);
+}
+
 void ArchipelagoClient::RequestInitData() {
     // To create a save file we'll need the following data:
     // Slot Data: received on connection, we already have this
@@ -530,9 +576,7 @@ void ArchipelagoClient::GameLoaded() {
 
     if (apClient == nullptr) {
         if (IS_ARCHIPELAGO) {
-            CVarSetString(CVAR_REMOTE_ARCHIPELAGO("ServerAddress"), gSaveContext.ship.quest.data.archipelago.archiUri);
-            CVarSetString(CVAR_REMOTE_ARCHIPELAGO("SlotName"), gSaveContext.ship.quest.data.archipelago.slotName);
-            CVarSetString(CVAR_REMOTE_ARCHIPELAGO("Password"), gSaveContext.ship.quest.data.archipelago.roomPass);
+            RestoreSaveConnection();
             StartClient();
         }
         return;
@@ -547,9 +591,7 @@ void ArchipelagoClient::GameLoaded() {
 
     if (!isRightSaveLoaded()) {
         ArchipelagoConsole_SendMessage("Disconnecting from previous slot and connecting to this one...");
-        CVarSetString(CVAR_REMOTE_ARCHIPELAGO("ServerAddress"), gSaveContext.ship.quest.data.archipelago.archiUri);
-        CVarSetString(CVAR_REMOTE_ARCHIPELAGO("SlotName"), gSaveContext.ship.quest.data.archipelago.slotName);
-        CVarSetString(CVAR_REMOTE_ARCHIPELAGO("Password"), gSaveContext.ship.quest.data.archipelago.roomPass);
+        RestoreSaveConnection();
         StartClient();
         return;
     }

@@ -1,5 +1,6 @@
 #ifdef _WIN32
 #include <Windows.h>
+#include "soh/WindowsConsole.h"
 #include <locale.h>
 #endif
 
@@ -50,6 +51,7 @@ int SDL_main(int argc, char* argv[]) {
     (void)freopen("CONIN$", "r", stdin);
     (void)freopen("CONOUT$", "w", stdout);
     (void)freopen("CONOUT$", "w", stderr);
+    Soh_DisableConsoleQuickEdit();
 #ifndef _DEBUG
     ShowWindow(GetConsoleWindow(), SW_HIDE);
 #endif

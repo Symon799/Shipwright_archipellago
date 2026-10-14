@@ -171,6 +171,7 @@ void ResetMapTrackerState(bool unloadTextures);
 void LoadMapTrackerData();
 void ProcessPendingMapTextureLoads();
 void DrawMapTrackerContent(bool showNavigation = true);
+void DrawMapTrackerIssuesTab();
 void FocusMapTrackerOnPlayer();
 bool NavigateBackMapTrackerScreen();
 void NavigateMapTrackerScreenToOverworld();
