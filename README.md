@@ -15,19 +15,20 @@ Short Video demo : https://youtu.be/6i1bTyHERFQ
 
 This last version has a new modes that can be opened and fully used with a controller
 
-Native pause 3D menu:
-<img width="2559" height="1439" alt="MT2" src="https://github.com/user-attachments/assets/586c8c9e-bb83-434d-87a9-3bef76c63a8d" />
-2D fullscreen menu:
-<img width="1645" height="963" alt="MT3" src="https://github.com/user-attachments/assets/769eae29-1b5e-4c0e-a956-db2225add21d" />
+Native pause 3D menu (controller ready):
+<img width="2234" height="1234" alt="1" src="https://github.com/user-attachments/assets/6ab85b20-8fc7-4d1f-be59-8b31e3b69e4a" />
+
+2D Fullscreen menu (controller ready):
+<img width="2234" height="1231" alt="2" src="https://github.com/user-attachments/assets/18c4d314-68b8-489b-a36b-ed4259ce54f2" />
 
 ## Map Tracker
 This map Tracker replaces the Check Tracker imgui window (Still accessible) and adds all of the maps with every check on it. It is updated in real time when you change zone, when you do a check or when the time of day or age of Link changes.
 
-<img width="1260" height="845" alt="Hyrule" src="https://github.com/user-attachments/assets/ead492f2-fa17-424d-be42-9320db7d5077" />
-<img width="1606" height="887" alt="Kokiri" src="https://github.com/user-attachments/assets/8e29efe7-271b-4eb9-954c-d8f8f7a93e86" />
-<img width="1433" height="874" alt="HyruleField" src="https://github.com/user-attachments/assets/40a4354d-eb36-43e8-b3ab-46b3885989cb" />
-<img width="1285" height="996" alt="Lost Woods" src="https://github.com/user-attachments/assets/1f4c0db7-2e7e-4c2e-b523-bb1429184f1a" />
-<img width="1162" height="1082" alt="FireTemple" src="https://github.com/user-attachments/assets/4a9aa93f-4a4d-441e-934a-2771cb6dc170" />
+<img width="1581" height="965" alt="3" src="https://github.com/user-attachments/assets/637b1b42-1684-47f5-ac68-7c80481b5fef" />
+<img width="1584" height="969" alt="4" src="https://github.com/user-attachments/assets/49ce3784-30a4-40d7-a095-50339d0633fa" />
+<img width="1582" height="966" alt="5" src="https://github.com/user-attachments/assets/b5eae0ef-1627-48a9-ae51-5dffbc88aa07" />
+<img width="1329" height="982" alt="6" src="https://github.com/user-attachments/assets/0e452266-b262-4692-8be6-bf89d7e9170b" />
+<img width="1328" height="984" alt="7" src="https://github.com/user-attachments/assets/5e943ab3-015e-420e-a6cf-b3523478ab45" />
 
 ## Time and Age requirements
 When a check is Yellow it means you can do the check but you need to change the time or the age. Hover on the check to see the requirements
